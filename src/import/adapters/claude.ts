@@ -14,6 +14,7 @@ import type {
 } from "../normalized-event.js";
 import { asObject, type JsonObject, listDir, parseObject, readLines } from "../jsonl.js";
 import { shellCall } from "../shell-reads.js";
+import { OPERATION_SCHEMAS } from "../../schemas.js";
 import { inCompatibility } from "../versions.js";
 
 /**
@@ -75,8 +76,8 @@ const METADATA_TYPES = new Set([
 
 /** Tools whose results are whole files or edits: only the call (path) is kept. */
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead"]);
-/** Memchor's own tools, under whatever name the user gave the MCP server. */
-const MEMCHOR_TOOL = /^mcp__.+__(memory_(?:bootstrap|recall|read|record|checkpoint|status|manage))$/;
+/** Memchor's own tools (every operation it offers), under whatever name the user gave the MCP server. */
+const MEMCHOR_TOOL = new RegExp(`^mcp__.+__(${Object.keys(OPERATION_SCHEMAS).join("|")})$`);
 /** Context Claude Code injects into user turns; not something the user wrote. */
 const INJECTED = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 

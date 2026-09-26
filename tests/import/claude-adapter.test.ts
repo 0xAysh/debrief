@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { claudeCodeAdapter } from "../../src/import/adapters/claude.js";
 import type { NormalizedEvent, TranscriptFile } from "../../src/import/normalized-event.js";
-import { claudeConfigDir, installTranscript } from "./fixtures.js";
+import { OPERATION_SCHEMAS } from "../../src/schemas.js";
+import { claudeConfigDir, claudeToolExchange, installTranscript } from "./fixtures.js";
 
 const CWD = "/work/store";
 
@@ -57,19 +58,17 @@ describe("Claude Code adapter", () => {
     expect(JSON.stringify(chunk.events)).not.toMatch(/SYNTHETIC-(HIDDEN|INJECTED)|SYNTHETICBINARY/);
   });
 
-  test("every Memchor tool is kind memchor, memory_manage included", () => {
+  test("every operation Memchor offers is kind memchor, memory_manage included", () => {
     const config = claudeConfigDir();
-    const line = (fields: object) => JSON.stringify({ isSidechain: false, userType: "external", entrypoint: "cli", cwd: CWD, sessionId: "5e550000-0000-4000-8000-0000000000f1", version: "2.1.281", gitBranch: "main", ...fields });
-    const content = [
-      line({ parentUuid: null, type: "assistant", uuid: "00000000-0000-4000-8000-0000000000f1", timestamp: "2026-09-20T10:00:00.000Z", message: { model: "claude-opus-5-5", id: "msg_f1", type: "message", role: "assistant", content: [{ type: "tool_use", id: "toolu_f1", name: "mcp__memchor__memory_manage", input: { action: "inspect", recordId: "rec_0123456789abcdef0123456789abcdef" } }], stop_reason: "tool_use", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } }),
-      line({ parentUuid: "00000000-0000-4000-8000-0000000000f1", type: "user", uuid: "00000000-0000-4000-8000-0000000000f2", timestamp: "2026-09-20T10:00:00.200Z", message: { role: "user", content: [{ tool_use_id: "toolu_f1", type: "tool_result", content: [{ type: "text", text: '{"action":"inspect","record":{"body":"SYNTHETIC-MANAGED claim"}}' }] }] } }),
-      "",
-    ].join("\n");
-    const { path, sessionId } = installTranscript(config, "", { cwd: CWD, sessionId: "5e550000-0000-4000-8000-0000000000f1", content });
+    const sessionId = "5e550000-0000-4000-8000-0000000000f1";
+    const operations = Object.keys(OPERATION_SCHEMAS);
+    const content = operations
+      .map((operation, i) => claudeToolExchange({ cwd: CWD, sessionId, gitBranch: "main", parentUuid: null, id: 900 + 2 * i, tool: `mcp__memchor__${operation}`, input: {}, result: '{"items":[]}' }))
+      .join("");
+    const { path } = installTranscript(config, "", { cwd: CWD, sessionId, content });
     const chunk = claudeCodeAdapter({ configDir: config }).read(fileOf(path, sessionId), 0, 1 << 20);
-    expect(chunk.events.filter((e) => e.type === "tool_call").map((c) => [c.tool, c.toolKind, c.summary])).toEqual([
-      ["mcp__memchor__memory_manage", "memchor", 'memory_manage {"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}'],
-    ]);
+    expect(chunk.events.filter((e) => e.type === "tool_call").map((c) => [c.tool, c.toolKind])).toEqual(operations.map((operation) => [`mcp__memchor__${operation}`, "memchor"]));
+    expect(operations).toContain("memory_manage");
   });
 
   test("every event carries a stable origin: main branch, host uuid, timestamp, cwd, git branch, version and its line's byte range", () => {

@@ -3,22 +3,22 @@ import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
-import { claudeConfigDir, installTranscript, renderFixture } from "./fixtures.js";
+import { claudeConfigDir, claudeToolExchange, type InstalledTranscript, installTranscript, renderFixture } from "./fixtures.js";
 
 const CLAIM = "Redis is required for the job queue; every retry must go through it.";
 
-function setup(): { repo: string; home: string; config: string; memory: Memory; claim: string; summary: string } {
+function setup(): { repo: string; home: string; config: string; transcript: InstalledTranscript; memory: Memory; claim: string; summary: string } {
   const repo = initRepo({ branch: "feat/queue" });
   const home = tempDir();
   const config = claudeConfigDir();
-  installTranscript(config, "2.1.281/redis-claim.jsonl", { cwd: repo });
+  const transcript = installTranscript(config, "2.1.281/redis-claim.jsonl", { cwd: repo });
   const memory = open(repo, home, config);
   const boot = memory.bootstrap({ importChoice: "current_project" });
   expect(boot.import.state).toBe("complete");
   const claim = memory.recall({ query: "redis required" }).items.find((item) => item.excerpt === CLAIM);
   const summary = memory.recall({ query: "continued previous conversation summary" }).items.find((item) => item.kind === "note");
   if (claim === undefined || summary === undefined) throw new Error("fixture did not import the claim and the summary");
-  return { repo, home, config, memory, claim: claim.recordId, summary: summary.recordId };
+  return { repo, home, config, transcript, memory, claim: claim.recordId, summary: summary.recordId };
 }
 
 function open(repo: string, home: string, config: string): Memory {
@@ -144,28 +144,15 @@ describe("forgetting imported memory", () => {
   });
 
   test("a forgotten claim does not come back through the memory_manage output the session saw before the forget", () => {
-    const repo = initRepo({ branch: "feat/queue" });
-    const home = tempDir();
-    const config = claudeConfigDir();
-    const sessionId = "5e550000-0000-4000-8000-000000000002";
-    const transcript = installTranscript(config, "2.1.281/redis-claim.jsonl", { cwd: repo, sessionId });
-    const memory = open(repo, home, config);
-    memory.bootstrap({ importChoice: "current_project" });
-    const claim = memory.recall({ query: "redis required" }).items.find((item) => item.excerpt === CLAIM);
-    if (claim === undefined) throw new Error("claim not imported");
+    const { repo, transcript, memory, claim } = setup();
 
     // The agent inspects the claim; the host writes the call and Memchor's output to the transcript.
-    const inspected = JSON.stringify(memory.manage({ action: "inspect", recordId: claim.recordId }));
+    const inspected = JSON.stringify(memory.manage({ action: "inspect", recordId: claim }));
     expect(inspected).toContain("Redis is required");
-    const line = (fields: object) => JSON.stringify({ isSidechain: false, userType: "external", entrypoint: "cli", cwd: repo, sessionId, version: "2.1.281", gitBranch: "feat/queue", ...fields });
-    appendFileSync(transcript.path, [
-      line({ parentUuid: "00000000-0000-4000-8000-000000000304", type: "assistant", uuid: "00000000-0000-4000-8000-000000000305", timestamp: "2026-09-23T09:01:00.000Z", message: { model: "claude-opus-5-5", id: "msg_0305", type: "message", role: "assistant", content: [{ type: "tool_use", id: "toolu_0305", name: "mcp__memchor__memory_manage", input: { action: "inspect", recordId: claim.recordId } }], stop_reason: "tool_use", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } }),
-      line({ parentUuid: "00000000-0000-4000-8000-000000000305", type: "user", uuid: "00000000-0000-4000-8000-000000000306", timestamp: "2026-09-23T09:01:00.200Z", message: { role: "user", content: [{ tool_use_id: "toolu_0305", type: "tool_result", content: [{ type: "text", text: inspected }] }] } }),
-      "",
-    ].join("\n"));
+    appendFileSync(transcript.path, claudeToolExchange({ cwd: repo, sessionId: transcript.sessionId, gitBranch: "feat/queue", parentUuid: "00000000-0000-4000-8000-000000000304", id: 305, tool: "mcp__memchor__memory_manage", input: { action: "inspect", recordId: claim }, result: inspected }));
 
     // The user then has it forgotten; the next import reads the inspect output.
-    const preview = memory.manage({ action: "forget_preview", recordIds: [claim.recordId] });
+    const preview = memory.manage({ action: "forget_preview", recordIds: [claim] });
     if (preview.action !== "forget_preview") throw new Error("unreachable");
     memory.manage({ action: "forget", confirmToken: preview.confirmToken, reason: "Forget the queue claim.", attribution: "user_direction" });
     memory.bootstrap();
@@ -173,6 +160,8 @@ describe("forgetting imported memory", () => {
     const dbPath = memory.status().storage.dbPath ?? "";
     expect(dumpDb(dbPath)).not.toContain("Redis is required");
     expect(claimVisible(memory)).toBe(false);
+    memory.close();
+    expect(readFileSync(dbPath).toString("latin1")).not.toContain("Redis is required");
   });
 });
 
