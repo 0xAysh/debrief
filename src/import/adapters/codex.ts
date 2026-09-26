@@ -75,7 +75,7 @@ const HEAD_BYTES = 1 << 20;
 const CONTEXT_SCAN_BYTES = [64 << 10, 256 << 10, 1 << 20];
 
 /** Memchor's own tools, under whatever name the user gave the MCP server (Codex may append `_<12 hex>` on a name collision). */
-const MEMCHOR_TOOL = /^mcp__.+__(memory_(?:bootstrap|recall|read|record|checkpoint|status))(?:_[0-9a-f]{12})?$/;
+const MEMCHOR_TOOL = /^mcp__.+__(memory_(?:bootstrap|recall|read|record|checkpoint|status|manage))(?:_[0-9a-f]{12})?$/;
 /** Codex's framing of a tool output: exec (`Process exited with code N`), apply_patch (`Exit code: N`) and MCP (`Wall time`). */
 const OUTPUT_HEADER = /^(?:Chunk ID: [^\n]*\n)?(?:Exit code: (-?\d+)\n)?Wall time: [^\n]*\n(?:Process exited with code (-?\d+)\n|Process running with session ID [^\n]*\n)?(?:Original token count: [^\n]*\n)?Output:\n/;
 /** Codex's local-compaction summary starts with this sentence (`prompts/templates/compact/summary_prefix.md`), then a newline. */
