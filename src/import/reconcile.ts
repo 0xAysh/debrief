@@ -117,6 +117,21 @@ export interface ImportStatus {
   problem: { code: ErrorCode; message: string } | null;
 }
 
+/** Why a capture imported nothing: no answer yet, declined, not a transcript of this host, or not this approved repository. */
+export type CaptureSkip = "unsupported_host" | "consent_required" | "declined" | "not_a_transcript" | "not_approved";
+
+export interface CaptureResult {
+  /** captured: the transcript was reconciled (possibly with nothing new) · skipped: see `reason` · failed: see `problem`. */
+  state: "captured" | "skipped" | "failed";
+  reason: CaptureSkip | null;
+  transcriptId: string | null;
+  /** Events newly stored by this capture. */
+  events: number;
+  /** False when the budget ran out first; the rest waits for the next capture or session start. */
+  complete: boolean;
+  problem: { code: ErrorCode; message: string } | null;
+}
+
 export interface CurrentWorkspace {
   location: WorkspaceLocation;
   /** The bound, migrated database; null only for read-only status on a missing or unmigrated file. */
@@ -252,6 +267,42 @@ export class TranscriptImporter {
       return { ...this.report(current, consent, entries), done };
     } catch (error) {
       return { ...this.failed(current, consent, entries, error), done: false };
+    }
+  }
+
+  /**
+   * Imports the one transcript a host hook named (its `transcript_path`), without inventorying
+   * the rest: consent first, then the path must be one of this host's transcripts, recorded in
+   * this repository. `open` binds the database only once all of that holds, so a session in an
+   * unapproved repository leaves nothing behind.
+   */
+  capture(location: WorkspaceLocation, open: () => Db, path: string, maxMs: number): CaptureResult {
+    const skipped = (reason: CaptureSkip, transcriptId: string | null = null): CaptureResult => ({ state: "skipped", reason, transcriptId, events: 0, complete: true, problem: null });
+    let transcriptId: string | null = null;
+    try {
+      const consent = readConsent(this.options.home, this.host);
+      if (consent === null) return skipped("consent_required");
+      if (consent.choice === "none") return skipped("declined");
+      const file = this.options.adapter.fileAt(path);
+      if (file === null) return skipped("not_a_transcript");
+      transcriptId = file.transcriptId;
+      const head = this.options.adapter.inspect(file);
+      // No complete first line yet: nothing to attribute, so nothing to capture this turn.
+      if (head.cwd === null) return { state: "captured", reason: null, transcriptId, events: 0, complete: true, problem: null };
+      const target = this.locate(head.cwd);
+      // Another repository's transcript is imported by that repository's sessions (or backfill), never into this one.
+      if (target === null || target.workspaceId !== location.workspaceId || !approvesTarget(consent, target)) return skipped("not_approved", transcriptId);
+      const db = open();
+      const stored = prepared(db, "SELECT count(*) AS n FROM import_events WHERE host = ? AND transcript_id = ?");
+      const before = (stored.get(this.host, transcriptId) as { n: number }).n;
+      this.batches = 0;
+      const outcome = this.importTranscript(db, { file, cwd: head.cwd, supported: head.supported, target }, Date.now() + maxMs);
+      const events = (stored.get(this.host, transcriptId) as { n: number }).n - before;
+      return { state: "captured", reason: null, transcriptId, events: Math.max(events, 0), complete: outcome === "done", problem: null };
+    } catch (error) {
+      const mapped = toStorageError(error);
+      if (!(mapped instanceof MemchorError)) throw mapped;
+      return { state: "failed", reason: null, transcriptId, events: 0, complete: false, problem: { code: mapped.code, message: mapped.message } };
     }
   }
 

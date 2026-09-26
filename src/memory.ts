@@ -47,7 +47,8 @@ import {
 } from "./integrity/preferences.js";
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
-import { type ImportStatus, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
+import { type CaptureFailure, recentCaptureFailures } from "./import/capture-failures.js";
+import { type CaptureResult, type ImportStatus, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
 import { type Citation, citationsFor, importedFrom, type ImportedSource, independentRoots, linksOf } from "./integrity/provenance.js";
 import {
   type ClaimGroup,
@@ -84,6 +85,7 @@ import {
   type Attribution,
   BootstrapInput,
   CheckpointInput,
+  CaptureTurnInput,
   ContinueImportInput,
   effectiveBudget,
   type Freshness,
@@ -113,7 +115,8 @@ import { appendRecord, recordFields } from "./storage/records.js";
 
 export type { ImportedSource, Citation } from "./integrity/provenance.js";
 export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
-export type { ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
+export type { CaptureFailure } from "./import/capture-failures.js";
+export type { CaptureResult, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
 export type { CandidateSignal, ResolutionBasis, ScopeAmbiguity, WorkstreamCandidate } from "./bootstrap/workstream-resolution.js";
 export type { CheckpointSummary } from "./integrity/checkpoints.js";
@@ -481,6 +484,8 @@ export interface StatusResult {
   capabilities: { operations: string[]; freshnessValidation: boolean; transcriptImport: boolean };
   /** Consent, discovered transcripts, this project's import progress and capture gaps; null when scope is unresolved. */
   import: ImportStatus | null;
+  /** The newest hook captures that failed on this machine (any host, any repository), oldest first. */
+  captureFailures: CaptureFailure[];
 }
 
 /**
@@ -520,6 +525,12 @@ export interface Memory {
    * alive; `done` is true once nothing approved remains. Each batch is one transaction.
    */
   continueImport(input?: ContinueImportInput): ImportStatus & { done: boolean };
+  /**
+   * Imports the transcript a host hook named, after this turn (the Stop hook). Binds no
+   * session, so a hook running every turn adds no session rows; a repository without consent
+   * gets no database.
+   */
+  captureTurn(input: CaptureTurnInput): CaptureResult;
   /**
    * Appends one attributed record with provenance links and external references. A
    * `preference` is not stored: it becomes a question for the user (see `settlePreference`).
@@ -598,6 +609,8 @@ class LocalMemory implements Memory {
   private readonly busyTimeoutMs: number | undefined;
   private hostSessionId: string | undefined;
   private bound: Bound | undefined;
+  /** The workspace database opened before any session was bound (a hook's capture); bind adopts it. */
+  private unboundDb: Db | undefined;
   private closed = false;
   /** The newest lifecycle change this session has been told about (the correction watermark). */
   private seenLifecycle = 0;
@@ -716,6 +729,16 @@ class LocalMemory implements Memory {
       const parsed = parse(ContinueImportInput, input);
       const { db, location } = this.bind();
       return this.importer === null ? { ...unsupportedHostStatus(this.host), done: true } : this.importer.continue({ location, db }, parsed.maxMs);
+    });
+  }
+
+  captureTurn(input: CaptureTurnInput): CaptureResult {
+    return this.guard(() => {
+      const parsed = parse(CaptureTurnInput, input);
+      if (this.importer === null) return { state: "skipped", reason: "unsupported_host", transcriptId: null, events: 0, complete: true, problem: null };
+      if (this.closed) throw new MemchorError("storage_unavailable", "This Memory has been closed.");
+      const location = this.bound?.location ?? locateWorkspace(this.cwd, this.home);
+      return this.importer.capture(location, () => this.workspaceDb(location), parsed.transcriptPath, parsed.maxMs);
     });
   }
 
@@ -898,6 +921,7 @@ class LocalMemory implements Memory {
         problem: null,
         capabilities: { operations: OPERATIONS, freshnessValidation: true, transcriptImport: this.importer !== null },
         import: null,
+        captureFailures: recentCaptureFailures(this.home),
       };
       let db: Db | null = null;
       try {
@@ -993,6 +1017,8 @@ class LocalMemory implements Memory {
     this.importer?.close();
     this.bound?.db.close();
     this.bound = undefined;
+    this.unboundDb?.close();
+    this.unboundDb = undefined;
   }
 
   // ── internals ──
@@ -1012,8 +1038,8 @@ class LocalMemory implements Memory {
       return this.bound;
     }
     const location = locateWorkspace(this.cwd, this.home);
-    registerWorkspace(location);
-    const db = openWorkspaceDatabase(location.dbPath, this.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: this.busyTimeoutMs });
+    const db = this.workspaceDb(location);
+    this.unboundDb = undefined;
     try {
       const scope = bindScope(db, location, { host: this.host, hostSessionId: this.hostSessionId }, hints);
       // A new session starts from current memory; only later changes are news to it.
@@ -1024,6 +1050,16 @@ class LocalMemory implements Memory {
       db.close();
       throw error;
     }
+  }
+
+  /** The workspace database without binding a session (hooks); the bound one when there is one. */
+  private workspaceDb(location: WorkspaceLocation): Db {
+    if (this.bound !== undefined) return this.bound.db;
+    if (this.unboundDb === undefined) {
+      registerWorkspace(location);
+      this.unboundDb = openWorkspaceDatabase(location.dbPath, this.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: this.busyTimeoutMs });
+    }
+    return this.unboundDb;
   }
 
   private adoptHostSessionId(hostSessionId: string): void {

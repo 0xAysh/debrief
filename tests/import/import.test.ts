@@ -131,6 +131,7 @@ describe("first-use consent", () => {
       compatibility: [],
       root: "/must-not-be-read",
       discover: untouched,
+      fileAt: untouched,
       inspect: untouched,
       read: untouched,
     };

@@ -320,6 +320,13 @@ export const ContinueImportInput = z.strictObject({
 });
 export type ContinueImportInput = z.input<typeof ContinueImportInput>;
 
+/** One turn's capture from a host hook (not an agent tool): the transcript the host named. */
+export const CaptureTurnInput = z.strictObject({
+  transcriptPath: z.string().min(1).max(4_096),
+  maxMs: z.int().min(0).max(60_000).default(5_000),
+});
+export type CaptureTurnInput = z.input<typeof CaptureTurnInput>;
+
 /**
  * Every operation the memory module offers to agents, with its input schema. Adapters
  * build their tool lists from this map (the single source of operation names).

@@ -127,6 +127,12 @@ export interface TranscriptAdapter {
   /** The directory the adapter reads, whether or not it exists. */
   readonly root: string;
   discover(): TranscriptFile[];
+  /**
+   * The transcript at a path the host named (a hook's `transcript_path`), found without
+   * walking the whole root; null when the path is not one of this host's importable
+   * transcripts, so a hook payload can never point the importer elsewhere.
+   */
+  fileAt(path: string): TranscriptFile | null;
   inspect(file: TranscriptFile): TranscriptHead;
   /** Parses complete lines from `from` until about `maxBytes` are consumed. */
   read(file: TranscriptFile, from: number, maxBytes: number): TranscriptChunk;

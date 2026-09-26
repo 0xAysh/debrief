@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type {
   CompatibilityRow,
   ExclusionReason,
@@ -95,6 +95,7 @@ export function claudeCodeAdapter(options: { configDir?: string } = {}): Transcr
     compatibility: COMPATIBILITY,
     root,
     discover: () => discover(root),
+    fileAt: (path) => fileAt(root, path),
     inspect,
     read,
   };
@@ -107,16 +108,27 @@ function discover(root: string): TranscriptFile[] {
     const dir = join(root, project.name);
     for (const entry of listDir(dir)) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-      const path = join(dir, entry.name);
-      try {
-        const st = statSync(path);
-        files.push({ transcriptId: basename(entry.name, ".jsonl"), path, size: st.size, mtimeMs: Math.trunc(st.mtimeMs) });
-      } catch {
-        // Removed between listing and stat (retention sweep): not there, nothing to import.
-      }
+      const file = statTranscript(join(dir, entry.name));
+      if (file !== null) files.push(file);
     }
   }
   return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/** Only `<root>/<project>/<session>.jsonl` is a main-session transcript (subagents live deeper). */
+function fileAt(root: string, path: string): TranscriptFile | null {
+  const resolved = resolve(path);
+  if (!resolved.endsWith(".jsonl") || dirname(dirname(resolved)) !== resolve(root)) return null;
+  return statTranscript(resolved);
+}
+
+function statTranscript(path: string): TranscriptFile | null {
+  try {
+    const st = statSync(path);
+    return st.isFile() ? { transcriptId: basename(path, ".jsonl"), path, size: st.size, mtimeMs: Math.trunc(st.mtimeMs) } : null;
+  } catch {
+    return null; // removed between listing and stat (retention sweep): not there, nothing to import
+  }
 }
 
 function inspect(file: TranscriptFile): TranscriptHead {
