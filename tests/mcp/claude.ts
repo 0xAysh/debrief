@@ -150,10 +150,10 @@ export interface StubToolUse {
  * A localhost Messages API: while Memchor calls remain queued, each request that offers Memchor's
  * tools is answered with the next one as a `tool_use` (Claude Code names them
  * `mcp__memchor__<tool>`); once the queue is empty, and for any request without them, with a
- * plain assistant message that ends the turn.
+ * plain assistant message that ends the turn. `requests` keeps every Messages request body, in order.
  */
-export async function startStubMessages(script: { calls: StubToolUse[]; reply: string }): Promise<{ port: number; offeredTools: string[][] }> {
-  const state = { port: 0, offeredTools: [] as string[][] };
+export async function startStubMessages(script: { calls: StubToolUse[]; reply: string }): Promise<{ port: number; offeredTools: string[][]; requests: Record<string, unknown>[] }> {
+  const state = { port: 0, offeredTools: [] as string[][], requests: [] as Record<string, unknown>[] };
   const queue = [...script.calls];
   let n = 0;
   const server: Server = createServer((req, res) => {
@@ -166,6 +166,7 @@ export async function startStubMessages(script: { calls: StubToolUse[]; reply: s
         return;
       }
       const json = JSON.parse(body) as { model?: string; stream?: boolean; tools?: { name: string }[] };
+      state.requests.push(json);
       const tools = (json.tools ?? []).map((t) => t.name);
       state.offeredTools.push(tools);
       const next = queue[0] !== undefined && tools.includes(`mcp__memchor__${queue[0].tool}`) ? queue.shift() : undefined;
