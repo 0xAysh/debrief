@@ -23,8 +23,8 @@ export interface HookRun {
 const DIR = "hook-runs";
 
 /** Notes this run, replacing the previous one. Never throws: it runs on every hook, failing or not. */
-export function recordHookRun(home: string, run: Omit<HookRun, "at">): boolean {
-  if (!/^[a-z0-9-]+$/.test(run.host) || !/^[a-z0-9-]+$/.test(run.event)) return false;
+export function recordHookRun(home: string, run: Omit<HookRun, "at">): void {
+  if (!/^[a-z0-9-]+$/.test(run.host) || !/^[a-z0-9-]+$/.test(run.event)) return;
   try {
     const dir = join(home, DIR);
     mkdirSync(dir, { recursive: true });
@@ -33,9 +33,8 @@ export function recordHookRun(home: string, run: Omit<HookRun, "at">): boolean {
     const temp = `${path}.${process.pid}.tmp`;
     writeFileSync(temp, JSON.stringify({ at: new Date().toISOString(), ...run }));
     renameSync(temp, path);
-    return true;
   } catch {
-    return false;
+    // Unwritable home: the run goes unnoted, and the hook carries on.
   }
 }
 

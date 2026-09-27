@@ -65,10 +65,10 @@ export function runHook(run: HookRun): HookOutcome {
   let host = "unknown";
   let event = "unknown";
   // How the run ended, for `memchor status`: the code of the failure it recorded, if any.
-  let failed: string | null = null;
+  let failureCode: string | null = null;
   // Failures before the memory module can decide anything (arguments, payload, a bug) are recorded here.
   const fail = (code: string, message: string, stdout = ""): HookOutcome => {
-    failed = code;
+    failureCode = code;
     recordHookFailure(run.home, { host, event, cwd: run.cwd, code, message });
     return { stdout, stderr: `memchor hook ${event}: ${code}: ${message}\n` };
   };
@@ -93,7 +93,7 @@ export function runHook(run: HookRun): HookOutcome {
       const stop = payload(StopPayload);
       if (stop === null) return fail("invalid_input", "the hook payload is not a Stop payload with session_id and transcript_path");
       const ended = withMemory(run, host, (memory) => memory.endTurn({ transcriptPath: stop.transcript_path, stopHookActive: stop.stop_hook_active }));
-      failed = ended.failure?.code ?? null;
+      failureCode = ended.failure?.code ?? ended.nudgeFailure?.code ?? null;
       return { stdout: hooks.stop(ended), stderr: ended.failure === null ? "" : `memchor hook stop: ${ended.failure.code}: ${ended.failure.message}\n` };
     }
     if (event === "session-start") {
@@ -101,6 +101,7 @@ export function runHook(run: HookRun): HookOutcome {
       const start = payload(SessionStartPayload);
       if (start === null) return fail("invalid_input", "the hook payload is not a SessionStart payload with session_id");
       const rendered = withMemory(run, host, (memory) => memory.sessionStart({ hostSessionId: start.session_id }));
+      failureCode = rendered?.failure ?? null;
       return rendered === null ? QUIET : { stdout: hooks.sessionStart(rendered), stderr: "" };
     }
     if (event === "subagent-start") {
@@ -108,6 +109,7 @@ export function runHook(run: HookRun): HookOutcome {
       const start = payload(SubagentStartPayload);
       if (start === null) return fail("invalid_input", "the hook payload is not a SubagentStart payload with session_id");
       const rendered = withMemory(run, host, (memory) => memory.subagentStart({ hostSessionId: start.session_id }));
+      failureCode = rendered?.failure ?? null;
       return rendered === null ? QUIET : { stdout: hooks.subagentStart(rendered), stderr: "" };
     }
     if (event === "user-prompt-submit") {
@@ -132,7 +134,7 @@ export function runHook(run: HookRun): HookOutcome {
     const message = error instanceof Error ? error.message : String(error);
     return fail(code, message, unreadable === null ? "" : unreadable(code));
   } finally {
-    recordHookRun(run.home, { host, event, cwd: run.cwd, outcome: failed === null ? "ok" : "failed", code: failed });
+    recordHookRun(run.home, { host, event, cwd: run.cwd, outcome: failureCode === null ? "ok" : "failed", code: failureCode });
   }
 }
 

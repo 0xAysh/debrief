@@ -102,6 +102,7 @@ import {
   SubagentStartInput,
   effectiveBudget,
   type Freshness,
+  type ImportChoice,
   LIMITS,
   type LinkRelation,
   ManageInput,
@@ -550,6 +551,12 @@ export interface Memory {
    */
   continueImport(input?: ContinueImportInput): ImportStatus & { done: boolean };
   /**
+   * Records the user's transcript choice when given (as bootstrap's `importChoice`), then imports
+   * approved history to completion: `continueImport` until it is done or reports a problem.
+   * `onStep` sees the status after bootstrap and after each step.
+   */
+  importHistory(input?: { importChoice?: ImportChoice; onStep?: (status: ImportStatus) => void }): ImportStatus;
+  /**
    * Imports the transcript a host hook named, after this turn (the Stop hook). Binds no
    * session, so a hook running every turn adds no session rows; a repository without consent
    * gets no database.
@@ -802,6 +809,18 @@ class LocalMemory implements Memory {
     });
   }
 
+  importHistory(input: { importChoice?: ImportChoice; onStep?: (status: ImportStatus) => void } = {}): ImportStatus {
+    let status: ImportStatus = this.bootstrap(input.importChoice === undefined ? {} : { importChoice: input.importChoice }).import;
+    input.onStep?.(status);
+    while (status.state === "in_progress" && status.problem === null) {
+      const step = this.continueImport({ maxMs: 1_000 });
+      input.onStep?.(step);
+      status = step;
+      if (step.done) break;
+    }
+    return status;
+  }
+
   captureTurn(input: CaptureTurnInput): TurnCapture {
     return this.capture(this.guard(() => parse(CaptureTurnInput, input)));
   }
@@ -879,7 +898,7 @@ class LocalMemory implements Memory {
       capture.failure !== null ? userNotice(`⚠ turn not saved (${capture.failure.code}): memchor diag status`) : capture.events > 0 ? userNotice(`saved turn (${capture.events} events)`) : null;
     const db = this.bound?.db ?? this.unboundDb;
     const failure = capture.failure;
-    if (parsed.stopHookActive || capture.workstreamId === null || db === undefined) return { nudge: null, notice, failure };
+    if (parsed.stopHookActive || capture.workstreamId === null || db === undefined) return { nudge: null, notice, failure, nudgeFailure: null };
     const workstreamId = capture.workstreamId;
     try {
       const nudge = this.guard(() => {
@@ -887,12 +906,12 @@ class LocalMemory implements Memory {
         const work = workSince(db, workstreamId, head.row?.created_at ?? null, before, (host, tool) => hostDescriptor(host)?.editTools.includes(tool) ?? false);
         return checkpointNudge(work, { revision: headRevision(db, workstreamId), covers: head.row !== null });
       });
-      return { nudge, notice, failure };
+      return { nudge, notice, failure, nudgeFailure: null };
     } catch (error) {
       // The turn is saved; a nudge that cannot be worked out is skipped, and the failure kept.
       if (!(error instanceof MemchorError)) throw error;
       recordHookFailure(this.home, { host: this.host, event: "stop", cwd: this.cwd, code: error.code, message: error.message });
-      return { nudge: null, notice, failure };
+      return { nudge: null, notice, failure, nudgeFailure: { code: error.code, message: error.message } };
     }
   }
 

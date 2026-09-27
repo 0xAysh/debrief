@@ -737,18 +737,32 @@ function unsupportedGap(transcriptId: string, hostName: string, hostVersion: str
   };
 }
 
-function consentQuestion(host: string, counts: NonNullable<ImportStatus["transcripts"]>): string {
+/**
+ * What the transcript question tells a person, whoever puts it: what was found, what importing
+ * means, and what never leaves the machine. The agent's question (`consentQuestion`) and
+ * `memchor import` both say exactly this.
+ */
+export function consentFacts(host: string, counts: NonNullable<ImportStatus["transcripts"]>): { found: string; ask: string; privacy: string } {
   const unplaced = counts.unassigned > 0 ? `, ${counts.unassigned} not in any Git repository Memchor can find` : "";
   const unreadable = counts.unsupportedVersion > 0 ? ` ${counts.unsupportedVersion} written by a ${host} version Memchor cannot read yet will be skipped until it can.` : "";
+  return {
+    found: `Memchor found ${counts.found} local ${host} sessions (${counts.currentProject} in this project, ${counts.otherProjects} in other projects${unplaced}).${unreadable}`,
+    ask: "Import observable transcript content into local Memchor storage?",
+    privacy: "Memchor does not send this data externally. Hidden reasoning, binaries, secrets it recognises, full file contents and oversized output are left out.",
+  };
+}
+
+function consentQuestion(host: string, counts: NonNullable<ImportStatus["transcripts"]>): string {
+  const facts = consentFacts(host, counts);
   return [
-    `Memchor found ${counts.found} local ${host} sessions (${counts.currentProject} in this project, ${counts.otherProjects} in other projects${unplaced}).${unreadable}`,
+    facts.found,
     "",
-    "Import observable transcript content into local Memchor storage?",
+    facts.ask,
     "1. All projects",
     "2. Current project only",
     "3. Do not import",
     "",
-    "Memchor does not send this data externally. Hidden reasoning, binaries, secrets it recognises, full file contents and oversized output are left out.",
+    facts.privacy,
     'Ask the user, then call memory_bootstrap with importChoice "all", "current_project" or "none".',
   ].join("\n");
 }

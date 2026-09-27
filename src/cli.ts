@@ -6,7 +6,8 @@ import { parseArgs } from "node:util";
 import { resolveHome } from "./bootstrap/workspace-resolution.js";
 import { MemchorError } from "./errors.js";
 import { HOOK_HOSTS, HOST_IDS, type HostId, HOSTS, hostDescriptor, type PluginFacts, TRANSCRIPT_HOSTS } from "./hosts.js";
-import { type ImportStatus, openMemory, type Memory } from "./memory.js";
+import { consentFacts } from "./import/reconcile.js";
+import { openMemory, type Memory } from "./memory.js";
 import { IMPORT_CHOICES, type ImportChoice, LIMITS } from "./schemas.js";
 import { assertEmbeddedRuntime } from "./storage/database.js";
 import { runHook } from "./transports/hook.js";
@@ -115,14 +116,13 @@ function diag(memory: Memory, subcommand: string, values: { query?: string | und
     case "import": {
       const started = performance.now();
       let peakRss = process.memoryUsage().rss;
-      let status: ImportStatus = memory.bootstrap().import;
-      const afterBootstrapMs = Math.round(performance.now() - started);
-      for (let done = status.state !== "in_progress"; !done; ) {
-        const step = memory.continueImport({ maxMs: 1_000 });
-        peakRss = Math.max(peakRss, process.memoryUsage().rss);
-        status = step;
-        done = step.done || step.problem !== null;
-      }
+      let afterBootstrapMs: number | null = null;
+      const status = memory.importHistory({
+        onStep: () => {
+          afterBootstrapMs ??= Math.round(performance.now() - started);
+          peakRss = Math.max(peakRss, process.memoryUsage().rss);
+        },
+      });
       print({ elapsedMs: Math.round(performance.now() - started), afterBootstrapMs, peakRssMB: Math.round(peakRss / 1e6), import: status });
       return status.problem === null ? 0 : 1;
     }
@@ -163,37 +163,30 @@ function diag(memory: Memory, subcommand: string, values: { query?: string | und
 }
 
 /** The hosts `memchor status` and `memchor import` act for: those Memchor installs into as a plugin. */
-function installedHosts(): { host: HostId; facts: PluginFacts; displayName: string }[] {
+function installedHosts(): { host: HostId; facts: PluginFacts }[] {
   return HOST_IDS.flatMap((host) => {
     const facts = HOSTS[host].plugin;
-    const transcripts = HOSTS[host].transcripts;
-    return facts === null || transcripts === null ? [] : [{ host, facts, displayName: transcripts({}).displayName }];
+    return facts === null ? [] : [{ host, facts }];
   });
 }
 
 /**
  * Each host's history imported to completion, under the user's choice (`choice` records it
- * first). Without a choice it puts the question and imports nothing; exit 1 then.
+ * first). Without a choice it puts the question and imports nothing; exit 1 then, or on a problem.
  */
 function importHistory(choice: ImportChoice | undefined): number {
-  let unanswered = false;
-  for (const { host, displayName } of installedHosts()) {
+  let unsettled = false;
+  for (const { host, facts } of installedHosts()) {
     const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined) });
     try {
-      let status: ImportStatus = memory.bootstrap(choice === undefined ? {} : { importChoice: choice }).import;
-      while (status.state === "in_progress" && status.problem === null) {
-        const step = memory.continueImport({ maxMs: 1_000 });
-        status = step;
-        if (step.done) break;
-      }
-      const lines = [`memchor import · ${displayName}`];
+      const status = memory.importHistory(choice === undefined ? {} : { importChoice: choice });
+      const lines = [`memchor import · ${facts.hostName}`];
       const row = (label: string, value: string): void => {
         lines.push(`  ${label.padEnd(13)}${value}`);
       };
       if (status.state === "consent_required") {
-        unanswered = true;
-        // The question as the agent would put it, without the lines addressed to the agent.
-        lines.push(...(status.question ?? "").split("\n").filter((line) => !/^\d\. |^Ask the user/.test(line)), `Answer with memchor import --set ${IMPORT_CHOICES.join("|")}`);
+        const question = consentFacts(facts.hostName, status.transcripts ?? { found: 0, currentProject: 0, otherProjects: 0, unassigned: 0, unsupportedVersion: 0 });
+        lines.push(question.found, "", question.ask, "", question.privacy, `Answer with memchor import --set ${IMPORT_CHOICES.join("|")}`);
       } else if (status.state === "declined") {
         row("choice", "none: no transcripts are imported");
       } else {
@@ -202,24 +195,24 @@ function importHistory(choice: ImportChoice | undefined): number {
         if (own !== null) row("this project", `${own.complete} of ${own.transcripts} transcripts imported, ${own.counters.records} records`);
         if (status.backfill !== null && status.backfill.projects > 0) row("other", `${status.backfill.projects} projects, ${status.backfill.transcripts} transcripts${status.backfill.reconciled ? "" : " (still importing)"}`);
         if (status.gaps.length > 0) row("gaps", status.gaps.map((g) => g.message).join(" · "));
-        if (status.problem !== null) row("problem", `${status.problem.code}: ${status.problem.message}`);
       }
+      if (status.problem !== null) row("problem", `${status.problem.code}: ${status.problem.message}`);
       process.stdout.write(lines.join("\n") + "\n");
-      if (status.problem !== null) unanswered = true;
+      unsettled ||= status.state === "consent_required" || status.problem !== null;
     } finally {
       memory.close();
     }
   }
-  return unanswered ? 1 : 0;
+  return unsettled ? 1 : 0;
 }
 
 /** Each host Memchor installs into as a plugin, checked from this directory; exit 1 when any has a problem. */
 async function status(): Promise<number> {
   let problems = 0;
-  for (const { host, facts, displayName } of installedHosts()) {
+  for (const { host, facts } of installedHosts()) {
     const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined) });
     try {
-      const report = await hostStatus({ displayName, host, facts, paths: {}, status: memory.status(), cwd: process.cwd(), env: process.env });
+      const report = await hostStatus(host, facts, memory.status(), { cwd: process.cwd(), env: process.env });
       process.stdout.write(report.text);
       problems += report.problems;
     } finally {

@@ -1,11 +1,12 @@
-import { checkPlugin, type PluginCheck } from "../host-health.js";
-import type { HostPaths, PluginFacts } from "../hosts.js";
+import { sep } from "node:path";
+import { checkPlugin, type Launch, type PluginCheck } from "../host-health.js";
+import type { HostId, PluginFacts } from "../hosts.js";
 import type { StatusResult } from "../memory.js";
 
 /**
  * `memchor status`: one host's answer to "is it working?", for a person at a terminal. A shallow
- * transport: the plugin check (src/host-health.ts) and `Memory.status()` supply every fact; this
- * only lays them out and counts the problems. ✔ works · ✘ a problem · · worth knowing.
+ * transport: the plugin check (src/host-health.ts), the host table and `Memory.status()` supply
+ * every fact; this only lays them out and counts the problems. ✔ works · ✘ a problem · · worth knowing.
  */
 
 export interface StatusReport {
@@ -13,14 +14,12 @@ export interface StatusReport {
   problems: number;
 }
 
-export async function hostStatus(input: { displayName: string; host: string; facts: PluginFacts; paths: HostPaths; status: StatusResult; cwd: string; env: NodeJS.ProcessEnv; now?: number }): Promise<StatusReport> {
-  const plugin = await checkPlugin(input.facts, () => input.facts.find(input.paths), { cwd: input.cwd, env: input.env });
-  return renderStatus({ ...input, plugin, now: input.now ?? Date.now() });
+export async function hostStatus(host: HostId, facts: PluginFacts, status: StatusResult, launch: Launch): Promise<StatusReport> {
+  return renderStatus(host, facts, status, await checkPlugin(facts, launch), Date.now());
 }
 
-export function renderStatus(input: { displayName: string; host: string; facts: PluginFacts; status: StatusResult; plugin: PluginCheck; now: number }): StatusReport {
-  const { facts, status, plugin, now } = input;
-  const lines: string[] = [`memchor status · ${input.displayName}`];
+function renderStatus(host: HostId, facts: PluginFacts, status: StatusResult, plugin: PluginCheck, now: number): StatusReport {
+  const lines: string[] = [`memchor status · ${facts.hostName}`];
   let problems = 0;
   const row = (label: string, value: string, mark: "✔" | "✘" | "·" | null = null): void => {
     if (mark === "✘") problems++;
@@ -34,31 +33,40 @@ export function renderStatus(input: { displayName: string; host: string; facts: 
     if (seconds < 172_800) return `${Math.round(seconds / 3_600)}h ago`;
     return `${Math.round(seconds / 86_400)}d ago`;
   };
+  // Hooks run in every repository; a run elsewhere proves the hook fires, and says where.
+  const worktree = status.scope?.worktree ?? null;
+  const where = (cwd: string): string => (worktree !== null && (cwd === worktree || cwd.startsWith(worktree + sep)) ? "" : ` (in ${cwd})`);
 
   if (plugin.state === "not_installed") {
     row("plugin", `not installed: ${facts.install}`, "✘");
   } else if (plugin.state === "unreadable") {
-    row("plugin", `could not read ${input.displayName}'s plugin records: ${plugin.message}`, "✘");
+    row("plugin", `could not read ${facts.hostName}'s plugin records: ${plugin.message}`, "✘");
   } else {
     const { install } = plugin;
     const name = `${facts.id}${install.version === null ? "" : ` ${install.version}`}`;
-    // Only a user-scope install is enabled in the settings Memchor reads; others are enabled per project.
-    if (install.scope !== "user") row("plugin", `${name}, installed in ${install.scope} scope`, "✔");
+    if (install.enabled === null) row("plugin", `${name}, installed in ${install.scope} scope`, "✔");
     else if (install.enabled) row("plugin", `${name}, enabled`, "✔");
-    else row("plugin", `${name}, installed but disabled: in ${input.displayName} run /plugin enable ${facts.id}`, "✘");
+    else row("plugin", `${name}, installed but disabled: ${facts.enable}`, "✘");
     const server = plugin.server;
     if (server.problem === null) row("MCP server", `answering with ${server.tools} tools (${server.command})`, "✔");
     else row("MCP server", `could not start ${server.command}: ${server.problem}`, "✘");
 
-    const label = (i: number): string => (i === 0 ? "hooks" : "");
     facts.hooks.forEach((hook, i) => {
+      const label = i === 0 ? "hooks" : "";
       const event = hook.event.padEnd(20);
-      const run = status.hookRuns.find((r) => r.host === input.host && r.event === hook.event);
-      if (plugin.hooks.find((h) => h.event === hook.event)?.registered !== true) row(label(i), `${event} not registered by the installed plugin: reinstall it`, "✘");
-      else if (run?.outcome === "failed") row(label(i), `${event} failed (${run.code ?? "unknown"}), ${ago(run.at)}: memchor diag status lists the failures`, "✘");
-      else if (run !== undefined) row(label(i), `${event} ok, ${ago(run.at)}`, "✔");
-      else if (hook.runsOnlyWhen !== null) row(label(i), `${event} never ran (it runs when ${hook.runsOnlyWhen})`, "·");
-      else row(label(i), `${event} never ran: start a new ${input.displayName} session; if it still has not run, the hook is not firing`, "✘");
+      const run = status.hookRuns.find((r) => r.host === host && r.event === hook.event);
+      if (plugin.hooks.find((h) => h.event === hook.event)?.registered !== true) {
+        row(label, `${event} not registered by the installed plugin: reinstall it`, "✘");
+      } else if (run?.outcome === "failed") {
+        const failure = status.hookFailures.findLast((f) => f.host === host && f.event === hook.event);
+        row(label, `${event} failed, ${ago(run.at)}${where(run.cwd)}: ${run.code ?? "unknown"}${failure === undefined ? "" : `: ${failure.message}`}`, "✘");
+      } else if (run !== undefined) {
+        row(label, `${event} ok, ${ago(run.at)}${where(run.cwd)}`, "✔");
+      } else if (hook.runsOnlyWhen !== null) {
+        row(label, `${event} never ran (it runs when ${hook.runsOnlyWhen})`, "·");
+      } else {
+        row(label, `${event} never ran: start a new ${facts.hostName} session; if it still has not run, the hook is not firing`, "✘");
+      }
     });
   }
 
@@ -70,7 +78,7 @@ export function renderStatus(input: { displayName: string; host: string; facts: 
   const unsupported = imported?.transcripts?.unsupportedVersion ?? 0;
   if (unsupported > 0) {
     const versions = (imported?.compatibility ?? []).map((c) => `${c.from} up to ${c.below}`).join(", ");
-    row("transcripts", `${unsupported} from a ${input.displayName} version Memchor does not import (it imports ${versions})`, "✘");
+    row("transcripts", `${unsupported} from a ${facts.hostName} version Memchor does not import (it imports ${versions})`, "✘");
   }
   if (imported === null) row("import", `unknown: ${status.problem?.message ?? "scope unresolved"}`, "✘");
   else if (imported.problem !== null) row("import", `${imported.problem.code}: ${imported.problem.message}`, "✘");

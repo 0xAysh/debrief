@@ -63,16 +63,20 @@ export interface HostDescriptor {
 }
 
 export interface PluginFacts {
+  /** The host's name for people, e.g. "Claude Code". */
+  hostName: string;
   /** The plugin's id in the host (`<plugin>@<marketplace>`). */
   id: string;
   /** What the user does to install it. */
   install: string;
+  /** What the user does to enable it once installed. */
+  enable: string;
   /** The MCP server's name in the plugin. */
   server: string;
   /** How the user gets the `memchor` command the plugin runs. */
   runtimeInstall: string;
   /** The host's record of the installed plugin; null when it is not installed. Throws when that record cannot be read. */
-  find(paths: HostPaths): PluginInstall | null;
+  find(): PluginInstall | null;
   /**
    * Memchor's hooks as the plugin registers them, in the order they fire: the host's event name,
    * the `memchor hook` it runs, and when it runs, where that is not every session (then never
@@ -107,6 +111,9 @@ const CLAUDE_CODE_HOOKS: HookOutput = {
   allowTool: (notice) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" }, ...(notice === null ? {} : { systemMessage: notice }) }),
 };
 
+/** plugin/ in this repository, listed by its marketplace (.claude-plugin/marketplace.json). */
+const CLAUDE_CODE_PLUGIN = "memchor@memchor";
+
 export const HOSTS = {
   "claude-code": {
     transcripts: (paths) => claudeCodeAdapter(paths.claudeConfigDir === undefined ? {} : { configDir: paths.claudeConfigDir }),
@@ -122,13 +129,15 @@ export const HOSTS = {
     memchorTool: /^mcp__(?:plugin_memchor_)?memchor__(memory_[a-z_]+)$/,
     // A background sub-agent's report arrives as a UserPromptSubmit prompt (tests/hooks/claude-subagents.test.ts).
     hostPrompt: /^<task-notification>\n/,
-    // plugin/ in this repository, listed by its marketplace (.claude-plugin/marketplace.json); tests/hooks/claude-plugin.test.ts.
+    // Pinned by tests/hooks/claude-plugin.test.ts.
     plugin: {
-      id: "memchor@memchor",
-      install: "in Claude Code run /plugin marketplace add 0xAysh/memchor, then /plugin install memchor@memchor",
+      hostName: "Claude Code",
+      id: CLAUDE_CODE_PLUGIN,
+      install: `in Claude Code run /plugin marketplace add 0xAysh/memchor, then /plugin install ${CLAUDE_CODE_PLUGIN}`,
+      enable: `in Claude Code run /plugin enable ${CLAUDE_CODE_PLUGIN}`,
       server: "memchor",
       runtimeInstall: "npm install -g memchor",
-      find: (paths) => claudeCodePluginInstall(paths.claudeConfigDir ?? claudeConfigDir(), "memchor@memchor"),
+      find: () => claudeCodePluginInstall(claudeConfigDir(), CLAUDE_CODE_PLUGIN),
       hooks: [
         { hostEvent: "SessionStart", event: "session-start", runsOnlyWhen: null },
         { hostEvent: "SubagentStart", event: "subagent-start", runsOnlyWhen: "a sub-agent starts" },

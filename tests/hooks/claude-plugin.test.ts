@@ -74,8 +74,8 @@ describe.skipIf(SKIP !== null)(`the Memchor plugin in the real Claude Code ${CLA
 
     const repo = initRepo({ branch: "fix/double-charge" });
     const memchorHome = tempDir();
-    const memchorStatus = () => {
-      const run = spawnSync(join(bin, "memchor"), ["status"], { cwd: repo, encoding: "utf8", timeout: 30_000, env: claudeEnv(sandbox, { PATH: pathWith(bin), MEMCHOR_HOME: memchorHome }) });
+    const memchorStatus = (cwd = repo) => {
+      const run = spawnSync(join(bin, "memchor"), ["status"], { cwd, encoding: "utf8", timeout: 30_000, env: claudeEnv(sandbox, { PATH: pathWith(bin), MEMCHOR_HOME: memchorHome }) });
       return { code: run.status, stdout: run.stdout, stderr: run.stderr };
     };
 
@@ -156,9 +156,23 @@ describe.skipIf(SKIP !== null)(`the Memchor plugin in the real Claude Code ${CLA
     expect(healthy.stdout).toMatch(/^ {2}preferences {4}no questions waiting$/m);
     expect(healthy.stdout).toMatch(/^✔ healthy$/m);
 
-    // An installed copy that no longer registers a hook (edited, or from an older plugin) is a problem.
+    // From another repository: the hooks fire, in the repository named.
+    const elsewhere = memchorStatus(initRepo());
+    expect(elsewhere.stdout).toMatch(new RegExp(`^ {17}✔ stop +ok, (?:just now|\\d+s ago) \\(in ${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)$`, "m"));
+
+    // An installed copy whose server command fails at startup: the handshake says why.
     const installs = JSON.parse(readFileSync(join(sandbox.configDir, "plugins", "installed_plugins.json"), "utf8")) as { plugins: Record<string, { installPath: string }[]> };
-    const hooksFile = join(installs.plugins["memchor@memchor"]?.[0]?.installPath ?? "", "hooks", "hooks.json");
+    const installed = installs.plugins["memchor@memchor"]?.[0]?.installPath ?? "";
+    const mcpFile = join(installed, ".mcp.json");
+    const mcp = readFileSync(mcpFile, "utf8");
+    writeFileSync(mcpFile, mcp.replace('"claude-code"', '"no-such-host"'));
+    const crashing = memchorStatus();
+    expect(crashing.code).toBe(1);
+    expect(crashing.stdout).toMatch(/^ {2}MCP server {5}✘ could not start memchor mcp --host no-such-host: .*memchor: unknown --host no-such-host/m);
+    writeFileSync(mcpFile, mcp);
+
+    // An installed copy that no longer registers a hook (edited, or from an older plugin) is a problem.
+    const hooksFile = join(installed, "hooks", "hooks.json");
     const registered = JSON.parse(readFileSync(hooksFile, "utf8")) as { hooks: Record<string, unknown> };
     delete registered.hooks["Stop"];
     writeFileSync(hooksFile, JSON.stringify(registered));

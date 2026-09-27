@@ -9,9 +9,10 @@ import { join } from "node:path";
 
 export interface PluginInstall {
   version: string | null;
-  /** user, project or local: where the host installed it. */
+  /** Where the host installed it (Claude Code: user, project or local), as the host names it. */
   scope: string;
-  enabled: boolean;
+  /** Null where the host keeps that elsewhere than the records read here (a Claude Code project or local install). */
+  enabled: boolean | null;
   /** The installed copy of the plugin (its `.mcp.json` and `hooks/hooks.json`). */
   root: string;
 }
@@ -34,8 +35,9 @@ export function claudeCodePluginInstall(configDir: string, id: string): PluginIn
   const entry = Array.isArray(installs) ? (installs as { scope?: unknown; installPath?: unknown; version?: unknown }[]).find((i) => typeof i.installPath === "string") : undefined;
   if (entry === undefined) return null;
   const scope = typeof entry.scope === "string" ? entry.scope : "user";
-  const settings = readJson(join(configDir, "settings.json")) as { enabledPlugins?: Record<string, unknown> } | null;
-  return { version: typeof entry.version === "string" ? entry.version : null, scope, enabled: settings?.enabledPlugins?.[id] === true, root: entry.installPath as string };
+  // Only a user-scope install is enabled in the config directory's settings; the others, in a project's.
+  const settings = scope === "user" ? (readJson(join(configDir, "settings.json")) as { enabledPlugins?: Record<string, unknown> } | null) : null;
+  return { version: typeof entry.version === "string" ? entry.version : null, scope, enabled: scope === "user" ? settings?.enabledPlugins?.[id] === true : null, root: entry.installPath as string };
 }
 
 /** A JSON file's content; null when it does not exist; throws when it cannot be read or parsed. */

@@ -341,6 +341,22 @@ describe("each hook's last run (for memchor status)", () => {
     expect(stopHook(env, payload(env, session.path, session.sessionId)).code).toBe(0);
     expect(open(env).status().hookRuns.map((r) => [r.event, r.outcome, r.code])).toEqual([["stop", "failed", expect.stringMatching(/^storage_/)]]);
   });
+
+  test("a start hook that could not load memory is a failed run, though it still told the agent so", () => {
+    const env = approvedRepo();
+    const dbPath = open(env).status().storage.dbPath ?? "";
+    expect(hook(env, ["session-start"], { hook_event_name: "SessionStart", source: "startup" }).code).toBe(0);
+    for (const suffix of ["-wal", "-shm"]) rmSync(dbPath + suffix, { force: true });
+    writeFileSync(dbPath, "this is not a SQLite database, and it is long enough to have a header".repeat(20));
+    const started = hook(env, ["session-start"], { hook_event_name: "SessionStart", source: "startup" });
+    expect(started.stdout).toContain("Memory could not be loaded");
+    const sub = hook(env, ["subagent-start"], { hook_event_name: "SubagentStart", agent_id: "a0123456789abcdef", agent_type: "general-purpose" });
+    expect(sub.stdout).toContain("Memory could not be loaded");
+    expect(open(env).status().hookRuns.map((r) => [r.event, r.outcome, r.code])).toEqual([
+      ["session-start", "failed", expect.stringMatching(/^storage_/)],
+      ["subagent-start", "failed", expect.stringMatching(/^storage_/)],
+    ]);
+  });
 });
 
 describe("memchor status (Claude Code)", () => {
