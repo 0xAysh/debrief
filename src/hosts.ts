@@ -1,6 +1,7 @@
 import { claudeCodeAdapter } from "./import/adapters/claude.js";
 import { codexAdapter } from "./import/adapters/codex.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
+import type { SessionStart } from "./retrieval/session-context.js";
 
 /**
  * Everything Memchor knows about each agent host, in one place: the memory module picks the
@@ -27,12 +28,29 @@ export interface HostDescriptor {
    * worktree).
    */
   sessionMetaKey: string | null;
+  /**
+   * The host's hooks, or null where Memchor has no driven evidence for them yet (then no
+   * `memchor hook` runs for it and `memory_bootstrap` is the path). Output shapes live here,
+   * per host, because each host validates them differently (Codex rejects unknown keys).
+   */
+  hooks: HookOutput | null;
 }
+
+export interface HookOutput {
+  /** Stdout for a session-start hook: context for the model, and the one-line notice for the user. */
+  sessionStart(start: SessionStart): string;
+}
+
+/** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts). */
+const CLAUDE_CODE_HOOKS: HookOutput = {
+  sessionStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: start.context }, systemMessage: start.notice }),
+};
 
 export const HOSTS = {
   "claude-code": {
     transcripts: (paths) => claudeCodeAdapter(paths.claudeConfigDir === undefined ? {} : { configDir: paths.claudeConfigDir }),
     sessionMetaKey: null,
+    hooks: CLAUDE_CODE_HOOKS,
   },
   codex: {
     transcripts: (paths) => codexAdapter(paths.codexHome === undefined ? {} : { codexHome: paths.codexHome }),
@@ -41,14 +59,18 @@ export const HOSTS = {
     // live session and the thread's imported rollout the same session for workstream
     // resolution (step 1). `initialize` carries no such id.
     sessionMetaKey: "threadId",
+    hooks: null,
   },
-  pi: { transcripts: null, sessionMetaKey: null },
-  unknown: { transcripts: null, sessionMetaKey: null },
+  pi: { transcripts: null, sessionMetaKey: null, hooks: null },
+  unknown: { transcripts: null, sessionMetaKey: null, hooks: null },
 } as const satisfies Record<string, HostDescriptor>;
 
 export type HostId = keyof typeof HOSTS;
 
 export const HOST_IDS = Object.keys(HOSTS) as HostId[];
+
+/** Hosts whose hooks Memchor has driven evidence for (`memchor hook … --host`). */
+export const HOOK_HOSTS = HOST_IDS.filter((id) => HOSTS[id].hooks !== null);
 
 /** Hosts whose transcripts Memchor can import. */
 export const TRANSCRIPT_HOSTS = HOST_IDS.filter((id) => HOSTS[id].transcripts !== null);

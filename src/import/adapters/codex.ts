@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { asObject, type JsonObject, type Line, listDir, parseAny, parseObject, readLines } from "../jsonl.js";
 import type {
   CompatibilityRow,
@@ -151,20 +151,8 @@ export function codexAdapter(options: { codexHome?: string } = {}): TranscriptAd
   const discover = (): TranscriptFile[] => {
     const byId = new Map<string, TranscriptFile>();
     const consider = (dir: string, name: string): void => {
-      const match = ROLLOUT_NAME.exec(name);
-      if (match === null) return;
-      const path = join(dir, name);
-      let file: TranscriptFile;
-      try {
-        const st = statSync(path);
-        if (!st.isFile()) return;
-        // A reverted paginated thread keeps its thread id with a rollout suffix; it is its own file.
-        file = { transcriptId: `${match[1] ?? ""}${match[2] ?? ""}`.toLowerCase(), path, size: st.size, mtimeMs: Math.trunc(st.mtimeMs) };
-      } catch {
-        return; // removed or archived between listing and stat
-      }
-      // A subagent's "user" is its parent agent, and the parent already holds its result (like Claude's subagents).
-      if (headOf(path)?.subagent === true) return;
+      const file = rolloutAt(join(dir, name));
+      if (file === null) return;
       const seen = byId.get(file.transcriptId);
       // Archiving is a rename, so one id in both places is a transient copy: keep the fuller one.
       if (seen === undefined || file.size > seen.size || (file.size === seen.size && file.mtimeMs > seen.mtimeMs)) byId.set(file.transcriptId, file);
@@ -178,6 +166,31 @@ export function codexAdapter(options: { codexHome?: string } = {}): TranscriptAd
     walk(join(root, "sessions"), 3);
     walk(join(root, "archived_sessions"), 0);
     return [...byId.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  };
+
+  /** A main-thread rollout file, or null (another name, gone, or a subagent's thread). */
+  const rolloutAt = (path: string): TranscriptFile | null => {
+    const match = ROLLOUT_NAME.exec(basename(path));
+    if (match === null) return null;
+    let file: TranscriptFile;
+    try {
+      const st = statSync(path);
+      if (!st.isFile()) return null;
+      // A reverted paginated thread keeps its thread id with a rollout suffix; it is its own file.
+      file = { transcriptId: `${match[1] ?? ""}${match[2] ?? ""}`.toLowerCase(), path, size: st.size, mtimeMs: Math.trunc(st.mtimeMs) };
+    } catch {
+      return null; // removed or archived between listing and stat
+    }
+    // A subagent's "user" is its parent agent, and the parent already holds its result (like Claude's subagents).
+    return headOf(path)?.subagent === true ? null : file;
+  };
+
+  /** Rollouts live in `sessions/YYYY/MM/DD/` or directly in `archived_sessions/`. */
+  const fileAt = (path: string): TranscriptFile | null => {
+    const resolved = resolve(path);
+    const within = relative(resolve(root), resolved).split(sep);
+    const placed = (within.length === 5 && within[0] === "sessions") || (within.length === 2 && within[0] === "archived_sessions");
+    return placed ? rolloutAt(resolved) : null;
   };
 
   const inspect = (file: TranscriptFile): TranscriptHead => {
@@ -238,7 +251,7 @@ export function codexAdapter(options: { codexHome?: string } = {}): TranscriptAd
     return chunk;
   };
 
-  return { host: "codex", displayName: "Codex", compatibility: COMPATIBILITY, root, discover, inspect, read };
+  return { host: "codex", displayName: "Codex", compatibility: COMPATIBILITY, root, discover, fileAt, inspect, read };
 }
 
 function isSupported(version: string): boolean {

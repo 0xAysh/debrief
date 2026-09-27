@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
 import type { RecordResult, StatusResult } from "../../src/memory.js";
 import { initRepo, tempDir } from "../helpers.js";
@@ -35,25 +35,21 @@ describe("MCP protocol surface", () => {
     const instructions = server.client.getInstructions() ?? "";
     // Claude Code truncates server instructions beyond 2048 characters, dropping whatever comes last.
     expect(instructions.length).toBeLessThanOrEqual(2048);
-    for (const rule of [
-      /memory_bootstrap first/,
-      /scope\.ambiguity/,
-      /import\.question/,
-      /historical observations/i,
-      /stale.*unknown.*read the current file/is,
-      /independentRoots/,
-      /attribution/,
-      /memory_manage/,
-      /Preferences are defaults; the current request wins/,
-      /lasting language or a repeated correction/,
-      /never re-record/i,
-      /memory_checkpoint.*expectedRevision/s,
-      /checkpoint_conflict.*never overwrite/is,
-      /honest miss/i,
-    ]) {
-      expect(instructions).toMatch(rule);
-    }
+    for (const rule of RULES) expect(instructions).toMatch(rule);
     await server.close();
+  });
+
+  test("session-start hook context delivers the same rules", () => {
+    const repo = initRepo();
+    const run = spawnSync(process.execPath, [CLI, "hook", "session-start", "--host", "claude-code"], {
+      cwd: repo,
+      input: JSON.stringify({ session_id: "5e550000-0000-4000-8000-0000000000a9", hook_event_name: "SessionStart", source: "startup" }),
+      encoding: "utf8",
+      env: { ...process.env, MEMCHOR_HOME: tempDir(), CLAUDE_CONFIG_DIR: tempDir() },
+    });
+    expect(run.status).toBe(0);
+    const context = (JSON.parse(run.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+    for (const rule of RULES) expect(context).toMatch(rule);
   });
 
   test("a payload carrying workspaceId or cwd is an invalid_input envelope", async () => {
@@ -145,3 +141,21 @@ describe("MCP protocol surface", () => {
     expect(stderr).toMatch(/memchor: MCP server ready/);
   });
 });
+
+/** Every rule of the protocol, checked on both paths it is delivered by. */
+const RULES = [
+  /memory_bootstrap first/,
+  /scope\.ambiguity/,
+  /import\.question/,
+  /historical observations/i,
+  /stale.*unknown.*read the current file/is,
+  /independentRoots/,
+  /attribution/,
+  /memory_manage/,
+  /Preferences are defaults; the current request wins/,
+  /lasting language or a repeated correction/,
+  /never re-record/i,
+  /memory_checkpoint.*expectedRevision/s,
+  /checkpoint_conflict.*never overwrite/is,
+  /honest miss/i,
+];

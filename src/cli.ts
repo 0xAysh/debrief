@@ -1,19 +1,24 @@
 #!/usr/bin/env node
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { resolveHome } from "./bootstrap/workspace-resolution.js";
 import { MemchorError } from "./errors.js";
-import { HOST_IDS, hostDescriptor, TRANSCRIPT_HOSTS } from "./hosts.js";
+import { HOOK_HOSTS, HOST_IDS, hostDescriptor, TRANSCRIPT_HOSTS } from "./hosts.js";
 import { type ImportStatus, openMemory, type Memory } from "./memory.js";
 import { IMPORT_CHOICES, type ImportChoice, LIMITS } from "./schemas.js";
 import { assertEmbeddedRuntime } from "./storage/database.js";
+import { runHook } from "./transports/hook.js";
 import { runStdioServer } from "./transports/mcp.js";
 
 const USAGE = `Usage:
   memchor mcp [--host ${HOST_IDS.join("|")}]
                                                       Serve MCP over stdio (started by the agent host)
+  memchor hook stop --import --host ${HOOK_HOSTS.join("|")}
+                                                      Capture the session's latest turn (run by the host's Stop hook; payload on stdin)
+  memchor hook session-start --host ${HOOK_HOSTS.join("|")}
+                                                      Print session-start context (run by the host's SessionStart hook; payload on stdin)
   memchor diag status                                 Runtime, storage and scope health
   memchor diag records [--query <text>] [--kind <k>]  List eligible records for this worktree
   memchor diag reindex                                Rebuild the search index from canonical records
@@ -36,6 +41,19 @@ async function main(argv: string[]): Promise<number> {
     assertEmbeddedRuntime();
     await runStdioServer({ cwd: process.cwd(), ...(values.host === undefined ? {} : { host: values.host }) });
     return -1; // keep running until stdin ends or a signal arrives
+  }
+  if (command === "hook") {
+    // A host runs this at its lifecycle events: always exit 0, so a failure never breaks the host.
+    let stdin = "";
+    try {
+      stdin = readFileSync(0, "utf8");
+    } catch {
+      // No stdin (closed or not readable): the transport reports the empty payload.
+    }
+    const outcome = runHook({ args: argv.slice(1), stdin, cwd: process.cwd(), home: resolveHome(undefined) });
+    process.stdout.write(outcome.stdout);
+    process.stderr.write(outcome.stderr);
+    return 0;
   }
   if (command === "diag" && subcommand !== undefined) {
     const { values } = parseArgs({

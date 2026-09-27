@@ -320,6 +320,20 @@ export const ContinueImportInput = z.strictObject({
 });
 export type ContinueImportInput = z.input<typeof ContinueImportInput>;
 
+/** One turn's capture from a host hook (not an agent tool): the transcript the host named. */
+export const CaptureTurnInput = z.strictObject({
+  transcriptPath: z.string().min(1).max(4_096),
+  maxMs: z.int().min(0).max(60_000).default(5_000),
+});
+export type CaptureTurnInput = z.input<typeof CaptureTurnInput>;
+
+/** A session start from a host hook (not an agent tool). */
+export const SessionStartInput = z.strictObject({
+  /** The host's id for the session starting (Claude Code's `session_id`), recorded on the bound session. */
+  hostSessionId: z.string().min(1).max(LIMITS.hostSessionIdChars).optional(),
+});
+export type SessionStartInput = z.input<typeof SessionStartInput>;
+
 /**
  * Every operation the memory module offers to agents, with its input schema. Adapters
  * build their tool lists from this map (the single source of operation names).
