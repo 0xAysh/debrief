@@ -1,15 +1,16 @@
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
-import { CLAUDE_PINNED_VERSION, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, startStubMessages } from "../mcp/claude.js";
+import { claudeTurn, installTranscript } from "../import/fixtures.js";
+import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, memchorAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
 import { CLI, NO_NETWORK } from "../mcp/harness.js";
 
 /**
  * Seam ② for #29 with Memchor's own hooks: the real Claude Code runs `memchor hook
- * session-start` and `memchor hook stop`, registered with `--settings`, against a
- * localhost stub model. What the model received is read from the stub's request bodies.
+ * session-start`, `stop`, `user-prompt-submit` and `pre-tool-use`, registered with `--settings`,
+ * against a localhost stub model. What the model received is read from the stub's request bodies.
  */
 
 const SKIP = claudeSkipReason();
@@ -23,6 +24,8 @@ function hooksSettings(memchorHome: string): string {
       hooks: {
         SessionStart: [{ hooks: [{ type: "command", command: memchor("session-start") }] }],
         Stop: [{ hooks: [{ type: "command", command: memchor("stop") }] }],
+        UserPromptSubmit: [{ hooks: [{ type: "command", command: memchor("user-prompt-submit") }] }],
+        PreToolUse: [{ matcher: "mcp__(plugin_memchor_)?memchor__.*", hooks: [{ type: "command", command: memchor("pre-tool-use") }] }],
       },
     }),
   );
@@ -89,4 +92,87 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(context).toContain("## Since checkpoint r1 (claude-code, ended ");
     expect(context).toContain("- SYNTHETIC-PROMPT where did we leave the double-charge fix?");
   });
+
+  test("a lasting-preference prompt reaches the model with the hint; a recall runs without a prompt, a write is still denied in -p; notices stay with the user", async () => {
+    const sandbox = claudeSandbox();
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const memchorHome = tempDir();
+    const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+    expect(added.code, added.stderr).toBe(0);
+    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      setup.close();
+    });
+    setup.bootstrap({ importChoice: "current_project" });
+    setup.close();
+
+    const stub = await startStubMessages({
+      calls: [
+        { tool: "memory_recall", input: { query: "retry policy" } },
+        { tool: "memory_record", input: { kind: "note", body: "SYNTHETIC-WRITE", attribution: "agent_inference" } },
+      ],
+      reply: "Noted.",
+    });
+    const run = await claudeAsync(
+      claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" }),
+      repo,
+      "-p",
+      "From now on, run the tests with --runInBand.",
+      "--output-format",
+      "json",
+      "--settings",
+      hooksSettings(memchorHome),
+    );
+    expect(run.code, run.stderr).toBe(0);
+    expect(JSON.stringify(stub.requests[0] ?? {})).toContain("UserPromptSubmit hook additional context: Memchor: the user's wording may state a lasting preference.");
+
+    const result = JSON.parse(run.stdout) as { session_id: string; permission_denials: { tool_name: string }[] };
+    expect(result.permission_denials.map((d) => d.tool_name)).toEqual(["mcp__memchor__memory_record"]);
+    const traffic = sessionToolTraffic(sandbox, result.session_id);
+    expect(traffic.uses).toEqual(["mcp__memchor__memory_recall", "mcp__memchor__memory_record"]);
+    expect(traffic.results[0]).toContain('"items"');
+    expect(JSON.stringify(stub.requests)).not.toContain("◪ memchor");
+  }, 120_000);
+
+  test("the fifth turn of work with no checkpoint: the stop is blocked once, the model gets the reason, and the continued stop ends the turn", async () => {
+    const sandbox = claudeSandbox();
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const memchorHome = tempDir();
+    // Four earlier turns that ran commands, in a session an hour ago.
+    const earlier = "e0d00000-0000-4000-8000-0000000000aa";
+    const { path } = installTranscript(sandbox.configDir, "", { cwd: repo, sessionId: earlier, content: "" });
+    let after: string | null = null;
+    for (let n = 1; n <= 4; n++) {
+      const turn = claudeTurn({ cwd: repo, sessionId: earlier, n, at: new Date(Date.now() - 3_600_000 + n * 1_000), prompt: `Step ${n}.`, command: "npm test", after });
+      after = turn.last;
+      appendFileSync(path, turn.lines);
+    }
+    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      setup.close();
+    });
+    setup.bootstrap({ importChoice: "current_project" });
+    setup.close();
+
+    const stub = await startStubMessages({ calls: [], reply: "Step 5 done." });
+    const run = await claudeAsync(
+      claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" }),
+      repo,
+      "-p",
+      "Step 5.",
+      "--output-format",
+      "json",
+      "--settings",
+      hooksSettings(memchorHome),
+    );
+    expect(run.code, run.stderr).toBe(0);
+    expect(stub.requests).toHaveLength(2);
+    expect(JSON.stringify(stub.requests[0])).not.toContain("Stop hook feedback");
+    expect(JSON.stringify(stub.requests[1])).toContain("Stop hook feedback:\\nMemchor: 5 turns changed files or ran commands and no checkpoint covers them.");
+    const check = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      check.close();
+    });
+    expect(check.status().hookFailures).toEqual([]);
+  }, 120_000);
 });
