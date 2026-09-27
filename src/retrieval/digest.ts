@@ -1,4 +1,4 @@
-import { readToolResultTitle } from "../import/reconcile.js";
+import { readToolResultTitle, type ToolResultTitle } from "../import/reconcile.js";
 import { type Db, prepared } from "../storage/database.js";
 import { VISIBLE_SQL } from "./eligibility.js";
 
@@ -63,7 +63,7 @@ export function sessionDigest(db: Db, workstreamId: string, since: string | null
   const results = own.filter((row) => row.attribution === "direct_observation");
   const commands = results
     .map((row) => ({ row, title: readToolResultTitle(row.title) }))
-    .filter((c): c is { row: Row; title: { tool: string; failed: boolean; summary: string } } => c.title?.summary.startsWith("$ ") === true)
+    .filter((c): c is { row: Row; title: ToolResultTitle } => c.title?.summary.startsWith("$ ") === true)
     .map(({ row, title }) => ({ row, command: title.summary.slice(2), failed: title.failed }))
     .slice(0, COMMANDS)
     .reverse();

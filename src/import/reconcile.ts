@@ -917,8 +917,15 @@ function toolResultRecord(batch: Batch, call: CallMeta | null, event: Extract<No
   return { kind: "evidence", title, body: `${summary}\n\n${output}`, attribution: "direct_observation", externalRefs: refs.slice(0, 10) };
 }
 
+/** A tool result's title, read back: the tool, whether the call failed, and the first line of its summary. */
+export interface ToolResultTitle {
+  tool: string;
+  failed: boolean;
+  summary: string;
+}
+
 /** Reads back the title {@link toolResultRecord} writes: `<tool>[ (error)]: <first line of the call summary>`. */
-export function readToolResultTitle(title: string | null): { tool: string; failed: boolean; summary: string } | null {
+export function readToolResultTitle(title: string | null): ToolResultTitle | null {
   const colon = title?.indexOf(": ") ?? -1;
   if (title === null || colon < 0) return null;
   const head = title.slice(0, colon);

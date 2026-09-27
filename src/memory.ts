@@ -51,7 +51,7 @@ import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
 import { sessionDigest, workSince } from "./retrieval/digest.js";
-import { renderSessionStart, type SessionStart, unreadableSessionStart } from "./retrieval/session-context.js";
+import { oneLine, renderSessionStart, type SessionStart, type TurnEnd, unreadableSessionStart, userNotice } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
 import { removePrivateEverywhere } from "./import/privacy.js";
 import { type CaptureResult, type CaptureSkip, type ImportStatus, readToolResultTitle, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
@@ -126,7 +126,7 @@ import { appendRecord, recordFields } from "./storage/records.js";
 export type { ImportedSource, Citation } from "./integrity/provenance.js";
 export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
 export type { HookFailure } from "./import/hook-failures.js";
-export type { SessionStart } from "./retrieval/session-context.js";
+export type { SessionStart, TurnEnd } from "./retrieval/session-context.js";
 export type { CaptureResult, CaptureSkip, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
 export type { CandidateSignal, ResolutionBasis, ScopeAmbiguity, WorkstreamCandidate } from "./bootstrap/workstream-resolution.js";
@@ -314,14 +314,6 @@ export interface BootstrapResult {
 
 /** A Stop hook's capture, with the failure it recorded (null when it imported, or skipped by rule). */
 export type TurnCapture = CaptureResult & { failure: { code: string; message: string } | null };
-
-/** What a Stop hook says: a request to the agent to update a stale checkpoint, and a line for the user. */
-export interface TurnEnd {
-  nudge: string | null;
-  notice: string | null;
-  /** Why the turn was not saved (also on record as a hook failure). */
-  failure: { code: string; message: string } | null;
-}
 
 /** What `record` returns for `kind: "preference"`: a question for the user, not a stored record. */
 export interface PreferenceRecordResult {
@@ -637,8 +629,6 @@ export function openMemory(options: OpenMemoryOptions): Memory {
 // ───────────────────────────── Implementation ─────────────────────────────
 
 const OPERATIONS = Object.keys(OPERATION_SCHEMAS);
-/** Memchor's tools as hosts name them: `mcp__memchor__…`, or the plugin's `mcp__plugin_memchor_memchor__…`. */
-const MEMCHOR_TOOL_NAME = /^mcp__(?:plugin_memchor_)?memchor__(memory_[a-z_]+)$/;
 /** A result before `idempotent` adds `replayed` (distributes over union members). */
 type Unreplayed<T> = T extends unknown ? Omit<T, "replayed"> : never;
 const INSPECT_BODY_BYTES = 4_096;
@@ -791,8 +781,11 @@ class LocalMemory implements Memory {
   }
 
   captureTurn(input: CaptureTurnInput): TurnCapture {
+    return this.capture(this.guard(() => parse(CaptureTurnInput, input)));
+  }
+
+  private capture(parsed: { transcriptPath: string; maxMs: number }): TurnCapture {
     const result = this.guard((): CaptureResult => {
-      const parsed = parse(CaptureTurnInput, input);
       if (this.importer === null) return skippedCapture("unsupported_host");
       if (this.closed) throw new MemchorError("storage_unavailable", "This Memory has been closed.");
       let location: WorkspaceLocation;
@@ -812,7 +805,7 @@ class LocalMemory implements Memory {
       result.state === "failed"
         ? (result.problem ?? { code: "internal", message: "capture failed" })
         : result.reason === "not_a_transcript"
-          ? { code: "not_a_transcript", message: `${input.transcriptPath} is not a transcript Memchor imports for ${this.host}` }
+          ? { code: "not_a_transcript", message: `${parsed.transcriptPath} is not a transcript Memchor imports for ${this.host}` }
           : null;
     if (failure !== null) recordHookFailure(this.home, { host: this.host, event: "stop", cwd: this.cwd, ...failure });
     return { ...result, failure };
@@ -840,9 +833,9 @@ class LocalMemory implements Memory {
   endTurn(input: EndTurnInput): TurnEnd {
     const parsed = this.guard(() => parse(EndTurnInput, input));
     const before = this.newestRecordSeq();
-    const capture = this.captureTurn({ transcriptPath: parsed.transcriptPath, maxMs: parsed.maxMs });
+    const capture = this.capture(parsed);
     const notice =
-      capture.failure !== null ? `◪ memchor · ⚠ turn not saved (${capture.failure.code}): memchor diag status` : capture.events > 0 ? `◪ memchor · saved turn (${capture.events} events)` : null;
+      capture.failure !== null ? userNotice(`⚠ turn not saved (${capture.failure.code}): memchor diag status`) : capture.events > 0 ? userNotice(`saved turn (${capture.events} events)`) : null;
     const db = this.bound?.db ?? this.unboundDb;
     const failure = capture.failure;
     if (parsed.stopHookActive || capture.workstreamId === null || db === undefined) return { nudge: null, notice, failure };
@@ -879,12 +872,12 @@ class LocalMemory implements Memory {
   approveTool(input: ApproveToolInput): { notice: string | null } | null {
     return this.guard(() => {
       const parsed = parse(ApproveToolInput, input);
-      const operation = MEMCHOR_TOOL_NAME.exec(parsed.tool)?.[1];
+      const operation = hostDescriptor(this.host)?.memchorTool?.exec(parsed.tool)?.[1];
       const args: Record<string, unknown> = typeof parsed.input === "object" && parsed.input !== null ? (parsed.input as Record<string, unknown>) : {};
       if (operation === undefined || !readOnlyCall(operation, args)) return null;
       if (operation !== "memory_recall") return { notice: null };
-      const query = typeof args["query"] === "string" ? args["query"].replace(/\s+/g, " ").trim() : "";
-      return { notice: query === "" ? "◪ memchor · recalling recent memory" : `◪ memchor · recalling: ${query.length > 80 ? `${query.slice(0, 79)}…` : query}` };
+      const query = typeof args["query"] === "string" ? oneLine(args["query"], 80) : "";
+      return { notice: query === "" ? userNotice("recalling recent memory") : userNotice(`recalling: ${query}`) };
     });
   }
 
