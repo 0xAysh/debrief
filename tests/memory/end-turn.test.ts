@@ -71,7 +71,7 @@ describe("endTurn: the Stop hook saves the turn, then asks for a checkpoint that
     const nudges = [1, 2, 3, 4, 5, 6].map(() => s.turn().nudge);
     expect(nudges.slice(0, 4)).toEqual([null, null, null, null]);
     expect(nudges[4]).toBe(
-      "Memchor: 5 turns since the last checkpoint (r1), with files changed or commands run. Before you finish, update it with memory_checkpoint (expectedRevision 1): the next concrete step and why, not a status.",
+      "Debrief: 5 turns since the last checkpoint (r1), with files changed or commands run. Before you finish, update it with memory_checkpoint (expectedRevision 1): the next concrete step and why, not a status.",
     );
     expect(nudges[5]).toBeNull();
   });
@@ -80,7 +80,7 @@ describe("endTurn: the Stop hook saves the turn, then asks for a checkpoint that
     const s = session();
     [1, 2, 3, 4].forEach(() => s.turn());
     s.append();
-    expect(s.turn().nudge).toMatch(/^Memchor: 6 turns since the last checkpoint/);
+    expect(s.turn().nudge).toMatch(/^Debrief: 6 turns since the last checkpoint/);
   });
 
   test("a stop with no new prompt (a background task waking the agent) never nudges again at the same count", () => {
@@ -94,7 +94,7 @@ describe("endTurn: the Stop hook saves the turn, then asks for a checkpoint that
     const s = session();
     const nudges = [1, 2, 3, 4, 5].map(() => s.turn({ edit: "src/gateway.ts" }).nudge);
     expect(nudges[4]).toBe(
-      "Memchor: 5 turns since the last checkpoint (none yet), with files changed or commands run. Before you finish, write one with memory_checkpoint (expectedRevision 0): the next concrete step and why, not a status.",
+      "Debrief: 5 turns since the last checkpoint (none yet), with files changed or commands run. Before you finish, write one with memory_checkpoint (expectedRevision 0): the next concrete step and why, not a status.",
     );
   });
 
@@ -111,9 +111,9 @@ describe("endTurn: the Stop hook saves the turn, then asks for a checkpoint that
 
   test("the user sees what the turn saved, nothing when there was nothing new, and a turn that could not be saved", () => {
     const s = session();
-    expect(s.turn().notice).toMatch(/^◪ memchor · saved turn \(\d+ events\)$/);
+    expect(s.turn().notice).toMatch(/^◪ debrief · saved turn \(\d+ events\)$/);
     expect(s.again().notice).toBeNull();
     const memory = s.open();
-    expect(memory.endTurn({ transcriptPath: memory.status().storage.dbPath ?? "", stopHookActive: false }).notice).toMatch(/^◪ memchor · ⚠ turn not saved \(not_a_transcript\): memchor diag status$/);
+    expect(memory.endTurn({ transcriptPath: memory.status().storage.dbPath ?? "", stopHookActive: false }).notice).toMatch(/^◪ debrief · ⚠ turn not saved \(not_a_transcript\): debrief diag status$/);
   });
 });

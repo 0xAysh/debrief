@@ -14,7 +14,7 @@ function open(cwd: string, home: string, host = "claude-code"): Memory {
 
 /** Moves a repository directory to a fresh location (same filesystem), as `mv` would. */
 function moveRepo(repo: string): string {
-  const target = join(tempDir("memchor-moved-"), "renamed-checkout");
+  const target = join(tempDir("debrief-moved-"), "renamed-checkout");
   renameSync(repo, target);
   return target;
 }
@@ -44,8 +44,8 @@ describe("repository identity", () => {
 
   test("two unrelated repositories with the same directory name are different workspaces", () => {
     const home = tempDir();
-    const a = join(tempDir("memchor-a-"), "api");
-    const b = join(tempDir("memchor-b-"), "api");
+    const a = join(tempDir("debrief-a-"), "api");
+    const b = join(tempDir("debrief-b-"), "api");
     for (const dir of [a, b]) {
       mkdirSync(dir);
       git(dir, "init", "--quiet", "--initial-branch=main");
@@ -68,7 +68,7 @@ describe("repository identity", () => {
     const home = tempDir();
     const original = initRepo();
     const originalScope = open(original, home).bootstrap().scope;
-    const clone = join(tempDir("memchor-clone-"), "copy");
+    const clone = join(tempDir("debrief-clone-"), "copy");
     git(original, "clone", "--quiet", original, clone);
 
     const cloneScope = open(clone, home).bootstrap().scope;
@@ -91,7 +91,7 @@ describe("repository identity", () => {
     const repo = initRepo({ branch: "main" });
     const nested = join(repo, ".worktrees", "side");
     git(repo, "worktree", "add", "--quiet", "-b", "side", nested);
-    const outside = join(tempDir("memchor-wt-"), "outside");
+    const outside = join(tempDir("debrief-wt-"), "outside");
     git(repo, "worktree", "add", "--quiet", "-b", "outside", outside);
     const main = open(repo, home).bootstrap().scope;
     const side = open(nested, home).bootstrap().scope;
@@ -134,11 +134,11 @@ describe("repository identity", () => {
   test("when two vanished copies share the history, a newcomer is not guessed onto either", () => {
     const home = tempDir();
     const original = initRepo();
-    const copy = join(tempDir("memchor-clone-"), "copy");
+    const copy = join(tempDir("debrief-clone-"), "copy");
     git(original, "clone", "--quiet", original, copy);
     const a = open(original, home).bootstrap().scope.workspaceId;
     const b = open(copy, home).bootstrap().scope.workspaceId;
-    const third = join(tempDir("memchor-clone-"), "third");
+    const third = join(tempDir("debrief-clone-"), "third");
     git(original, "clone", "--quiet", original, third);
     rmSync(original, { recursive: true, force: true });
     rmSync(copy, { recursive: true, force: true });
@@ -149,7 +149,7 @@ describe("repository identity", () => {
 
   test("the transcript-import approval given before a move still applies after it", () => {
     const home = tempDir();
-    const config = tempDir("memchor-claude-");
+    const config = tempDir("debrief-claude-");
     const repo = initRepo();
     const first = openMemory({ cwd: repo, host: "claude-code", home, claudeConfigDir: config });
     onCleanup(() => {

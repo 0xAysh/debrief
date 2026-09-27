@@ -146,10 +146,10 @@ describe("forgetting imported memory", () => {
   test("a forgotten claim does not come back through the memory_manage output the session saw before the forget", () => {
     const { repo, transcript, memory, claim } = setup();
 
-    // The agent inspects the claim; the host writes the call and Memchor's output to the transcript.
+    // The agent inspects the claim; the host writes the call and Debrief's output to the transcript.
     const inspected = JSON.stringify(memory.manage({ action: "inspect", recordId: claim }));
     expect(inspected).toContain("Redis is required");
-    appendFileSync(transcript.path, claudeToolExchange({ cwd: repo, sessionId: transcript.sessionId, gitBranch: "feat/queue", parentUuid: "00000000-0000-4000-8000-000000000304", id: 305, tool: "mcp__memchor__memory_manage", input: { action: "inspect", recordId: claim }, result: inspected }));
+    appendFileSync(transcript.path, claudeToolExchange({ cwd: repo, sessionId: transcript.sessionId, gitBranch: "feat/queue", parentUuid: "00000000-0000-4000-8000-000000000304", id: 305, tool: "mcp__debrief__memory_manage", input: { action: "inspect", recordId: claim }, result: inspected }));
 
     // The user then has it forgotten; the next import reads the inspect output.
     const preview = memory.manage({ action: "forget_preview", recordIds: [claim] });

@@ -22,13 +22,13 @@ Placeholders, substituted by `renderCodexFixture` in `tests/import/fixtures.ts`:
 | `{{THREAD}}` | the thread id (also the file name's id) |
 | `{{PARENT}}` | the parent thread id (forks, subagents) |
 | `{{SHA}}` | a commit hash |
-| `{{WORKSTREAM}}`, `{{RECORD}}` | Memchor ids in Memchor's own output |
+| `{{WORKSTREAM}}`, `{{RECORD}}` | Debrief ids in Debrief's own output |
 | `{{LARGE_OUTPUT}}` | generated at render time |
 
 | File | Creator version | Covers |
 |---|---|---|
 | `0.142.5/basic.jsonl` | 0.142.5 | developer + contextual user messages, `user_message`/`agent_message` with their `response_item` copies, reasoning, `exec_command` (exit 1 and 0), `apply_patch` (Update + Add), `view_image` with an image output, web search (search, open_page), task/token bookkeeping |
-| `0.142.5/memchor-echo.jsonl` | 0.142.5 | Memchor calls in the namespaced (`mcp__memchor`), flat (`mcp__memchor__memory_recall`) and trailing-`__` forms, `mcp_tool_call_end`, another MCP server's tool |
+| `0.142.5/debrief-echo.jsonl` | 0.142.5 | Debrief calls in the namespaced (`mcp__debrief`), flat (`mcp__debrief__memory_recall`) and trailing-`__` forms, `mcp_tool_call_end`, another MCP server's tool |
 | `0.142.5/injected.jsonl` | 0.142.5 | `<skill>`, `<subagent_notification>`, `<turn_aborted>`, `<recommended_plugins>`, `<user_shell_command>` user blocks |
 | `0.142.5/metadata-updates.jsonl` | 0.142.5 | a repeated own-id `session_meta` with a new `git.branch` and `memory_mode`, `turn_aborted`, `thread_rolled_back`, a remote (encrypted) compaction |
 | `0.142.5/cwd-change.jsonl` | 0.142.5 | a second turn whose `turn_context.cwd` is `{{CWD2}}` |
@@ -42,6 +42,6 @@ Placeholders, substituted by `renderCodexFixture` in `tests/import/fixtures.ts`:
 | `0.148.0-alpha.21/basic.jsonl` | 0.148.0-alpha.21, legacy | `history_mode`, `context_window`, `world_state`, `thread_settings_applied`, `user_message.audio`, the MCP call triple exactly as Codex writes it |
 | `0.148.0-alpha.21/local-compaction.jsonl` | 0.148.0-alpha.21, legacy | a local compaction: assistant `response_item` without `agent_message`, `compacted.message` with Codex's summary prefix |
 | `0.148.0-alpha.21/fork-parent.jsonl`, `fork.jsonl` | 0.148.0-alpha.21, legacy | a fork (`forked_from_id`) whose file starts with a re-timestamped copy of its parent, then `thread_settings_applied` and its own turn |
-| `0.148.0-alpha.21/handoff.jsonl` | 0.148.0-alpha.21, legacy | the Codex side of `tests/handoff/`: a failing `exec_command` and an agent message stating a Claude claim from that run, then a Memchor recall echoing the Claude record and a verbatim repeat of it, and a message contradicting a Claude observation |
+| `0.148.0-alpha.21/handoff.jsonl` | 0.148.0-alpha.21, legacy | the Codex side of `tests/handoff/`: a failing `exec_command` and an agent message stating a Claude claim from that run, then a Debrief recall echoing the Claude record and a verbatim repeat of it, and a message contradicting a Claude observation |
 | `0.148.0-alpha.21/paginated.jsonl` | 0.148.0-alpha.21, paginated | `history_mode: "paginated"`, `ordinal` on every line, `item_completed` |
 | `unknown-version.jsonl` | 0.104.0-alpha.1 (not in the table) | stops at line 1 |

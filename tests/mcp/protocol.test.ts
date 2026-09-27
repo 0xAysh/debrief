@@ -54,7 +54,7 @@ describe("MCP protocol surface", () => {
       cwd: repo,
       input: JSON.stringify({ session_id: "5e550000-0000-4000-8000-0000000000a9", hook_event_name: "SessionStart", source: "startup" }),
       encoding: "utf8",
-      env: { ...process.env, MEMCHOR_HOME: tempDir(), CLAUDE_CONFIG_DIR: tempDir() },
+      env: { ...process.env, DEBRIEF_HOME: tempDir(), CLAUDE_CONFIG_DIR: tempDir() },
     });
     expect(run.status).toBe(0);
     const context = (JSON.parse(run.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
@@ -111,7 +111,7 @@ describe("MCP protocol surface", () => {
   });
 
   test("outside a Git repository tools fail closed with scope_unresolved", async () => {
-    const server = await spawnServer({ cwd: tempDir("memchor-plain-"), home: tempDir() });
+    const server = await spawnServer({ cwd: tempDir("debrief-plain-"), home: tempDir() });
     expect((await server.call("memory_bootstrap")).structured).toMatchObject({ error: { code: "scope_unresolved" } });
     expect((await server.ok<StatusResult>("memory_status")).problem?.code).toBe("scope_unresolved");
   });
@@ -119,7 +119,7 @@ describe("MCP protocol surface", () => {
   test("stdout carries only JSON-RPC, logs go to stderr, and the process exits cleanly when stdin ends", async () => {
     const child = spawn(process.execPath, [CLI, "mcp", "--host", "pi"], {
       cwd: initRepo(),
-      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", MEMCHOR_HOME: tempDir() },
+      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: tempDir() },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -147,7 +147,7 @@ describe("MCP protocol surface", () => {
     expect(messages.find((m) => m.id === 2)?.result?.isError).toBeUndefined();
     expect(messages.find((m) => m.id === 3)?.result?.isError).toBe(true);
     expect(messages.find((m) => m.id === 4)?.error).toBeDefined();
-    expect(stderr).toMatch(/memchor: MCP server ready/);
+    expect(stderr).toMatch(/debrief: MCP server ready/);
   });
 });
 

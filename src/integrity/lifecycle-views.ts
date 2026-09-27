@@ -27,7 +27,7 @@ export interface LifecycleChange {
 
 /** Lifecycle changes in a session's scope it has not been told about yet. */
 export interface CorrectionNotice {
-  /** Pass nothing back: Memchor remembers per session what it has told you. */
+  /** Pass nothing back: Debrief remembers per session what it has told you. */
   watermark: number;
   changes: LifecycleChange[];
   omitted: number;
@@ -105,7 +105,7 @@ export interface Inspection {
 const INSPECT_LISTED = 20;
 const EXCERPT_CHARS = 300;
 
-/** Everything Memchor knows about one in-scope record, whatever its state. Read-only. */
+/** Everything Debrief knows about one in-scope record, whatever its state. Read-only. */
 export function inspectRecord(db: Db, workstreamId: string, recordId: string): Inspection {
   const row = requireInScopeRecord(db, workstreamId, recordId);
   const taints = prepared(db, "SELECT cause_id AS causeId, taint FROM taints WHERE record_id = ? ORDER BY created_at, cause_id").all(row.id) as { causeId: string; taint: Taint }[];

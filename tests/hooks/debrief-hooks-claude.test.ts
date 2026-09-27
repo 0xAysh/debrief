@@ -6,41 +6,41 @@ import { locateWorkspace } from "../../src/bootstrap/workspace-resolution.js";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
 import { claudeTurn, installTranscript } from "../import/fixtures.js";
-import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, claudeStream, firstUserText, memchorAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
+import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, claudeStream, firstUserText, debriefAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
 import { CLI, NO_NETWORK } from "../mcp/harness.js";
 
 /**
- * Seam ② for #29 and #40 with Memchor's own hooks: the real Claude Code runs `memchor hook
+ * Seam ② for #29 and #40 with Debrief's own hooks: the real Claude Code runs `debrief hook
  * session-start`, `subagent-start`, `stop`, `user-prompt-submit` and `pre-tool-use`, registered with `--settings`,
  * against a localhost stub model. What the model received is read from the stub's request bodies.
  */
 
 const SKIP = claudeSkipReason();
 
-function hooksSettings(memchorHome: string): string {
-  const memchor = (args: string) => `MEMCHOR_HOME='${memchorHome}' '${process.execPath}' --import '${NO_NETWORK}' '${CLI}' hook ${args} --host claude-code`;
+function hooksSettings(debriefHome: string): string {
+  const debrief = (args: string) => `DEBRIEF_HOME='${debriefHome}' '${process.execPath}' --import '${NO_NETWORK}' '${CLI}' hook ${args} --host claude-code`;
   const path = join(tempDir(), "settings.json");
   writeFileSync(
     path,
     JSON.stringify({
       hooks: {
-        SessionStart: [{ hooks: [{ type: "command", command: memchor("session-start") }] }],
-        SubagentStart: [{ hooks: [{ type: "command", command: memchor("subagent-start") }] }],
-        Stop: [{ hooks: [{ type: "command", command: memchor("stop") }] }],
-        UserPromptSubmit: [{ hooks: [{ type: "command", command: memchor("user-prompt-submit") }] }],
-        PreToolUse: [{ matcher: "mcp__(plugin_memchor_)?memchor__.*", hooks: [{ type: "command", command: memchor("pre-tool-use") }] }],
+        SessionStart: [{ hooks: [{ type: "command", command: debrief("session-start") }] }],
+        SubagentStart: [{ hooks: [{ type: "command", command: debrief("subagent-start") }] }],
+        Stop: [{ hooks: [{ type: "command", command: debrief("stop") }] }],
+        UserPromptSubmit: [{ hooks: [{ type: "command", command: debrief("user-prompt-submit") }] }],
+        PreToolUse: [{ matcher: "mcp__(plugin_debrief_)?debrief__.*", hooks: [{ type: "command", command: debrief("pre-tool-use") }] }],
       },
     }),
   );
   return path;
 }
 
-describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE_PINNED_VERSION}`, () => {
+describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE_PINNED_VERSION}`, () => {
   test("the model starts with the checkpoint in context without any tool call, the turn is captured when it stops, and the next session starts with it digested", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
-    const memchorHome = tempDir();
-    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const debriefHome = tempDir();
+    const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       setup.close();
     });
@@ -57,19 +57,19 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
       "--output-format",
       "json",
       "--settings",
-      hooksSettings(memchorHome),
+      hooksSettings(debriefHome),
     );
     expect(run.code, run.stderr).toBe(0);
 
     const first = JSON.stringify(stub.requests[0] ?? {});
     expect(first).toContain("SessionStart hook additional context: ");
     expect(first).toContain("SYNTHETIC-NEXT wire the idempotency key into charge()");
-    expect(first).toContain("Memchor is local working memory shared by the coding agents in this repository.");
+    expect(first).toContain("Debrief is local working memory shared by the coding agents in this repository.");
     // The notice is for the user only.
-    expect(JSON.stringify(stub.requests)).not.toContain("◪ memchor");
+    expect(JSON.stringify(stub.requests)).not.toContain("◪ debrief");
     expect(stub.offeredTools.flat().filter((t) => t.startsWith("mcp__"))).toEqual([]);
 
-    const after = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const after = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       after.close();
     });
@@ -88,7 +88,7 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
       "--output-format",
       "json",
       "--settings",
-      hooksSettings(memchorHome),
+      hooksSettings(debriefHome),
     );
     expect(second.code, second.stderr).toBe(0);
     const context = JSON.stringify(next.requests[0] ?? {});
@@ -99,10 +99,10 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
   test("a lasting-preference prompt reaches the model with the hint; a recall runs without a prompt, a write is still denied in -p; notices stay with the user", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
-    const memchorHome = tempDir();
-    const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+    const debriefHome = tempDir();
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
     expect(added.code, added.stderr).toBe(0);
-    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       setup.close();
     });
@@ -124,23 +124,23 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
       "--output-format",
       "json",
       "--settings",
-      hooksSettings(memchorHome),
+      hooksSettings(debriefHome),
     );
     expect(run.code, run.stderr).toBe(0);
-    expect(JSON.stringify(stub.requests[0] ?? {})).toContain("UserPromptSubmit hook additional context: Memchor: the user's wording may state a lasting preference.");
+    expect(JSON.stringify(stub.requests[0] ?? {})).toContain("UserPromptSubmit hook additional context: Debrief: the user's wording may state a lasting preference.");
 
     const result = JSON.parse(run.stdout) as { session_id: string; permission_denials: { tool_name: string }[] };
-    expect(result.permission_denials.map((d) => d.tool_name)).toEqual(["mcp__memchor__memory_record"]);
+    expect(result.permission_denials.map((d) => d.tool_name)).toEqual(["mcp__debrief__memory_record"]);
     const traffic = sessionToolTraffic(sandbox, result.session_id);
-    expect(traffic.uses).toEqual(["mcp__memchor__memory_recall", "mcp__memchor__memory_record"]);
+    expect(traffic.uses).toEqual(["mcp__debrief__memory_recall", "mcp__debrief__memory_record"]);
     expect(traffic.results[0]).toContain('"items"');
-    expect(JSON.stringify(stub.requests)).not.toContain("◪ memchor");
+    expect(JSON.stringify(stub.requests)).not.toContain("◪ debrief");
   }, 120_000);
 
   test("the fifth turn of work with no checkpoint: the stop is blocked once, the model gets the reason, and the continued stop ends the turn", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
-    const memchorHome = tempDir();
+    const debriefHome = tempDir();
     // Four earlier turns that ran commands, in a session an hour ago.
     const earlier = "e0d00000-0000-4000-8000-0000000000aa";
     const { path } = installTranscript(sandbox.configDir, "", { cwd: repo, sessionId: earlier, content: "" });
@@ -150,7 +150,7 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
       after = turn.last;
       appendFileSync(path, turn.lines);
     }
-    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       setup.close();
     });
@@ -166,15 +166,15 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
       "--output-format",
       "json",
       "--settings",
-      hooksSettings(memchorHome),
+      hooksSettings(debriefHome),
     );
     expect(run.code, run.stderr).toBe(0);
     expect(stub.requests).toHaveLength(2);
     expect(JSON.stringify(stub.requests[0])).not.toContain("Stop hook feedback");
-    expect(JSON.stringify(stub.requests[1])).toContain("Stop hook feedback:\\nMemchor: 5 turns since the last checkpoint (none yet), with files changed or commands run.");
+    expect(JSON.stringify(stub.requests[1])).toContain("Stop hook feedback:\\nDebrief: 5 turns since the last checkpoint (none yet), with files changed or commands run.");
     // The user's "saved turn" line went with the block, but never to the model.
-    expect(JSON.stringify(stub.requests)).not.toContain("◪ memchor");
-    const check = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    expect(JSON.stringify(stub.requests)).not.toContain("◪ debrief");
+    const check = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       check.close();
     });
@@ -186,26 +186,26 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(stored.filter((excerpt) => excerpt.includes("turns since the last checkpoint"))).toEqual([]);
   }, 120_000);
 
-  test("\"don't remember this session\" through MCP also forgets a turn the hooks captured before any Memchor call, and the MCP server is the same session as the hooks", async () => {
+  test("\"don't remember this session\" through MCP also forgets a turn the hooks captured before any Debrief call, and the MCP server is the same session as the hooks", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
-    const memchorHome = tempDir();
-    const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+    const debriefHome = tempDir();
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
     expect(added.code, added.stderr).toBe(0);
-    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       setup.close();
     });
     setup.bootstrap({ importChoice: "current_project" });
     setup.close();
 
-    // Turn 1 makes no Memchor call; the Stop hook captures it.
+    // Turn 1 makes no Debrief call; the Stop hook captures it.
     const stub = await startStubMessages({ calls: [], reply: "SYNTHETIC-PRIVATE-REPLY noted." });
     const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" });
-    const first = await claudeAsync(env, repo, "-p", "SYNTHETIC-PRIVATE-PROMPT the staging password rotation", "--output-format", "json", "--settings", hooksSettings(memchorHome));
+    const first = await claudeAsync(env, repo, "-p", "SYNTHETIC-PRIVATE-PROMPT the staging password rotation", "--output-format", "json", "--settings", hooksSettings(debriefHome));
     expect(first.code, first.stderr).toBe(0);
     const live = (JSON.parse(first.stdout) as { session_id: string }).session_id;
-    const captured = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const captured = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       captured.close();
     });
@@ -224,17 +224,17 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
       "--output-format",
       "json",
       "--allowedTools",
-      "mcp__memchor__memory_manage",
+      "mcp__debrief__memory_manage",
       "--settings",
-      hooksSettings(memchorHome),
+      hooksSettings(debriefHome),
     );
     expect(second.code, second.stderr).toBe(0);
     const traffic = sessionToolTraffic(sandbox, (JSON.parse(second.stdout) as { session_id: string }).session_id);
-    expect(traffic.uses).toEqual(["mcp__memchor__memory_manage"]);
+    expect(traffic.uses).toEqual(["mcp__debrief__memory_manage"]);
     expect(traffic.results[0]).toContain('"action":"private_session"');
 
     // The MCP server's session carries Claude's session id, like the hooks' sessions.
-    const db = new Database(locateWorkspace(repo, memchorHome).dbPath, { readonly: true });
+    const db = new Database(locateWorkspace(repo, debriefHome).dbPath, { readonly: true });
     onCleanup(() => {
       db.close();
     });
@@ -243,7 +243,7 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(sessions.filter((s) => s.private === 1).map((s) => s.id)).toEqual([live]);
 
     // Nothing from either turn is recalled, and a later import pass does not bring it back.
-    const after = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const after = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       after.close();
     });
@@ -256,8 +256,8 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
   test("resume, compact and clear: the model's next request carries the checkpoint as it is then, still without a tool call", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
-    const memchorHome = tempDir();
-    const memory = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const debriefHome = tempDir();
+    const memory = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       memory.close();
     });
@@ -275,7 +275,7 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     };
 
     checkpoint("SYNTHETIC-NEXT-STARTUP");
-    const session = claudeStream(env, repo, "--settings", hooksSettings(memchorHome));
+    const session = claudeStream(env, repo, "--settings", hooksSettings(debriefHome));
     const first = await session.send("SYNTHETIC-FIRST where were we?");
     checkpoint("SYNTHETIC-NEXT-COMPACT");
     await session.send("/compact");
@@ -291,7 +291,7 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(carried("SYNTHETIC-AFTER-CLEAR", "SYNTHETIC-NEXT-CLEAR")).toBe(true);
 
     checkpoint("SYNTHETIC-NEXT-RESUME");
-    const resumed = await claudeAsync(env, repo, "-p", "--resume", String(first["session_id"]), "SYNTHETIC-RESUMED go on", "--output-format", "json", "--settings", hooksSettings(memchorHome));
+    const resumed = await claudeAsync(env, repo, "-p", "--resume", String(first["session_id"]), "SYNTHETIC-RESUMED go on", "--output-format", "json", "--settings", hooksSettings(debriefHome));
     expect(resumed.code, resumed.stderr).toBe(0);
     expect(carried("SYNTHETIC-RESUMED", "SYNTHETIC-NEXT-RESUME")).toBe(true);
     expect(stub.offeredTools.flat().filter((t) => t.startsWith("mcp__"))).toEqual([]);
@@ -300,10 +300,10 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
   test("after /clear, \"don't remember this session\" forgets the conversation since /clear, not the one before it", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
-    const memchorHome = tempDir();
-    const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+    const debriefHome = tempDir();
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
     expect(added.code, added.stderr).toBe(0);
-    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       setup.close();
     });
@@ -312,16 +312,16 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     const stub = await startStubMessages({ calls: [{ tool: "memory_manage", input: { action: "private_session" }, when: "SYNTHETIC-FORGET" }], reply: "SYNTHETIC-REPLY ok." });
     const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" });
 
-    const session = claudeStream(env, repo, "--allowedTools", "mcp__memchor__memory_manage", "--settings", hooksSettings(memchorHome));
+    const session = claudeStream(env, repo, "--allowedTools", "mcp__debrief__memory_manage", "--settings", hooksSettings(debriefHome));
     await session.send("SYNTHETIC-KEEP the retry budget is three");
     await session.send("/clear");
     await session.send("SYNTHETIC-SECRET the staging password rotation");
     const forgot = await session.send("SYNTHETIC-FORGET don't remember this session");
     const ended = await session.end();
     expect(ended.code, ended.stderr).toBe(0);
-    expect(sessionToolTraffic(sandbox, String(forgot["session_id"])).uses).toEqual(["mcp__memchor__memory_manage"]);
+    expect(sessionToolTraffic(sandbox, String(forgot["session_id"])).uses).toEqual(["mcp__debrief__memory_manage"]);
 
-    const after = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const after = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       after.close();
     });
@@ -331,13 +331,13 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(excerpts.some((e) => e.includes("SYNTHETIC-KEEP the retry budget is three"))).toBe(true);
     expect(after.status().hookFailures).toEqual([]);
   }, 180_000);
-  test("a sub-agent starts with the checkpoint without a tool call, its Memchor recall runs without a prompt, and what only its commands found is recalled in a new session", async () => {
+  test("a sub-agent starts with the checkpoint without a tool call, its Debrief recall runs without a prompt, and what only its commands found is recalled in a new session", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
-    const memchorHome = tempDir();
-    const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+    const debriefHome = tempDir();
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
     expect(added.code, added.stderr).toBe(0);
-    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       setup.close();
     });
@@ -366,7 +366,7 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
       "--allowedTools",
       "Bash",
       "--settings",
-      hooksSettings(memchorHome),
+      hooksSettings(debriefHome),
     );
     expect(run.code, run.stderr).toBe(0);
 
@@ -374,15 +374,15 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     const first = stub.requests.find(fromSubagent);
     expect(JSON.stringify(first)).toContain("SubagentStart hook additional context: ");
     expect(JSON.stringify(first)).toContain("SYNTHETIC-NEXT find where the retry budget is set");
-    expect(JSON.stringify(first)).not.toContain("Memchor is local working memory shared by the coding agents in this repository.");
-    // Its read-only Memchor call ran without --allowedTools: the PreToolUse auto-allow applies inside the sub-agent.
+    expect(JSON.stringify(first)).not.toContain("Debrief is local working memory shared by the coding agents in this repository.");
+    // Its read-only Debrief call ran without --allowedTools: the PreToolUse auto-allow applies inside the sub-agent.
     const parentSession = (JSON.parse(run.stdout) as { session_id: string }).session_id;
     const subagents = join(sandbox.configDir, "projects", repo.replaceAll("/", "-"), parentSession, "subagents");
     const [transcript] = readdirSync(subagents).filter((f) => f.endsWith(".jsonl"));
     expect(readFileSync(join(subagents, transcript ?? ""), "utf8")).toContain('\\"items\\"');
 
     // Work out: a new session recalls what only the sub-agent's command printed, as the sub-agent's.
-    const after = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const after = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       after.close();
     });

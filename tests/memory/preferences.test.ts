@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { type Memory, openMemory, type PreferenceQuestion } from "../../src/memory.js";
-import { catchMemchorError, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string, host = "claude-code"): Memory {
   const memory = openMemory({ cwd, host, home });
@@ -11,7 +11,7 @@ function open(cwd: string, home: string, host = "claude-code"): Memory {
   return memory;
 }
 
-/** Proposes a preference the way an agent does; returns the question Memchor wants answered. */
+/** Proposes a preference the way an agent does; returns the question Debrief wants answered. */
 function propose(memory: Memory, body: string): PreferenceQuestion & { candidateId: string } {
   const result = memory.record({ kind: "preference", body, attribution: "user_direction" });
   expect(result.recordId).toBeNull();
@@ -99,7 +99,7 @@ describe("confirming a preference", () => {
 
     const third = open(repo, home).bootstrap().preferences;
     expect(third.pending).toEqual([]);
-    expect(catchMemchorError(() => open(repo, home).settlePreference({ candidateId: question.candidateId, reply: accept("This repo only") })).code).toBe("not_found");
+    expect(catchDebriefError(() => open(repo, home).settlePreference({ candidateId: question.candidateId, reply: accept("This repo only") })).code).toBe("not_found");
   });
 
   test("an answer relayed by the agent counts only when the question could not be asked directly, and is marked as agent-reported", () => {
@@ -115,7 +115,7 @@ describe("confirming a preference", () => {
     // The user dismissed the question: the agent cannot answer in their place.
     const dismissed = propose(memory, "Prefer small commits.");
     memory.settlePreference({ candidateId: dismissed.candidateId, reply: { action: "cancel" } });
-    const refused = catchMemchorError(() => memory.manage({ action: "answer_preference", candidateId: dismissed.candidateId, answer: "everywhere" }));
+    const refused = catchDebriefError(() => memory.manage({ action: "answer_preference", candidateId: dismissed.candidateId, answer: "everywhere" }));
     expect(refused.code).toBe("lifecycle_conflict");
     expect(texts(memory)).toEqual(["Use bun instead of npm."]);
   });
@@ -184,7 +184,7 @@ describe("guarding the user's answer", () => {
     expect(memory.settlePreference({ candidateId: declined.candidateId, reply: { action: "decline" } })).toMatchObject({ state: "pending", relay: "refused" });
     const asking = propose(memory, "Prefer small commits.");
     memory.settlePreference({ candidateId: asking.candidateId, reply: { action: "asking" } });
-    expect(catchMemchorError(() => memory.manage({ action: "answer_preference", candidateId: asking.candidateId, answer: "repo" })).code).toBe("lifecycle_conflict");
+    expect(catchDebriefError(() => memory.manage({ action: "answer_preference", candidateId: asking.candidateId, answer: "repo" })).code).toBe("lifecycle_conflict");
     expect(memory.settlePreference({ candidateId: asking.candidateId, reply: accept("This repo only") })).toMatchObject({ state: "active", confirmedBy: "user" });
   });
 
@@ -199,7 +199,7 @@ describe("guarding the user's answer", () => {
     expect(again.preference.candidateId).toBe(first.preference.candidateId);
 
     memory.manage({ action: "retract", recordId: bun, reason: "Drop it.", attribution: "user_direction" });
-    expect(catchMemchorError(() => memory.manage({ action: "restore", recordId: bun, reason: "Probably still wanted.", attribution: "agent_inference" })).code).toBe("lifecycle_conflict");
+    expect(catchDebriefError(() => memory.manage({ action: "restore", recordId: bun, reason: "Probably still wanted.", attribution: "agent_inference" })).code).toBe("lifecycle_conflict");
     expect(memory.manage({ action: "restore", recordId: bun, reason: "The user wants it back.", attribution: "user_direction" })).toMatchObject({ action: "restore" });
   });
 
@@ -231,7 +231,7 @@ describe("the preference block at session start", () => {
     expect(block.note).toMatch(/defaults.*asks for something different.*do that/i);
   });
 
-  test("global preferences live in $MEMCHOR_HOME/global.sqlite", () => {
+  test("global preferences live in $DEBRIEF_HOME/global.sqlite", () => {
     const home = tempDir();
     const memory = open(initRepo(), home);
     memory.bootstrap();

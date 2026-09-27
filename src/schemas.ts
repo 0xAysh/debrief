@@ -108,7 +108,7 @@ export const ExternalRef = z.strictObject({
   lines: z.tuple([z.int().min(1), z.int().min(1)]).optional(),
   /**
    * Pins the reference to a version. Leave `commit` and `observedHash` out for code as it is
-   * on disk now: Memchor then records the commit, dirty state and a `sha256:` hash itself.
+   * on disk now: Debrief then records the commit, dirty state and a `sha256:` hash itself.
    */
   commit: z.string().min(4).max(64).optional(),
   /** `sha256:<hex>` of the whole file; any other format cannot be compared (freshness stays unknown). */
@@ -125,7 +125,7 @@ export const Applicability = z.strictObject({
 });
 export type Applicability = z.infer<typeof Applicability>;
 
-/** A test, lint or build run a record reports. Memchor adds the repository state it ran against. */
+/** A test, lint or build run a record reports. Debrief adds the repository state it ran against. */
 export const TestRunInput = z.strictObject({
   command: z.string().trim().min(1).max(500).describe("The exact command that ran, e.g. npm test -- gateway"),
   outcome: z.enum(["passed", "failed"]),
@@ -203,7 +203,7 @@ export const RecordInput = z.strictObject({
     .describe("Pointers to code, documents, issues or URLs; never their content"),
   applicability: Applicability.default({}),
   testRun: TestRunInput.optional().describe(
-    "Only when this record reports a test/lint/build run you just did (record it right after running). Memchor stamps the commit and working-tree state it applies to. Cite the run's captured tool output with supportedBy if memory has it; otherwise the result is stored as your assertion, never as observed",
+    "Only when this record reports a test/lint/build run you just did (record it right after running). Debrief stamps the commit and working-tree state it applies to. Cite the run's captured tool output with supportedBy if memory has it; otherwise the result is stored as your assertion, never as observed",
   ),
   operationKey: OperationKey.optional(),
 });
@@ -281,7 +281,7 @@ export const ManageInput = z
     action: z
       .enum(MANAGE_ACTIONS)
       .describe(
-        "inspect = state, history, evidence and derivations of a record (any state). correct = the claim was wrong: body is the corrected claim. supersede = it was right but is outdated: body is the new version. retract = it was wrong, with no replacement. restore = undo a retraction. forget_preview = what forgetting recordIds would remove (changes nothing). forget = remove it, with the preview's confirmToken, only after the user confirmed that preview. answer_preference = relay the user's answer to a preference question Memchor could not ask them directly. private_session = the user said not to remember this session: forgets what it stored and stops it storing more.",
+        "inspect = state, history, evidence and derivations of a record (any state). correct = the claim was wrong: body is the corrected claim. supersede = it was right but is outdated: body is the new version. retract = it was wrong, with no replacement. restore = undo a retraction. forget_preview = what forgetting recordIds would remove (changes nothing). forget = remove it, with the preview's confirmToken, only after the user confirmed that preview. answer_preference = relay the user's answer to a preference question Debrief could not ask them directly. private_session = the user said not to remember this session: forgets what it stored and stops it storing more.",
       ),
     recordId: RecordId.optional(),
     recordIds: z.array(RecordId).min(1).max(LIMITS.forgetTargets).optional().describe("forget_preview: the records to forget (find them with recall or inspect)"),
@@ -290,7 +290,7 @@ export const ManageInput = z
       .string()
       .regex(/^pc_[0-9a-f]{32}$/, "expected a preference question id like pc_<32 hex>")
       .optional()
-      .describe("answer_preference: the candidateId of a preference question Memchor could not ask the user directly"),
+      .describe("answer_preference: the candidateId of a preference question Debrief could not ask the user directly"),
     answer: z.enum(PREFERENCE_ANSWERS).optional().describe("answer_preference: exactly what the user answered; never answer for them"),
     body: z
       .string()

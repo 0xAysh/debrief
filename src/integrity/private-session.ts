@@ -6,14 +6,14 @@ import type { PrivateSessionEntry } from "./ledger.js";
  * which also forgets what the session left behind, is `forgetSession` in lifecycle.ts.
  *
  * A session is private when its own row says so, or when another session of the same host
- * session is private (a resumed Codex thread starts a new Memchor session with the same thread
+ * session is private (a resumed Codex thread starts a new Debrief session with the same thread
  * id). Its transcripts are found two ways: the host session id is the transcript id (Codex), or
- * the transcript's Memchor output names the session (`transcript_sessions`, recorded at import;
+ * the transcript's Debrief output names the session (`transcript_sessions`, recorded at import;
  * Claude Code sends no session id). A private transcript is never imported again.
  */
 
 /**
- * The session a Memchor result was returned to: `scope.sessionId`, which in every result follows
+ * The session a Debrief result was returned to: `scope.sessionId`, which in every result follows
  * `scope.headRevision`. Pack items and checkpoints also carry a `sessionId` (the session that
  * wrote the record), but never after `headRevision`, so a recall of another session's records
  * never links this transcript to that session. Matched as text, so output Codex truncated still counts.
@@ -35,12 +35,12 @@ export function isPrivateTranscript(db: Db, host: string, transcriptId: string):
 }
 
 /**
- * Records which Memchor sessions a transcript's Memchor output names, and says whether any of
+ * Records which Debrief sessions a transcript's Debrief output names, and says whether any of
  * them is private (the importer then drops the transcript). Call inside the import batch.
  */
-export function linkTranscriptSessions(db: Db, host: string, transcriptId: string, memchorOutput: string): { privateSessionId: string | null } {
+export function linkTranscriptSessions(db: Db, host: string, transcriptId: string, debriefOutput: string): { privateSessionId: string | null } {
   requireTransaction(db, "linkTranscriptSessions");
-  const named = [...new Set([...memchorOutput.matchAll(SCOPE_SESSION)].map((match) => match[1] ?? ""))];
+  const named = [...new Set([...debriefOutput.matchAll(SCOPE_SESSION)].map((match) => match[1] ?? ""))];
   let found: string | null = null;
   const known = prepared(db, "SELECT private FROM sessions WHERE id = ?");
   const link = prepared(db, "INSERT OR IGNORE INTO transcript_sessions (host, transcript_id, session_id) VALUES (?, ?, ?)");
@@ -54,7 +54,7 @@ export function linkTranscriptSessions(db: Db, host: string, transcriptId: strin
 }
 
 /**
- * The transcripts that belong to a session: its host session id, every transcript whose Memchor
+ * The transcripts that belong to a session: its host session id, every transcript whose Debrief
  * output named it, and the imported transcripts of their sub-agents (the importer gives those the
  * parent's session). Sub-agent transcripts not imported yet are covered by their parent's marker.
  */

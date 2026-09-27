@@ -13,7 +13,7 @@ describe("synthetic import benchmark command", () => {
     expect(run.status, run.stderr).toBe(0);
     const report = JSON.parse(run.stdout) as { format: string; networkCalls: number; scenarios: { name: string; transcripts: number; events: number; records: number; elapsedMs: number; peakRssMB: number }[] };
     expect(report).toMatchObject({
-      format: "memchor-synthetic-import-benchmark-v1",
+      format: "debrief-synthetic-import-benchmark-v1",
       networkCalls: 0,
       scenarios: [
         { name: "small", transcripts: 1, events: 4, records: 4 },

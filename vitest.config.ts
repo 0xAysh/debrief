@@ -21,8 +21,8 @@ function pathWithRealGit(): string | undefined {
 
 const PATH = pathWithRealGit();
 /** Tests never read the developer's real Claude Code or Codex history unless a test passes its own directory. */
-const CLAUDE_CONFIG_DIR = join(tmpdir(), "memchor-tests-no-claude-config");
-const CODEX_HOME = join(tmpdir(), "memchor-tests-no-codex-home");
+const CLAUDE_CONFIG_DIR = join(tmpdir(), "debrief-tests-no-claude-config");
+const CODEX_HOME = join(tmpdir(), "debrief-tests-no-codex-home");
 
 export default defineConfig({
   test: {

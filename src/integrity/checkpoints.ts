@@ -1,4 +1,4 @@
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { LIMITS, type Applicability, type ExternalRef } from "../schemas.js";
 import { type Db, requireTransaction } from "../storage/database.js";
 import { appendRecord } from "../storage/records.js";
@@ -43,7 +43,7 @@ export function publishCheckpoint(
   requireTransaction(db, "publishCheckpoint");
   const currentRevision = headRevision(db, scope.workstreamId);
   if (currentRevision !== expectedRevision) {
-    throw new MemchorError(
+    throw new DebriefError(
       "checkpoint_conflict",
       `The workstream head is at revision ${currentRevision}, not ${expectedRevision}. Recall the current checkpoint, reconcile deliberately, then publish with expectedRevision ${currentRevision}.`,
       { details: { currentRevision, expectedRevision } },
@@ -51,7 +51,7 @@ export function publishCheckpoint(
   }
   const body = renderCheckpoint(content);
   if (Buffer.byteLength(body, "utf8") > LIMITS.bodyBytes) {
-    throw new MemchorError("invalid_input", `The rendered checkpoint exceeds ${LIMITS.bodyBytes} UTF-8 bytes (content_too_large); keep it to status and pointers.`, {
+    throw new DebriefError("invalid_input", `The rendered checkpoint exceeds ${LIMITS.bodyBytes} UTF-8 bytes (content_too_large); keep it to status and pointers.`, {
       details: { reason: "content_too_large", maxBytes: LIMITS.bodyBytes },
     });
   }
@@ -180,5 +180,5 @@ export function checkpointNudge(work: { turns: number; turnsBefore: number; chan
   if (!work.changed || Math.floor(work.turns / NUDGE_TURNS) <= Math.floor(work.turnsBefore / NUDGE_TURNS)) return null;
   const which = head.covers ? `r${head.revision}` : "none yet";
   const act = head.covers ? "update it" : "write one";
-  return `Memchor: ${work.turns} turns since the last checkpoint (${which}), with files changed or commands run. Before you finish, ${act} with memory_checkpoint (expectedRevision ${head.revision}): the next concrete step and why, not a status.`;
+  return `Debrief: ${work.turns} turns since the last checkpoint (${which}), with files changed or commands run. Before you finish, ${act} with memory_checkpoint (expectedRevision ${head.revision}): the next concrete step and why, not a status.`;
 }

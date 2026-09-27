@@ -9,13 +9,13 @@ const USER_ASK = "Checkout double-charges when the payment gateway times out. Fi
 
 /**
  * Codex names its thread on every tools/call (`_meta.threadId`, equal to the rollout's id), so the
- * live `memchor mcp --host codex` session and that thread's imported rollout are one session: the
+ * live `debrief mcp --host codex` session and that thread's imported rollout are one session: the
  * rollout joins the live session's workstream by session binding, even from another worktree.
  */
 describe("Codex live session binding", () => {
   async function run(withMeta: boolean): Promise<{ boot: BootstrapResult; pack: ContextPack }> {
     const repo = initRepo();
-    const other = join(tempDir("memchor-wt-"), "wt");
+    const other = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "side", other);
     const codex = codexHome();
     const threadId = codexThreadId();
@@ -50,7 +50,7 @@ describe("Codex live session binding", () => {
     async function secondResolution(threadId: string): Promise<BootstrapResult["scope"]> {
       const repo = initRepo();
       const home = tempDir();
-      const other = join(tempDir("memchor-wt-"), "wt");
+      const other = join(tempDir("debrief-wt-"), "wt");
       git(repo, "worktree", "add", "--quiet", "-b", "side", other);
       const scopes: BootstrapResult["scope"][] = [];
       for (const cwd of [repo, other]) {

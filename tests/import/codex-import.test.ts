@@ -23,7 +23,7 @@ function open(cwd: string, e: Env): Memory {
 }
 
 function addWorktree(repo: string, branch: string): string {
-  const path = join(tempDir("memchor-wt-"), "wt");
+  const path = join(tempDir("debrief-wt-"), "wt");
   git(repo, "worktree", "add", "--quiet", "-b", branch, path);
   return path;
 }
@@ -58,7 +58,7 @@ describe("Codex transcript import through the memory interface", () => {
       transcripts: { found: 3, currentProject: 3, unsupportedVersion: 2 },
     });
     expect(asked.import.question).toMatch(/found 3 local Codex sessions/);
-    expect(asked.import.question).toMatch(/2 written by a Codex version Memchor cannot read yet/);
+    expect(asked.import.question).toMatch(/2 written by a Codex version Debrief cannot read yet/);
 
     const imported = memory.bootstrap({ importChoice: "current_project" }).import;
     expect(imported).toMatchObject({ state: "complete", currentProject: { transcripts: 3, complete: 1, stopped: 2 } });
@@ -153,7 +153,7 @@ describe("Codex transcript import through the memory interface", () => {
     expect(items[0]?.copies).toHaveLength(1);
   });
 
-  test("Memchor output in a Codex rollout binds it to the workstream that output names; the output itself is never a record", () => {
+  test("Debrief output in a Codex rollout binds it to the workstream that output names; the output itself is never a record", () => {
     const e = env();
     const repo = initRepo();
     const bound = open(addWorktree(repo, "a"), e);
@@ -162,7 +162,7 @@ describe("Codex transcript import through the memory interface", () => {
 
     // A thread in another, not yet bound worktree whose memory_bootstrap output reported that workstream.
     const other = addWorktree(repo, "b");
-    installCodexRollout(e.codex, "0.142.5/memchor-echo.jsonl", { cwd: other, workstreamId, recordId: earlier.recordId });
+    installCodexRollout(e.codex, "0.142.5/debrief-echo.jsonl", { cwd: other, workstreamId, recordId: earlier.recordId });
     const boot = bound.bootstrap({ importChoice: "current_project" });
     expect(boot.import.currentProject?.counters).toMatchObject({ echoes: 3, echoReferences: 3, records: 3 });
     // The imported thread adopted the workstream, and with it this worktree.
@@ -210,7 +210,7 @@ describe("Codex transcript import through the memory interface", () => {
     expect(stored).toContain("SYNTHETIC-COMMAND-OUTPUT log line after cd");
     expect(stored).not.toMatch(/SYNTHETIC-SECRET-VALUE/);
     expect(stored).not.toContain("SYNTHETIC-FILE-CONTENT");
-    expect(stored.match(/output withheld by Memchor: the call touched a sensitive path/g)).toHaveLength(4);
+    expect(stored.match(/output withheld by Debrief: the call touched a sensitive path/g)).toHaveLength(4);
   });
 
   test("a turn that moves the thread into another worktree quarantines the rollout from that line", () => {

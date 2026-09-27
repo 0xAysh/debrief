@@ -193,7 +193,7 @@ export function shellFileReads(command: string | readonly string[], cwd: string,
       if (i === 0 && read.literal.length === 0 && read.globs.length === 0) return null;
       if (read.literal.length > 0 || read.globs.length > 0) reads = true;
       const resolved = (path: string): string => (isAbsolute(path) ? path : resolve(base, path));
-      // Output read from outside the working tree is not a file Memchor can reference (the
+      // Output read from outside the working tree is not a file Debrief can reference (the
       // importer keeps only in-tree paths), so it stays bounded command output instead of
       // disappearing. A glob's directory is checked the same way (its pattern resolves as a name).
       if (![...read.literal, ...read.globs].every((path) => within(resolved(path), root))) return null;

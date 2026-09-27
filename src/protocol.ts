@@ -1,11 +1,11 @@
 /**
- * The rules every agent using Memchor follows, delivered on both paths: as the MCP server's
- * instructions, and in session-start context where the host runs Memchor's hooks.
+ * The rules every agent using Debrief follows, delivered on both paths: as the MCP server's
+ * instructions, and in session-start context where the host runs Debrief's hooks.
  *
  * Kept within 2048 characters: Claude Code truncates longer server instructions, dropping the
  * last rules. Detail beyond the rules themselves lives in the tool descriptions.
  */
-export const PROTOCOL = `Memchor is local working memory shared by the coding agents in this repository.
+export const PROTOCOL = `Debrief is local working memory shared by the coding agents in this repository.
 - Call memory_bootstrap first. Tell the user the workspace/workstream it resolved; read the returned context and preferences before redoing work. If the user named the task (issue/PR number or URL, tracker key), pass it as task; never invent one.
 - If scope.ambiguity is set, no workstream is bound: show the user scope.ambiguity.question, wait, then call memory_bootstrap with workstream = their choice (an id or "new"). Never pick for them.
 - If import.state is "consent_required", show the user import.question verbatim, wait, then call memory_bootstrap with importChoice = their answer. Never choose for them.

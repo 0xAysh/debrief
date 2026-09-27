@@ -47,7 +47,7 @@ describe("Claude Code adapter", () => {
       ["result", "toolu_0001", "FAIL src/gateway.test.ts\n  x retries a 5", true],
       ["call", "Read", `Read ${CWD}/src/gateway.ts (lines 40-87)`, "artifact_access", [`${CWD}/src/gateway.ts`]],
       ["result", "toolu_0002", "    40\texport async function charge(orde", false],
-      ["call", "mcp__memchor__memory_recall", 'memory_recall {"query":"gateway retries"}', "memchor", []],
+      ["call", "mcp__debrief__memory_recall", 'memory_recall {"query":"gateway retries"}', "debrief", []],
       ["result", "toolu_0003", '{"items":[{"recordId":"rec_0123456789abc', false],
       ["call", "Read", `Read ${CWD}/docs/screenshot.png`, "artifact_access", [`${CWD}/docs/screenshot.png`]],
       ["result", "toolu_0004", "", false],
@@ -58,16 +58,16 @@ describe("Claude Code adapter", () => {
     expect(JSON.stringify(chunk.events)).not.toMatch(/SYNTHETIC-(HIDDEN|INJECTED)|SYNTHETICBINARY/);
   });
 
-  test("every operation Memchor offers is kind memchor, memory_manage included", () => {
+  test("every operation Debrief offers is kind debrief, memory_manage included", () => {
     const config = claudeConfigDir();
     const sessionId = "5e550000-0000-4000-8000-0000000000f1";
     const operations = Object.keys(OPERATION_SCHEMAS);
     const content = operations
-      .map((operation, i) => claudeToolExchange({ cwd: CWD, sessionId, gitBranch: "main", parentUuid: null, id: 900 + 2 * i, tool: `mcp__memchor__${operation}`, input: {}, result: '{"items":[]}' }))
+      .map((operation, i) => claudeToolExchange({ cwd: CWD, sessionId, gitBranch: "main", parentUuid: null, id: 900 + 2 * i, tool: `mcp__debrief__${operation}`, input: {}, result: '{"items":[]}' }))
       .join("");
     const { path } = installTranscript(config, "", { cwd: CWD, sessionId, content });
     const chunk = claudeCodeAdapter({ configDir: config }).read(fileOf(path, sessionId), 0, 1 << 20);
-    expect(chunk.events.filter((e) => e.type === "tool_call").map((c) => [c.tool, c.toolKind])).toEqual(operations.map((operation) => [`mcp__memchor__${operation}`, "memchor"]));
+    expect(chunk.events.filter((e) => e.type === "tool_call").map((c) => [c.tool, c.toolKind])).toEqual(operations.map((operation) => [`mcp__debrief__${operation}`, "debrief"]));
     expect(operations).toContain("memory_manage");
   });
 

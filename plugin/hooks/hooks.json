@@ -1,20 +1,20 @@
 {
-  "description": "Memchor's Claude Code hooks. Each runs the memchor command on PATH; without it, session start says how to install it and the others do nothing.",
+  "description": "Debrief's Claude Code hooks. Each runs the debrief command on PATH; without it, session start says how to install it and the others do nothing.",
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || { printf '%s\\n' '{\"systemMessage\":\"◪ memchor · not running: the memchor command is not on PATH (npm install -g memchor)\"}'; exit 0; }; exec memchor hook session-start --host claude-code" }] }
+      { "hooks": [{ "type": "command", "command": "command -v debrief >/dev/null 2>&1 || { printf '%s\\n' '{\"systemMessage\":\"◪ debrief · not running: the debrief command is not on PATH (npm install -g debrief-cli)\"}'; exit 0; }; exec debrief hook session-start --host claude-code" }] }
     ],
     "SubagentStart": [
-      { "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || exit 0; exec memchor hook subagent-start --host claude-code" }] }
+      { "hooks": [{ "type": "command", "command": "command -v debrief >/dev/null 2>&1 || exit 0; exec debrief hook subagent-start --host claude-code" }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || exit 0; exec memchor hook user-prompt-submit --host claude-code" }] }
+      { "hooks": [{ "type": "command", "command": "command -v debrief >/dev/null 2>&1 || exit 0; exec debrief hook user-prompt-submit --host claude-code" }] }
     ],
     "PreToolUse": [
-      { "matcher": "mcp__(plugin_memchor_)?memchor__.*", "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || exit 0; exec memchor hook pre-tool-use --host claude-code" }] }
+      { "matcher": "mcp__(plugin_debrief_)?debrief__.*", "hooks": [{ "type": "command", "command": "command -v debrief >/dev/null 2>&1 || exit 0; exec debrief hook pre-tool-use --host claude-code" }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || exit 0; exec memchor hook stop --host claude-code" }] }
+      { "hooks": [{ "type": "command", "command": "command -v debrief >/dev/null 2>&1 || exit 0; exec debrief hook stop --host claude-code" }] }
     ]
   }
 }

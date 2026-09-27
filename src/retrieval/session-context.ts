@@ -44,7 +44,7 @@ export interface SubagentStart {
 export const SUBAGENT_CONTEXT_CHARS = 4_000;
 const SUBAGENT_CHECKPOINT_CHARS = 1_500;
 const SUBAGENT_GUIDE =
-  "Memchor is the working memory of the session that started you (you are its sub-agent). The checkpoint below is where the task stands; the parent session keeps it, so do not call memory_checkpoint. What you do is kept from your transcript: put what you found in your final report. memory_recall has more.";
+  "Debrief is the working memory of the session that started you (you are its sub-agent). The checkpoint below is where the task stands; the parent session keeps it, so do not call memory_checkpoint. What you do is kept from your transcript: put what you found in your final report. memory_recall has more.";
 
 /** What a Stop hook says: a request to the agent to update a stale checkpoint, and a line for the user. */
 export interface TurnEnd {
@@ -58,12 +58,12 @@ export interface TurnEnd {
 
 /** A one-line notice for the user (a hook's `systemMessage`), never shown to the model. */
 export function userNotice(...parts: string[]): string {
-  return ["◪ memchor", ...parts].join(" · ");
+  return ["◪ debrief", ...parts].join(" · ");
 }
 
 export function renderSessionStart(boot: BootstrapResult, input: { protocol: string; failures: readonly HookFailure[]; now: Date; digest: SessionDigest | null }): SessionStart {
   const { scope, context: pack, preferences, import: imported } = boot;
-  const fixed: string[] = [`# Memchor: ${scope.workspaceLabel} / ${scope.workstreamLabel ?? "(no workstream bound)"}, head r${scope.headRevision}`, input.protocol];
+  const fixed: string[] = [`# Debrief: ${scope.workspaceLabel} / ${scope.workstreamLabel ?? "(no workstream bound)"}, head r${scope.headRevision}`, input.protocol];
 
   if (scope.ambiguity !== null) fixed.push(`## Workstream to confirm\n${scope.ambiguity.question}\nAsk the user, then call memory_bootstrap with workstream = their choice.`);
   if (imported.state === "consent_required" && imported.question !== null) fixed.push(`## Transcript import needs the user's answer\n${imported.question}\nAsk the user verbatim, then call memory_bootstrap with importChoice = their answer.`);
@@ -100,7 +100,7 @@ export function renderSessionStart(boot: BootstrapResult, input: { protocol: str
  */
 export function renderSubagentStart(input: { scope: BootstrapResult["scope"]; pack: ContextPack; preferences: PreferenceBlock; newWorkspace: boolean; now: Date }): SubagentStart {
   const { scope, pack, preferences } = input;
-  const fixed: string[] = [`# Memchor: ${scope.workspaceLabel} / ${scope.workstreamLabel ?? "(no workstream bound)"}, head r${scope.headRevision}`, SUBAGENT_GUIDE];
+  const fixed: string[] = [`# Debrief: ${scope.workspaceLabel} / ${scope.workstreamLabel ?? "(no workstream bound)"}, head r${scope.headRevision}`, SUBAGENT_GUIDE];
   if (pack.checkpoint !== null) fixed.push(checkpointSection(pack.checkpoint, SUBAGENT_CHECKPOINT_CHARS, input.now));
   if (preferences.items.length > 0) fixed.push(preferencesSection(preferences));
   if (pack.empty && preferences.items.length === 0) fixed.push(input.newWorkspace ? "No memory for this repository yet." : "No memory for this workstream yet.");
@@ -160,8 +160,8 @@ function renderDigest(digest: SessionDigest, checkpointRevision: number | null):
 
 /** Room kept for the "N more not shown" line. */
 const TAIL_RESERVE = 60;
-const CUT = "\n[cut by Memchor to fit session-start context: call memory_bootstrap for all of it]";
-const SUBAGENT_CUT = "\n[cut by Memchor to fit sub-agent context: use memory_recall for the rest]";
+const CUT = "\n[cut by Debrief to fit session-start context: call memory_bootstrap for all of it]";
+const SUBAGENT_CUT = "\n[cut by Debrief to fit sub-agent context: use memory_recall for the rest]";
 
 /** A sub-agent cannot tell the user; its parent's session start already did, and its report can. */
 export function unreadableSubagentStart(code: string): SubagentStart {
@@ -191,7 +191,7 @@ function notice(boot: BootstrapResult, shown: number, empty: boolean, input: { f
   if (boot.scope.ambiguity !== null) parts.push("workstream to confirm");
   const recent = input.failures.filter((f) => input.now.getTime() - Date.parse(f.at) < FAILURE_WINDOW_MS);
   const last = recent.at(-1);
-  if (last !== undefined) parts.push(`⚠ ${recent.length} hook failure${recent.length === 1 ? "" : "s"} (${last.code}): memchor diag status`);
+  if (last !== undefined) parts.push(`⚠ ${recent.length} hook failure${recent.length === 1 ? "" : "s"} (${last.code}): debrief diag status`);
   return userNotice(...parts);
 }
 

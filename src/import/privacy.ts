@@ -9,7 +9,7 @@
  * - Output of a tool that touched a sensitive path (dotenv files, private keys, credential
  *   stores) is withheld entirely; only the call's summary is kept.
  * - Passages are bounded. A longer text keeps its head and tail with an explicit
- *   `[… N bytes omitted by Memchor …]` marker in between, so nothing is truncated silently.
+ *   `[… N bytes omitted by Debrief …]` marker in between, so nothing is truncated silently.
  */
 
 export const PASSAGE_LIMITS = {
@@ -91,7 +91,7 @@ export function boundPassage(text: string, maxBytes: number): { text: string; om
   const head = prefixWithin(text, headBytes);
   const tail = suffixWithin(text, tailBytes);
   const omitted = total - Buffer.byteLength(head, "utf8") - Buffer.byteLength(tail, "utf8");
-  return { text: `${head}\n[… ${omitted.toLocaleString("en-US")} bytes omitted by Memchor …]\n${tail}`, omittedBytes: omitted };
+  return { text: `${head}\n[… ${omitted.toLocaleString("en-US")} bytes omitted by Debrief …]\n${tail}`, omittedBytes: omitted };
 }
 
 function prefixWithin(text: string, maxBytes: number): string {

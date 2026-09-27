@@ -9,7 +9,7 @@ import { sql as schemaV2 } from "../../src/storage/migrations/0002-transcript-im
 import { sql as schemaV3 } from "../../src/storage/migrations/0003-import-source-fingerprint.js";
 import { sql as schemaV4 } from "../../src/storage/migrations/0004-scope-resolution.js";
 import { sql as schemaV5 } from "../../src/storage/migrations/0005-lifecycle.js";
-import { catchMemchorError, initRepo, tempDir } from "../helpers.js";
+import { catchDebriefError, initRepo, tempDir } from "../helpers.js";
 
 const CANONICAL_TABLES = [
   "checkpoints",
@@ -129,7 +129,7 @@ describe("migrations", () => {
       const db = new Database(dbPath);
       db.prepare("UPDATE records SET review_state = 'retracted', lifecycle = 'retracted', retracted_at = 'migration-v3' WHERE id = ?").run(recordId);
       db.close();
-      const error = catchMemchorError(() => memory.manage({ action: "restore", recordId, reason: "r", attribution: "user_direction" }));
+      const error = catchDebriefError(() => memory.manage({ action: "restore", recordId, reason: "r", attribution: "user_direction" }));
       expect(error.code).toBe("lifecycle_conflict");
       expect(memory.manage({ action: "inspect", recordId })).toMatchObject({ record: { lifecycle: "retracted", eligible: false }, history: [] });
     } finally {
@@ -351,7 +351,7 @@ describe("migrations", () => {
 
   test("a database newer than this build fails closed with unsupported_runtime and is not modified", () => {
     const path = atVersionZero(`PRAGMA user_version = ${SCHEMA_VERSION + 1};`);
-    const error = catchMemchorError(() => openDatabase(path));
+    const error = catchDebriefError(() => openDatabase(path));
     expect(error.code).toBe("unsupported_runtime");
     expect(error.details).toMatchObject({ schemaVersion: SCHEMA_VERSION + 1, supportedSchemaVersion: SCHEMA_VERSION });
     expect(inspect(path)).toEqual({ version: SCHEMA_VERSION + 1, tables: [] });
@@ -373,7 +373,7 @@ describe("migrations", () => {
     }
   });
 
-  test("a workspace whose database was upgraded by a newer Memchor fails closed at bootstrap", () => {
+  test("a workspace whose database was upgraded by a newer Debrief fails closed at bootstrap", () => {
     const repo = initRepo();
     const home = tempDir();
     const first = openMemory({ cwd: repo, host: "codex", home });
@@ -385,7 +385,7 @@ describe("migrations", () => {
     raw.close();
 
     const second = openMemory({ cwd: repo, host: "codex", home });
-    expect(catchMemchorError(() => second.bootstrap()).code).toBe("unsupported_runtime");
+    expect(catchDebriefError(() => second.bootstrap()).code).toBe("unsupported_runtime");
     expect(second.status().problem?.code).toBe("unsupported_runtime");
     second.close();
   });

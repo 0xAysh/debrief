@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { eligibilityOf, type RecordRow, VISIBLE_SQL } from "../retrieval/eligibility.js";
 import type { Attribution, PREFERENCE_ANSWERS } from "../schemas.js";
 import { type Db, prepared, requireTransaction, writeTransaction } from "../storage/database.js";
@@ -19,14 +19,14 @@ import { normalizeForEcho } from "./restatement.js";
  * ```
  *
  * A candidate becomes a preference only through an answer that came from the user: the host's
- * reply when Memchor asked them directly (MCP elicitation; the transport only carries it, this
+ * reply when Debrief asked them directly (MCP elicitation; the transport only carries it, this
  * module decides what it means), or, when the question could not be asked that way, the answer
  * the agent relays, recorded as `agent_reported`. While the user is being asked, or after they
  * dismissed the question, the agent cannot answer in their place (`relay` refused).
  *
  * Active preferences are ordinary `preference` records, so the lifecycle (supersede, retract,
  * restore, forget), eligibility and lineage apply to them as to any record. Global ones live in
- * `$MEMCHOR_HOME/global.sqlite`, a database with the workspace schema shared by every repository.
+ * `$DEBRIEF_HOME/global.sqlite`, a database with the workspace schema shared by every repository.
  * An answer is applied in one transaction when the preference and the candidate are in one
  * database (a repo preference, "no"); for a global preference the preference is written first
  * and the candidate deleted second, and after a crash in between the question comes back and its
@@ -162,7 +162,7 @@ export function inferredChange(
   const row = prepared(db, "SELECT * FROM records WHERE id = ?").get(change.recordId) as RecordRow | undefined;
   if (row?.kind !== "preference") return null;
   if (change.action === "restore") {
-    throw new MemchorError("lifecycle_conflict", "Only the user can bring back a preference they removed: restore it only when they ask, with attribution user_direction.", {
+    throw new DebriefError("lifecycle_conflict", "Only the user can bring back a preference they removed: restore it only when they ask, with attribution user_direction.", {
       details: { recordId: row.id },
     });
   }
@@ -185,7 +185,7 @@ export function inferredChange(
 export function settleCandidate(stores: PreferenceStores, candidateId: string, reply: HostReply | { relayed: PreferenceAnswer }, declined: Set<string>): PreferenceQuestion {
   const row = prepared(stores.repo, "SELECT * FROM preference_candidates WHERE id = ?").get(candidateId) as CandidateRow | undefined;
   if (row === undefined) {
-    throw new MemchorError("not_found", `No pending preference question ${candidateId}: it was answered, or dropped after going unanswered twice.`, { details: { candidateId } });
+    throw new DebriefError("not_found", `No pending preference question ${candidateId}: it was answered, or dropped after going unanswered twice.`, { details: { candidateId } });
   }
   const target = targetOf(stores, row);
   const pending = questionFor(row, target?.row.body ?? "");
@@ -193,7 +193,7 @@ export function settleCandidate(stores: PreferenceStores, candidateId: string, r
   let confirmedBy: ConfirmedBy;
   if ("relayed" in reply) {
     if (row.relay === "refused") {
-      throw new MemchorError(
+      throw new DebriefError(
         "lifecycle_conflict",
         "The user is being asked this directly, or was asked and dismissed it, so an answer relayed by the agent does not count. It is asked again at the next session start.",
         { details: { candidateId, relay: "refused" } },
@@ -212,7 +212,7 @@ export function settleCandidate(stores: PreferenceStores, candidateId: string, r
     confirmedBy = "user";
   }
   if (!pending.choices.some((choice) => choice.value === answer)) {
-    throw new MemchorError("invalid_input", `"${answer}" is not an answer to this question; expected one of ${pending.choices.map((c) => c.value).join(", ")}.`, {
+    throw new DebriefError("invalid_input", `"${answer}" is not an answer to this question; expected one of ${pending.choices.map((c) => c.value).join(", ")}.`, {
       details: { candidateId, answer },
     });
   }
@@ -390,7 +390,7 @@ function applyProposal(stores: PreferenceStores, row: CandidateRow, target: { ro
 
 /** The one line a prompt-submit hook adds when {@link statesLastingPreference} holds. */
 export const PREFERENCE_HINT =
-  "Memchor: the user's wording may state a lasting preference. If it does, propose it with memory_record kind preference at the end of the turn; never for a one-off instruction.";
+  "Debrief: the user's wording may state a lasting preference. If it does, propose it with memory_record kind preference at the end of the turn; never for a one-off instruction.";
 
 /**
  * Wording that states a standing rule rather than a one-off request: "from now on", "going

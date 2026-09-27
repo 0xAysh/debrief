@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { eligibilityOf, IN_SCOPE_SQL, type Lifecycle, type RecordRow, requireInScopeRecord, type Taint } from "../retrieval/eligibility.js";
 import type { Attribution, LinkRelation, RecordKind } from "../schemas.js";
 import { type Db, openDatabase, prepared, requireTransaction, writeTransaction } from "../storage/database.js";
@@ -114,7 +114,7 @@ export function changeClaim(
   const target = requireInScopeRecord(db, scope.workstreamId, request.recordId);
   if (!TRANSITIONS[action].from(target.lifecycle)) throw lifecycleConflict(target, action);
   if (action === "supersede" && target.kind === "checkpoint") {
-    throw new MemchorError("invalid_input", "A checkpoint is superseded by publishing the next revision with memory_checkpoint, not by memory_manage.", {
+    throw new DebriefError("invalid_input", "A checkpoint is superseded by publishing the next revision with memory_checkpoint, not by memory_manage.", {
       details: { recordId: target.id },
     });
   }
@@ -266,7 +266,7 @@ export function confirmForget(db: Db, scope: ChangeScope, key: ConfirmationKey, 
   const token = openConfirmation(key, request.confirmToken, now);
   const plan = planForget(db, scope, token.ids);
   if (plan.digest !== token.d) {
-    throw new MemchorError("invalid_input", "Memory changed since the forget preview, so the confirmation no longer describes what would happen. Preview again and ask the user to confirm the new impact.", {
+    throw new DebriefError("invalid_input", "Memory changed since the forget preview, so the confirmation no longer describes what would happen. Preview again and ask the user to confirm the new impact.", {
       details: { reason: "preview_outdated" },
     });
   }
@@ -302,7 +302,7 @@ export function forgetSession(db: Db, session: { sessionId: string; host: string
 }
 
 /**
- * The importer met Memchor output naming a private session in this transcript: forgets what the
+ * The importer met Debrief output naming a private session in this transcript: forgets what the
  * transcript brought in and marks it private, as if the session had been marked with it known.
  */
 export function forgetTranscript(db: Db, transcript: { host: string; transcriptId: string; privateSessionId: string; workstreamId: string }, actor: LiveActor): string[] {
@@ -418,8 +418,8 @@ function signConfirmation(key: ConfirmationKey, payload: string): string {
 }
 
 function openConfirmation(key: ConfirmationKey, token: string, now: number): { ids: string[]; d: string } {
-  const invalid = (why: string): MemchorError =>
-    new MemchorError("invalid_input", `The confirmToken is not valid here (${why}). Call memory_manage with action forget_preview, show the user the impact, and use the new token.`, {
+  const invalid = (why: string): DebriefError =>
+    new DebriefError("invalid_input", `The confirmToken is not valid here (${why}). Call memory_manage with action forget_preview, show the user the impact, and use the new token.`, {
       details: { reason: "invalid_confirmation" },
     });
   const [payload, signature, extra] = token.split(".");
@@ -655,10 +655,10 @@ function inScope(db: Db, scope: ChangeScope, ids: readonly string[]): { listed: 
   return { listed, elsewhere: ids.length - listed.length };
 }
 
-function lifecycleConflict(target: RecordRow, action: Action): MemchorError {
+function lifecycleConflict(target: RecordRow, action: Action): DebriefError {
   const state =
     target.lifecycle === "active" ? "active" : target.lifecycle === "retracted" && action === "restore" ? "retracted, but not by memory_manage (it cannot be restored)" : target.lifecycle;
-  return new MemchorError(
+  return new DebriefError(
     "lifecycle_conflict",
     `Record ${target.id} is ${state}, so it cannot be ${TRANSITIONS[action].past}${target.superseded_by === null ? "" : `; its replacement is ${target.superseded_by}`}. Inspect it with memory_manage.`,
     { details: { recordId: target.id, lifecycle: target.lifecycle, ...(target.superseded_by === null ? {} : { replacementId: target.superseded_by }) } },

@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
-import { catchMemchorError, git, initRepo, onCleanup, snapshotTree, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, snapshotTree, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string, host = "claude-code"): Memory {
   const memory = openMemory({ cwd, host, home });
@@ -14,13 +14,13 @@ function open(cwd: string, home: string, host = "claude-code"): Memory {
 
 describe("scope", () => {
   test("outside a Git repository every operation fails closed with scope_unresolved, while status still reports", () => {
-    const notARepo = tempDir("memchor-plain-");
+    const notARepo = tempDir("debrief-plain-");
     const memory = open(notARepo, tempDir());
 
-    expect(catchMemchorError(() => memory.bootstrap()).code).toBe("scope_unresolved");
-    expect(catchMemchorError(() => memory.recall()).code).toBe("scope_unresolved");
+    expect(catchDebriefError(() => memory.bootstrap()).code).toBe("scope_unresolved");
+    expect(catchDebriefError(() => memory.recall()).code).toBe("scope_unresolved");
     expect(
-      catchMemchorError(() => memory.record({ kind: "note", body: "x", attribution: "agent_inference" })).code,
+      catchDebriefError(() => memory.record({ kind: "note", body: "x", attribution: "agent_inference" })).code,
     ).toBe("scope_unresolved");
 
     const status = memory.status();
@@ -34,12 +34,12 @@ describe("scope", () => {
     const base = { kind: "note", body: "hello", attribution: "agent_inference" } as const;
 
     for (const smuggled of [{ workspaceId: "ws_0000000000000000" }, { workstreamId: "wst_x" }, { path: "/etc" }, { cwd: "/tmp" }]) {
-      const error = catchMemchorError(() => memory.record({ ...base, ...smuggled }));
+      const error = catchDebriefError(() => memory.record({ ...base, ...smuggled }));
       expect(error.code).toBe("invalid_input");
       expect(error.message).toMatch(/scope/);
     }
-    expect(catchMemchorError(() => memory.recall({ workspaceId: "ws_0000000000000000" } as never)).code).toBe("invalid_input");
-    expect(catchMemchorError(() => memory.bootstrap({ cwd: "/" } as never)).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.recall({ workspaceId: "ws_0000000000000000" } as never)).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.bootstrap({ cwd: "/" } as never)).code).toBe("invalid_input");
     expect(memory.recall().empty).toBe(true);
   });
 
@@ -70,7 +70,7 @@ describe("scope", () => {
   test("a second worktree of the same repository shares the workspace but gets its own workstream", () => {
     const repo = initRepo();
     const home = tempDir();
-    const worktree = join(tempDir("memchor-wt-"), "wt");
+    const worktree = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "mobile-bug", worktree);
 
     const main = open(repo, home).bootstrap();
@@ -114,7 +114,7 @@ describe("workstream binding", () => {
     const home = tempDir();
     const original = open(repo, home).bootstrap();
     git(repo, "checkout", "--quiet", "-b", "elsewhere");
-    const worktree = join(tempDir("memchor-wt-"), "wt");
+    const worktree = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", worktree, "feat");
 
     const fresh = open(worktree, home).bootstrap();
@@ -140,7 +140,7 @@ describe("workspace identity", () => {
     registry.repositories[realpathSync(join(repoB, ".git"))] = { workspaceId: workspaceA, label: "b", rootCommit: null, registeredAt: "now" };
     writeFileSync(registryPath, JSON.stringify(registry));
 
-    const error = catchMemchorError(() => open(repoB, home).bootstrap());
+    const error = catchDebriefError(() => open(repoB, home).bootstrap());
     expect(error.code).toBe("storage_unavailable");
     expect(error.message).toMatch(/different repository/);
     const again = open(repoA, home).status();

@@ -4,7 +4,7 @@ import { homeLog } from "../storage/home-log.js";
 /**
  * Host hooks that failed, kept so a failure is never silent: a hook must exit quietly so it
  * never breaks the host, and this log is where the failure goes instead (status and the next
- * session start report it). It lives in `$MEMCHOR_HOME`, not in a workspace database, because
+ * session start report it). It lives in `$DEBRIEF_HOME`, not in a workspace database, because
  * the failure may be that no database could be opened. When even the home is unusable, the
  * hook's stderr is all that is left.
  */
@@ -16,7 +16,7 @@ export interface HookFailure {
   event: string;
   /** Where the host ran the hook, so a repository's session start reports only its own failures. */
   cwd: string;
-  /** An error code, or `not_a_transcript` when the host named a path Memchor does not import. */
+  /** An error code, or `not_a_transcript` when the host named a path Debrief does not import. */
   code: string;
   message: string;
 }

@@ -1,4 +1,4 @@
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import type { ExternalRef } from "../schemas.js";
 import { type Db, prepared, requireTransaction } from "../storage/database.js";
 import { RECALL_ELIGIBLE_SQL, type RecordRow, VISIBLE_SQL } from "./eligibility.js";
@@ -76,7 +76,7 @@ export function rebuildSearchIndex(db: Db): { records: number; chunks: number } 
 export function toFtsQuery(query: string): string {
   const terms = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].slice(0, MAX_QUERY_TERMS);
   if (terms.length === 0) {
-    throw new MemchorError("invalid_input", "The query contains no searchable words.", { details: { query } });
+    throw new DebriefError("invalid_input", "The query contains no searchable words.", { details: { query } });
   }
   return terms.map((term) => `"${term}"`).join(" OR ");
 }

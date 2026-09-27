@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach } from "vitest";
-import { MemchorError } from "../src/errors.js";
+import { DebriefError } from "../src/errors.js";
 
 const cleanups: (() => void)[] = [];
 
@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 /** A fresh temporary directory, removed after the current test. */
-export function tempDir(prefix = "memchor-test-"): string {
+export function tempDir(prefix = "debrief-test-"): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   cleanups.push(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -27,9 +27,9 @@ export function onCleanup(fn: () => void): void {
 
 const gitEnv = {
   ...process.env,
-  GIT_AUTHOR_NAME: "Memchor Test",
+  GIT_AUTHOR_NAME: "Debrief Test",
   GIT_AUTHOR_EMAIL: "test@example.invalid",
-  GIT_COMMITTER_NAME: "Memchor Test",
+  GIT_COMMITTER_NAME: "Debrief Test",
   GIT_COMMITTER_EMAIL: "test@example.invalid",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: "/dev/null",
@@ -41,7 +41,7 @@ export function git(cwd: string, ...args: string[]): string {
 
 /** `git init` a repository with one commit on `branch`. */
 export function initRepo(options: { branch?: string; commit?: boolean } = {}): string {
-  const dir = tempDir("memchor-repo-");
+  const dir = tempDir("debrief-repo-");
   git(dir, "init", "--quiet", `--initial-branch=${options.branch ?? "main"}`);
   if (options.commit ?? true) {
     writeFileSync(join(dir, "README.md"), "# fixture\n");
@@ -70,13 +70,13 @@ export function snapshotTree(root: string): string[] {
   return out.sort();
 }
 
-/** Runs `fn` and returns the MemchorError it throws; fails the test if it does not throw one. */
-export function catchMemchorError(fn: () => unknown): MemchorError {
+/** Runs `fn` and returns the DebriefError it throws; fails the test if it does not throw one. */
+export function catchDebriefError(fn: () => unknown): DebriefError {
   try {
     fn();
   } catch (error) {
-    if (error instanceof MemchorError) return error;
+    if (error instanceof DebriefError) return error;
     throw error;
   }
-  throw new Error("expected a MemchorError but the call succeeded");
+  throw new Error("expected a DebriefError but the call succeeded");
 }

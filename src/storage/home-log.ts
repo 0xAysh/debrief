@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from "n
 import { join } from "node:path";
 
 /**
- * A small JSON-lines log in `$MEMCHOR_HOME`, for what hooks must write before (or without) a
+ * A small JSON-lines log in `$DEBRIEF_HOME`, for what hooks must write before (or without) a
  * workspace database. Writers append without a lock: each append is one small write, and a full
  * log becomes `<name>.1.jsonl` by an atomic rename (replacing the previous one), so a trim never
  * races another writer's line. Two writers rotating at once can drop the older file early; what

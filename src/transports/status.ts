@@ -4,7 +4,7 @@ import type { HostId, PluginFacts } from "../hosts.js";
 import type { StatusResult } from "../memory.js";
 
 /**
- * `memchor status`: one host's answer to "is it working?", for a person at a terminal. A shallow
+ * `debrief status`: one host's answer to "is it working?", for a person at a terminal. A shallow
  * transport: the plugin check (src/host-health.ts), the host table and `Memory.status()` supply
  * every fact; this only lays them out and counts the problems. ✔ works · ✘ a problem · · worth knowing.
  */
@@ -19,7 +19,7 @@ export async function hostStatus(host: HostId, facts: PluginFacts, status: Statu
 }
 
 function renderStatus(host: HostId, facts: PluginFacts, status: StatusResult, plugin: PluginCheck, now: number): StatusReport {
-  const lines: string[] = [`memchor status · ${facts.hostName}`];
+  const lines: string[] = [`debrief status · ${facts.hostName}`];
   let problems = 0;
   const row = (label: string, value: string, mark: "✔" | "✘" | "·" | null = null): void => {
     if (mark === "✘") problems++;
@@ -78,7 +78,7 @@ function renderStatus(host: HostId, facts: PluginFacts, status: StatusResult, pl
   const unsupported = imported?.transcripts?.unsupportedVersion ?? 0;
   if (unsupported > 0) {
     const versions = (imported?.compatibility ?? []).map((c) => `${c.from} up to ${c.below}`).join(", ");
-    row("transcripts", `${unsupported} from a ${facts.hostName} version Memchor does not import (it imports ${versions})`, "✘");
+    row("transcripts", `${unsupported} from a ${facts.hostName} version Debrief does not import (it imports ${versions})`, "✘");
   }
   if (imported === null) row("import", `unknown: ${status.problem?.message ?? "scope unresolved"}`, "✘");
   else if (imported.problem !== null) row("import", `${imported.problem.code}: ${imported.problem.message}`, "✘");

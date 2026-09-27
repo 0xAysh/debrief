@@ -3,7 +3,7 @@ import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import { relative, sep } from "node:path";
 import { ensureWorkspace, resolveWorkstream, type ScopeAmbiguity } from "../bootstrap/workstream-resolution.js";
 import { locateWorkspace, registerWorkspace, type WorkspaceLocation } from "../bootstrap/workspace-resolution.js";
-import { type ErrorCode, MemchorError } from "../errors.js";
+import { type ErrorCode, DebriefError } from "../errors.js";
 import { forgetTranscript, openWorkspaceDatabase } from "../integrity/lifecycle.js";
 import { isPrivateTranscript, linkTranscriptSessions } from "../integrity/private-session.js";
 import { quarantineLateSummary, suppressedEvent } from "../integrity/taints.js";
@@ -36,14 +36,14 @@ import { boundPassage, PASSAGE_LIMITS, redactSecrets, removePrivate, touchesSens
  *   match (`anchor_hash`) → append. Anything else (rewritten, truncated) → a new pass from the
  *   start under a new epoch; events not seen again are counted as `missing`, never deleted.
  * - **Scope.** A transcript's workstream is decided once, before its first batch, by the same
- *   {@link resolveWorkstream} a live bootstrap uses: the Memchor output in that batch naming
+ *   {@link resolveWorkstream} a live bootstrap uses: the Debrief output in that batch naming
  *   the session's workstream, or a live session with the same host session id (step 1), then
  *   its first event's worktree binding (step 2), else a new workstream for that worktree. When
  *   that is ambiguous the transcript is *held*: nothing is written, it is reported as a
  *   `scope_ambiguous` gap, and it is re-resolved on the next bootstrap (e.g. after the user
  *   chose a workstream there). Ambiguous history is never stored workspace-level, because
  *   workspace-level records are recalled in every workstream: that would put it into current
- *   guidance. After the first batch, an event from another worktree or repository, or Memchor
+ *   guidance. After the first batch, an event from another worktree or repository, or Debrief
  *   output naming a different existing workstream, is a conflicting signal: the transcript is
  *   quarantined from that event on (`scope_ambiguous`), its cursor held there, and nothing past
  *   it is imported.
@@ -70,7 +70,7 @@ export interface ImportCounters {
   conflicts: number;
   /** Previously imported events absent after a rewrite; their records are kept. */
   missing: number;
-  /** Memchor's own tool output seen in transcripts: never evidence; only its record references are kept. */
+  /** Debrief's own tool output seen in transcripts: never evidence; only its record references are kept. */
   echoes: number;
   echoReferences: number;
   redactions: number;
@@ -187,7 +187,7 @@ interface CursorRow {
   stats: string;
 }
 
-type OutputRetention = "passage" | "reference_only" | "memchor_echo";
+type OutputRetention = "passage" | "reference_only" | "debrief_echo";
 
 interface CallMeta {
   /** Exact host id is the only raw call field retained: tool results need it for the join. */
@@ -327,7 +327,7 @@ export class TranscriptImporter {
       return { state: "captured", reason: null, transcriptId, workstreamId, events, complete, problem: null };
     } catch (error) {
       const mapped = toStorageError(error);
-      if (!(mapped instanceof MemchorError)) throw mapped;
+      if (!(mapped instanceof DebriefError)) throw mapped;
       return { state: "failed", reason: null, transcriptId, workstreamId: null, events: 0, complete: false, problem: { code: mapped.code, message: mapped.message } };
     }
   }
@@ -351,7 +351,7 @@ export class TranscriptImporter {
    */
   private failed(current: CurrentWorkspace, consent: Consent | null, entries: Discovered[] | null, error: unknown): ImportStatus {
     const mapped = toStorageError(error);
-    if (!(mapped instanceof MemchorError)) throw mapped;
+    if (!(mapped instanceof DebriefError)) throw mapped;
     const problem = { code: mapped.code, message: mapped.message };
     if (consent === null) return { ...unsupportedHostStatus(this.host), state: "unavailable", transcriptsRoot: this.options.adapter.root, compatibility: this.options.adapter.compatibility, problem };
     return { ...this.report(current, consent, entries), problem };
@@ -385,7 +385,7 @@ export class TranscriptImporter {
       try {
         location = locateWorkspace(cwd, this.options.home);
       } catch (error) {
-        if (!(error instanceof MemchorError && error.code === "scope_unresolved")) throw error;
+        if (!(error instanceof DebriefError && error.code === "scope_unresolved")) throw error;
       }
     }
     this.locations.set(cwd, location);
@@ -518,7 +518,7 @@ export class TranscriptImporter {
           };
           const applied = applyEvents(batch, chunk.events);
           if (applied !== null && "privateSessionId" in applied) {
-            // Memchor output in this transcript names a session the user asked not to remember:
+            // Debrief output in this transcript names a session the user asked not to remember:
             // drop what this transcript brought in, and never read it again.
             forgetTranscript(db, { host: this.host, transcriptId: file.transcriptId, privateSessionId: applied.privateSessionId, workstreamId: batch.workstreamId }, {
               sessionId: batch.sessionId,
@@ -589,7 +589,7 @@ export class TranscriptImporter {
             gap: {
               transcriptId: file.transcriptId,
               reason: "scope_ambiguous",
-              message: `Memchor could not tell which workstream this transcript belongs to (candidates: ${candidates}), so none of it was imported. It is imported once its worktree's workstream is chosen (memory_bootstrap with workstream).`,
+              message: `Debrief could not tell which workstream this transcript belongs to (candidates: ${candidates}), so none of it was imported. It is imported once its worktree's workstream is chosen (memory_bootstrap with workstream).`,
               cwd: entry.target.worktree,
             },
           });
@@ -733,22 +733,22 @@ function unsupportedGap(transcriptId: string, hostName: string, hostVersion: str
     transcriptId,
     reason: "unsupported_version",
     hostVersion,
-    message: `${hostName} ${hostVersion} is not in Memchor's compatibility table; this transcript is imported up to that entry and will resume once a Memchor that supports it is installed.`,
+    message: `${hostName} ${hostVersion} is not in Debrief's compatibility table; this transcript is imported up to that entry and will resume once a Debrief that supports it is installed.`,
   };
 }
 
 /**
  * What the transcript question tells a person, whoever puts it: what was found, what importing
  * means, and what never leaves the machine. The agent's question (`consentQuestion`) and
- * `memchor import` both say exactly this.
+ * `debrief import` both say exactly this.
  */
 export function consentFacts(host: string, counts: NonNullable<ImportStatus["transcripts"]>): { found: string; ask: string; privacy: string } {
-  const unplaced = counts.unassigned > 0 ? `, ${counts.unassigned} not in any Git repository Memchor can find` : "";
-  const unreadable = counts.unsupportedVersion > 0 ? ` ${counts.unsupportedVersion} written by a ${host} version Memchor cannot read yet will be skipped until it can.` : "";
+  const unplaced = counts.unassigned > 0 ? `, ${counts.unassigned} not in any Git repository Debrief can find` : "";
+  const unreadable = counts.unsupportedVersion > 0 ? ` ${counts.unsupportedVersion} written by a ${host} version Debrief cannot read yet will be skipped until it can.` : "";
   return {
-    found: `Memchor found ${counts.found} local ${host} sessions (${counts.currentProject} in this project, ${counts.otherProjects} in other projects${unplaced}).${unreadable}`,
-    ask: "Import observable transcript content into local Memchor storage?",
-    privacy: "Memchor does not send this data externally. Hidden reasoning, binaries, secrets it recognises, full file contents and oversized output are left out.",
+    found: `Debrief found ${counts.found} local ${host} sessions (${counts.currentProject} in this project, ${counts.otherProjects} in other projects${unplaced}).${unreadable}`,
+    ask: "Import observable transcript content into local Debrief storage?",
+    privacy: "Debrief does not send this data externally. Hidden reasoning, binaries, secrets it recognises, full file contents and oversized output are left out.",
   };
 }
 
@@ -783,7 +783,7 @@ interface Batch {
   counters: ImportCounters;
   /** Tool calls seen in this batch, by call id (earlier batches are looked up in import_events). */
   calls: Map<string, CallMeta>;
-  /** Per branch: the records Memchor output earlier in this pass showed the agent (see {@link restatedEchoes}). */
+  /** Per branch: the records Debrief output earlier in this pass showed the agent (see {@link restatedEchoes}). */
   echoed: Map<string, Map<string, string[]>>;
   locate: (cwd: string) => Target | null;
 }
@@ -793,7 +793,7 @@ const WORKSTREAM_ID = /^wst_[0-9a-f]{32}$/;
 const WORKSTREAM_FIELD = /"workstreamId":"(wst_[0-9a-f]{32})"/g;
 
 /**
- * The workstreams a piece of Memchor output reports this session as bound to: its
+ * The workstreams a piece of Debrief output reports this session as bound to: its
  * `scope.workstreamId`. Candidate ids listed in an ambiguity, or ids in an error, are not a
  * binding. Output that is not intact JSON (clipped by the host) falls back to every
  * `"workstreamId"` field in it, so a clipped ambiguity lists several ids and resolves as a
@@ -809,7 +809,7 @@ function workstreamsBoundIn(text: string): string[] {
 }
 
 /**
- * Step-1 evidence for a transcript's first batch: the workstreams Memchor output reported as
+ * Step-1 evidence for a transcript's first batch: the workstreams Debrief output reported as
  * bound, before the transcript leaves its first worktree (later output belongs to wherever it
  * went, and the move itself quarantines the transcript).
  */
@@ -819,7 +819,7 @@ function workstreamsNamedAtStart(events: readonly NormalizedEvent[]): string[] {
   const cwd = events[0]?.cwd;
   for (const event of events) {
     if (event.cwd !== cwd) break;
-    if (event.type === "tool_call" && event.toolKind === "memchor") calls.add(event.callId);
+    if (event.type === "tool_call" && event.toolKind === "debrief") calls.add(event.callId);
     if (event.type === "tool_result" && calls.has(event.callId)) for (const id of workstreamsBoundIn(event.text)) named.add(id);
   }
   return [...named];
@@ -881,8 +881,8 @@ function applyEvents(batch: Batch, events: readonly NormalizedEvent[]): { offset
 
     if (event.type === "tool_result") {
       const call = batch.calls.get(event.callId) ?? lookupCall(batch, event.callId);
-      if (call?.retention === "memchor_echo") {
-        // Memchor's own output: keep which existing records it mentioned, never the text.
+      if (call?.retention === "debrief_echo") {
+        // Debrief's own output: keep which existing records it mentioned, never the text.
         const mentioned = [...new Set(event.text.match(RECORD_ID) ?? [])];
         const existing = mentioned.length === 0 ? [] : (prepared(db, "SELECT id FROM records WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(mentioned)) as { id: string }[]).map((r) => r.id);
         const named = linkTranscriptSessions(db, batch.host, batch.transcriptId, event.text);
@@ -890,7 +890,7 @@ function applyEvents(batch: Batch, events: readonly NormalizedEvent[]): { offset
         const workstreams = workstreamsBoundIn(event.text);
         const foreign = workstreams.length === 0 ? [] : (prepared(db, "SELECT id FROM workstreams WHERE id IN (SELECT value FROM json_each(?)) AND id <> ?").all(JSON.stringify(workstreams), batch.workstreamId) as { id: string }[]);
         if (foreign.length > 0) {
-          return { offset: event.lineStart, message: `Memchor output in this transcript names workstream ${foreign[0]?.id ?? ""}, but its worktree is bound to ${batch.workstreamId}; the transcript is quarantined from here instead of guessing.` };
+          return { offset: event.lineStart, message: `Debrief output in this transcript names workstream ${foreign[0]?.id ?? ""}, but its worktree is bound to ${batch.workstreamId}; the transcript is quarantined from here instead of guessing.` };
         }
         batch.counters.echoes++;
         batch.counters.echoReferences += existing.length;
@@ -923,7 +923,7 @@ function conflictingScope(batch: Batch, cwd: string): string | null {
   const location = batch.locate(cwd);
   if (location !== null && location.workspaceId === batch.workspaceId && location.worktree === batch.worktree) return null;
   return location === null
-    ? `The transcript moved to ${cwd}, which is not a Git worktree Memchor can resolve; it is quarantined from here instead of guessing.`
+    ? `The transcript moved to ${cwd}, which is not a Git worktree Debrief can resolve; it is quarantined from here instead of guessing.`
     : `The transcript moved from ${batch.worktree} to ${location.worktree}; one transcript cannot belong to two worktrees, so it is quarantined from here.`;
 }
 
@@ -957,14 +957,14 @@ function toolResultRecord(batch: Batch, call: CallMeta | null, event: Extract<No
   let output: string;
   if (call?.sensitive === true) {
     batch.counters.withheld++;
-    output = "[output withheld by Memchor: the call touched a sensitive path]";
+    output = "[output withheld by Debrief: the call touched a sensitive path]";
   } else if (call?.retention === "reference_only") {
     if (event.text !== "") batch.counters.fileContents++;
     output = event.isError ? passage(batch, event.text, 300) : "(file content not stored; read the file for its current state)";
   } else if (call === null) {
-    // Without the call, Memchor cannot tell whether the output came from a sensitive path.
+    // Without the call, Debrief cannot tell whether the output came from a sensitive path.
     batch.counters.withheld++;
-    output = "[output withheld by Memchor: the tool call that produced it could not be read]";
+    output = "[output withheld by Debrief: the tool call that produced it could not be read]";
   } else {
     output = event.text.trim() === "" ? "(no text output)" : passage(batch, event.text, PASSAGE_LIMITS.toolOutputBytes);
   }
@@ -1055,7 +1055,7 @@ function rememberEcho(batch: Batch, branch: string, recordIds: readonly string[]
 }
 
 /**
- * Records Memchor showed the agent earlier on this branch whose body, or one of whose
+ * Records Debrief showed the agent earlier on this branch whose body, or one of whose
  * sentences of at least 40 characters (`MIN_RESTATED_CHARS`), `text` contains verbatim
  * (case and whitespace ignored). Such a text is a copy of that memory, so its record is
  * stored `derived_from` it and inherits its independent root: echoed memory must never come
@@ -1080,8 +1080,8 @@ function retentionFor(toolKind: ToolKind): OutputRetention {
   switch (toolKind) {
     case "artifact_access":
       return "reference_only";
-    case "memchor":
-      return "memchor_echo";
+    case "debrief":
+      return "debrief_echo";
     case "other":
       return "passage";
   }

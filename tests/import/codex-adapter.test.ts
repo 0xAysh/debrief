@@ -88,13 +88,13 @@ describe("Codex adapter", () => {
     expect(chunk.excluded).toEqual({ host_metadata: 7, hidden_reasoning: 1 });
   });
 
-  test("Memchor's own calls are kind memchor under every name form Codex writes, and their results carry the bare MCP JSON", () => {
-    const { chunk } = readAll("0.142.5/memchor-echo.jsonl", { workstreamId: "wst_11111111111111111111111111111111", recordId: "rec_22222222222222222222222222222222" });
+  test("Debrief's own calls are kind debrief under every name form Codex writes, and their results carry the bare MCP JSON", () => {
+    const { chunk } = readAll("0.142.5/debrief-echo.jsonl", { workstreamId: "wst_11111111111111111111111111111111", recordId: "rec_22222222222222222222222222222222" });
     const calls = chunk.events.filter((e) => e.type === "tool_call");
     expect(calls.map((c) => [c.tool, c.toolKind, c.summary])).toEqual([
-      ["mcp__memchor__memory_bootstrap", "memchor", "memory_bootstrap {}"],
-      ["mcp__memchor__memory_recall", "memchor", 'memory_recall {"query":"gateway retries"}'],
-      ["mcp__memchor__memory_record", "memchor", 'memory_record {"kind":"note","body":"placeholder","attribution":"agent_inference"}'],
+      ["mcp__debrief__memory_bootstrap", "debrief", "memory_bootstrap {}"],
+      ["mcp__debrief__memory_recall", "debrief", 'memory_recall {"query":"gateway retries"}'],
+      ["mcp__debrief__memory_record", "debrief", 'memory_record {"kind":"note","body":"placeholder","attribution":"agent_inference"}'],
       ["mcp__node_repl__js", "other", "mcp__node_repl__js [arguments omitted]"],
     ]);
     const results = chunk.events.filter((e) => e.type === "tool_result");
@@ -106,20 +106,20 @@ describe("Codex adapter", () => {
     expect(chunk.excluded["host_metadata"]).toBeGreaterThanOrEqual(1);
   });
 
-  test("memory_manage is kind memchor too, also under the collision-suffixed name", () => {
+  test("memory_manage is kind debrief too, also under the collision-suffixed name", () => {
     const home = codexHome();
     const call = (id: string, name: string, extra: object) => JSON.stringify({ timestamp: "2026-01-01T00:00:20.000Z", type: "response_item", payload: { type: "function_call", id: `fc_${id}`, name, arguments: '{"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}', call_id: id, internal_chat_message_metadata_passthrough: { turn_id: "turn-2" }, ...extra } });
     const threadId = codexThreadId();
     const { path } = installCodexRollout(home, "", {
       cwd: CWD,
       threadId,
-      content: renderCodexFixture("0.142.5/memchor-echo.jsonl", { cwd: CWD, threadId }) + [call("call_0201", "memory_manage", { namespace: "mcp__memchor" }), call("call_0202", "mcp__memchor__memory_manage_0123456789ab", {}), ""].join("\n"),
+      content: renderCodexFixture("0.142.5/debrief-echo.jsonl", { cwd: CWD, threadId }) + [call("call_0201", "memory_manage", { namespace: "mcp__debrief" }), call("call_0202", "mcp__debrief__memory_manage_0123456789ab", {}), ""].join("\n"),
     });
     const chunk = codexAdapter({ codexHome: home }).read(fileOf(path, threadId), 0, 1 << 20);
     const manage = chunk.events.filter((e) => e.type === "tool_call" && e.callId.startsWith("call_02"));
     expect(manage.map((c) => (c.type === "tool_call" ? [c.toolKind, c.summary] : null))).toEqual([
-      ["memchor", 'memory_manage {"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}'],
-      ["memchor", 'memory_manage {"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}'],
+      ["debrief", 'memory_manage {"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}'],
+      ["debrief", 'memory_manage {"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}'],
     ]);
   });
 
@@ -257,10 +257,10 @@ describe("Codex adapter", () => {
     const { chunk } = readAll("0.142.5/shell-outside.jsonl");
     const calls = chunk.events.filter((e) => e.type === "tool_call").map((e) => [e.summary, e.toolKind, e.paths]);
     expect(calls).toEqual([
-      // Outside the tree the output is not a file Memchor can reference, so it stays bounded command output.
-      ["$ cat /tmp/memchor-example/test.log", "other", []],
+      // Outside the tree the output is not a file Debrief can reference, so it stays bounded command output.
+      ["$ cat /tmp/debrief-example/test.log", "other", []],
       ["$ tail -n 5 ../sibling/notes.md", "other", []],
-      ["$ cd /tmp/memchor-example && cat test.log", "other", []],
+      ["$ cd /tmp/debrief-example && cat test.log", "other", []],
       ["$ cat ~/.aws/credentials", "other", []],
       ["$ cat /home/placeholder/.aws/credentials", "other", []],
       ["$ head -3 /home/placeholder/other/.env", "other", []],
@@ -274,7 +274,7 @@ describe("Codex adapter", () => {
     expect(chunk.stop).toBeNull();
     expect(chunk.events.map(shape)).toEqual([
       ["user", "Pick up the handoff and check what memory says."],
-      ["call", "mcp__memchor__memory_recall", 'memory_recall {"query":"handoff"}', "memchor", [], []],
+      ["call", "mcp__debrief__memory_recall", 'memory_recall {"query":"handoff"}', "debrief", [], []],
       ["result", "call_0601", '{"items":[{"recordId":"rec_0000000000000', false],
       ["assistant", "Memory has one earlier decision; I will verify it against the code."],
     ]);

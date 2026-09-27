@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type ContextPack, type Memory } from "../../src/memory.js";
-import { catchMemchorError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string, host = "claude-code"): Memory {
   const memory = openMemory({ cwd, host, home });
@@ -80,9 +80,9 @@ describe("context pack budgets", () => {
         expect(item.warning).toMatch(/read the current file/i);
         expect(item.warning).toMatch(/verify .* with your own tools/i);
         expect(item.externalRefs.map((ref) => ref.reason)).toEqual(["changed", "remote_unverified"]);
-        if (item.excerpt.includes("cut by Memchor")) {
+        if (item.excerpt.includes("cut by Debrief")) {
           cutItems++;
-          expect(item.excerpt).toMatch(/cut by Memchor.*memory_read/);
+          expect(item.excerpt).toMatch(/cut by Debrief.*memory_read/);
           expect(item.truncated).toBe(true);
         }
       }
@@ -95,7 +95,7 @@ describe("context pack budgets", () => {
     const pack = open(repo, home).recall({ maxBytes: 2_400 });
     expect(pack.checkpoint).toMatchObject({ truncated: true, freshness: "stale", citations: [{ recordId: evidence, relation: "supported_by" }] });
     expect(pack.checkpoint?.warning).toMatch(/read the current file/i);
-    expect(pack.checkpoint?.excerpt).toMatch(/cut by Memchor.*memory_read/);
+    expect(pack.checkpoint?.excerpt).toMatch(/cut by Debrief.*memory_read/);
     expect(pack.items).toEqual([]);
     expect(pack.omissions).toEqual([{ reason: "budget", count: 9 }]);
     expect(pack.budget.usedBytes).toBeLessThanOrEqual(2_400);
@@ -110,7 +110,7 @@ describe("context pack budgets", () => {
     const [lead] = page.items;
     expect(lead).toMatchObject({ kind: "decision", truncated: true, freshness: "stale", citations: [{ recordId: evidence, relation: "supported_by" }] });
     expect(lead?.warning).toMatch(/read the current file/i);
-    expect(lead?.excerpt).toMatch(/cut by Memchor/);
+    expect(lead?.excerpt).toMatch(/cut by Debrief/);
     expect(page.budget.usedBytes).toBeLessThanOrEqual(2_100);
   });
 
@@ -178,7 +178,7 @@ describe("context pack budgets", () => {
   test("an ambiguous session's pack, its scope question and notice included, fits the budget", () => {
     const home = tempDir();
     const repo = initRepo();
-    const first = join(tempDir("memchor-wt-"), "wt");
+    const first = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "feat/amb", first);
     const orphan = open(first, home);
     orphan.bootstrap();
@@ -186,7 +186,7 @@ describe("context pack budgets", () => {
     for (let i = 0; i < 12; i++) orphan.record({ kind: "constraint", body: `repository-wide constraint ${i}: ${"prefer small commits ".repeat(10)}`, attribution: "user_direction", workspaceLevel: true });
     orphan.close();
     git(repo, "worktree", "remove", "--force", first);
-    const second = join(tempDir("memchor-wt-"), "wt");
+    const second = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", second, "feat/amb");
 
     const memory = open(second, home);
@@ -208,8 +208,8 @@ describe("context pack budgets", () => {
     const context = memory.bootstrap({ maxTokens: 700 }).context;
     expect(context.budget).toMatchObject({ maxTokens: 700, maxBytes: 2_800 });
     expect(packBytes(context)).toBeLessThanOrEqual(2_800);
-    expect(catchMemchorError(() => memory.bootstrap({ maxTokens: 1_000_000 })).code).toBe("invalid_input");
-    expect(catchMemchorError(() => memory.bootstrap({ maxBytes: 10 })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.bootstrap({ maxTokens: 1_000_000 })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.bootstrap({ maxBytes: 10 })).code).toBe("invalid_input");
   });
 
   test("records too large for a small budget are reported by id without starving the pack of what fits", () => {

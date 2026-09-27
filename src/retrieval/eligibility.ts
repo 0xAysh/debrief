@@ -1,4 +1,4 @@
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { type Db, prepared } from "../storage/database.js";
 
 /**
@@ -13,7 +13,7 @@ import { type Db, prepared } from "../storage/database.js";
  * A record is *visible* (eligible as current guidance) when it is in scope, its own lifecycle
  * is `active`, and no other record taints it (see src/integrity/lifecycle.ts). Visibility
  * governs recall, FTS ranking, direct reads, link and citation expansion, independent roots,
- * the head checkpoint, and everything built on recall (`memchor diag records`).
+ * the head checkpoint, and everything built on recall (`debrief diag records`).
  *
  * A record is *recall-eligible* when it is visible and is not a checkpoint: the head
  * checkpoint is surfaced separately at the top of every first page, and superseded
@@ -59,10 +59,10 @@ export interface RecordRow {
 export function requireInScopeRecord(db: Db, workstreamId: string, recordId: string): RecordRow {
   const row = prepared(db, "SELECT * FROM records WHERE id = ?").get(recordId) as RecordRow | undefined;
   if (row === undefined) {
-    throw new MemchorError("not_found", `No record ${recordId} exists in this workspace.`, { details: { recordId } });
+    throw new DebriefError("not_found", `No record ${recordId} exists in this workspace.`, { details: { recordId } });
   }
   if (row.workstream_id !== null && row.workstream_id !== workstreamId) {
-    throw new MemchorError("scope_denied", `Record ${recordId} belongs to another workstream and is not visible here.`, {
+    throw new DebriefError("scope_denied", `Record ${recordId} belongs to another workstream and is not visible here.`, {
       details: { recordId },
     });
   }
@@ -80,14 +80,14 @@ export function requireVisibleRecord(db: Db, workstreamId: string, recordId: str
   const state = eligibilityOf(db, row);
   if (state.eligible) return row;
   if (state.taint === null) {
-    throw new MemchorError(
+    throw new DebriefError(
       "not_found",
       `Record ${recordId} is ${row.lifecycle} and is no longer current guidance${row.superseded_by === null ? "" : `; its replacement is ${row.superseded_by}`}. Use memory_manage inspect for its history.`,
       { details: { recordId, lifecycle: row.lifecycle, ...(row.superseded_by === null ? {} : { replacementId: row.superseded_by }) } },
     );
   }
   const { taint } = state;
-  throw new MemchorError(
+  throw new DebriefError(
     "not_found",
     `Record ${recordId} is ${taint.taint} because ${taint.causeId}, which it ${taint.taint === "invalidated" ? "restates" : "rests on"}, is no longer current. Use memory_manage inspect for details.`,
     { details: { recordId, lifecycle: row.lifecycle, taint: taint.taint, causeId: taint.causeId } },

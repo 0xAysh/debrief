@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import { openMemory, type BootstrapResult } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
 import { CLI, NO_NETWORK } from "./harness.js";
-import { CODEX_PINNED_VERSION, codex, codexAsync, CodexAppServer, codexEnv, codexSkipReason, memchorAddArgs, startStubResponses, useStubProvider } from "./codex.js";
+import { CODEX_PINNED_VERSION, codex, codexAsync, CodexAppServer, codexEnv, codexSkipReason, debriefAddArgs, startStubResponses, useStubProvider } from "./codex.js";
 
 const SKIP = codexSkipReason();
 if (SKIP !== null) process.stderr.write(`codex connection tests skipped: ${SKIP}\n`);
@@ -13,41 +13,41 @@ if (SKIP !== null) process.stderr.write(`codex connection tests skipped: ${SKIP}
 const TOOLS = ["memory_bootstrap", "memory_checkpoint", "memory_manage", "memory_read", "memory_recall", "memory_record", "memory_status"];
 
 function setup() {
-  const codexHome = tempDir("memchor-codex-home-");
-  const memchorHome = tempDir();
+  const codexHome = tempDir("debrief-codex-home-");
+  const debriefHome = tempDir();
   const networkLog = join(tempDir(), "network.log");
-  const env = codexEnv(codexHome, tempDir("memchor-codex-user-"));
-  const added = codex(env, tempDir(), ...memchorAddArgs({ codexHome, memchorHome, networkLog }));
+  const env = codexEnv(codexHome, tempDir("debrief-codex-user-"));
+  const added = codex(env, tempDir(), ...debriefAddArgs({ codexHome, debriefHome, networkLog }));
   expect(added.code, added.stderr).toBe(0);
-  return { codexHome, memchorHome, networkLog, env, added };
+  return { codexHome, debriefHome, networkLog, env, added };
 }
 
 describe.skipIf(SKIP !== null)(`real Codex ${CODEX_PINNED_VERSION} connection`, () => {
-  test("codex mcp add registers memchor with its arguments and explicit env; list and get show it", () => {
-    const { env, codexHome, memchorHome, added } = setup();
-    expect(added.stdout).toContain("Added global MCP server 'memchor'.");
+  test("codex mcp add registers debrief with its arguments and explicit env; list and get show it", () => {
+    const { env, codexHome, debriefHome, added } = setup();
+    expect(added.stdout).toContain("Added global MCP server 'debrief'.");
 
     const list = JSON.parse(codex(env, tempDir(), "mcp", "list", "--json").stdout) as Record<string, unknown>[];
     expect(list).toEqual([
       expect.objectContaining({
-        name: "memchor",
+        name: "debrief",
         enabled: true,
         transport: expect.objectContaining({
           type: "stdio",
           command: process.execPath,
           args: ["--import", NO_NETWORK, CLI, "mcp", "--host", "codex"],
-          env: expect.objectContaining({ CODEX_HOME: codexHome, MEMCHOR_HOME: memchorHome }) as unknown,
+          env: expect.objectContaining({ CODEX_HOME: codexHome, DEBRIEF_HOME: debriefHome }) as unknown,
           cwd: null,
         }) as unknown,
       }),
     ]);
-    const get = codex(env, tempDir(), "mcp", "get", "memchor", "--json");
+    const get = codex(env, tempDir(), "mcp", "get", "debrief", "--json");
     expect(get.code).toBe(0);
-    expect(JSON.parse(get.stdout)).toMatchObject({ name: "memchor", transport: { type: "stdio", command: process.execPath } });
+    expect(JSON.parse(get.stdout)).toMatchObject({ name: "debrief", transport: { type: "stdio", command: process.execPath } });
     expect(codex(env, tempDir(), "mcp", "get", "missing").code).not.toBe(0);
   });
 
-  test("codex app-server starts memchor, completes the MCP handshake and lists all seven memory tools, with no network access from Memchor", async () => {
+  test("codex app-server starts debrief, completes the MCP handshake and lists all seven memory tools, with no network access from Debrief", async () => {
     const { env, networkLog } = setup();
     const repo = initRepo();
     // With no thread, Codex launches MCP servers in its own working directory.
@@ -55,17 +55,17 @@ describe.skipIf(SKIP !== null)(`real Codex ${CODEX_PINNED_VERSION} connection`, 
     await server.initialize();
     const status = await server.request("mcpServerStatus/list", {});
     const entries = status["data"] as { name: string; serverInfo?: { name?: string }; tools?: unknown }[];
-    const memchor = entries.find((entry) => entry.name === "memchor");
-    expect(memchor?.serverInfo?.name).toBe("memchor");
-    const tools = memchor?.tools;
+    const debrief = entries.find((entry) => entry.name === "debrief");
+    expect(debrief?.serverInfo?.name).toBe("debrief");
+    const tools = debrief?.tools;
     const names = Array.isArray(tools) ? (tools as { name: string }[]).map((t) => t.name) : Object.keys(tools as object);
     expect(names.map((name) => name.replace(/^.*__/, "")).sort()).toEqual(TOOLS);
     server.close();
     expect(existsSync(networkLog) ? readFileSync(networkLog, "utf8") : "").toBe("");
   });
 
-  test("a thread's memchor runs in the thread's cwd, and its legacy rollout imports into that workstream with the thread id as transcript id", async () => {
-    const { env, codexHome, memchorHome, networkLog } = setup();
+  test("a thread's debrief runs in the thread's cwd, and its legacy rollout imports into that workstream with the thread id as transcript id", async () => {
+    const { env, codexHome, debriefHome, networkLog } = setup();
     const repo = initRepo({ branch: "feat/codex" });
     const stub = await startStubResponses({ calls: [
         { tool: "memory_bootstrap", arguments: {} },
@@ -73,8 +73,8 @@ describe.skipIf(SKIP !== null)(`real Codex ${CODEX_PINNED_VERSION} connection`, 
       ], reply: "Bootstrapped; nothing to continue yet." });
     useStubProvider(codexHome, stub.port);
 
-    // app-server runs outside any repository: Memchor can only resolve scope from the thread's cwd.
-    const server = new CodexAppServer(env, tempDir("memchor-not-a-repo-"));
+    // app-server runs outside any repository: Debrief can only resolve scope from the thread's cwd.
+    const server = new CodexAppServer(env, tempDir("debrief-not-a-repo-"));
     await server.initialize();
     const { threadId, path } = await server.runTurn(repo, "Continue the codex handoff work.");
     server.close();
@@ -89,7 +89,7 @@ describe.skipIf(SKIP !== null)(`real Codex ${CODEX_PINNED_VERSION} connection`, 
     expect(rollout).toContain('\\"elicitation\\":{\\"form\\":true,\\"url\\":true}');
     expect(live).toBeDefined();
 
-    const memory = openMemory({ cwd: repo, home: memchorHome, host: "codex", codexHome });
+    const memory = openMemory({ cwd: repo, home: debriefHome, host: "codex", codexHome });
     onCleanup(() => {
       memory.close();
     });
@@ -102,12 +102,12 @@ describe.skipIf(SKIP !== null)(`real Codex ${CODEX_PINNED_VERSION} connection`, 
     expect(existsSync(networkLog) ? readFileSync(networkLog, "utf8") : "").toBe("");
   }, 60_000);
 
-  test("headless codex exec and a preference question: the tool call returns within Memchor's bound, and what Codex did is recorded", async () => {
-    const codexHome = tempDir("memchor-codex-home-");
-    const memchorHome = tempDir();
+  test("headless codex exec and a preference question: the tool call returns within Debrief's bound, and what Codex did is recorded", async () => {
+    const codexHome = tempDir("debrief-codex-home-");
+    const debriefHome = tempDir();
     const networkLog = join(tempDir(), "network.log");
-    const env = codexEnv(codexHome, tempDir("memchor-codex-user-"));
-    const added = codex(env, tempDir(), ...memchorAddArgs({ codexHome, memchorHome, networkLog, env: { MEMCHOR_ELICITATION_TIMEOUT_MS: "5000" } }));
+    const env = codexEnv(codexHome, tempDir("debrief-codex-user-"));
+    const added = codex(env, tempDir(), ...debriefAddArgs({ codexHome, debriefHome, networkLog, env: { DEBRIEF_ELICITATION_TIMEOUT_MS: "5000" } }));
     expect(added.code, added.stderr).toBe(0);
     const repo = initRepo({ branch: "feat/codex" });
     const stub = await startStubResponses({
@@ -119,12 +119,12 @@ describe.skipIf(SKIP !== null)(`real Codex ${CODEX_PINNED_VERSION} connection`, 
     });
     useStubProvider(codexHome, stub.port);
     const started = Date.now();
-    // exec's approval policy is "never", which refuses MCP calls that need approval: pre-approve Memchor's tools.
-    const run = await codexAsync(env, repo, 50_000, "exec", "-c", 'mcp_servers.memchor.default_tools_approval_mode="approve"', "From now on use bun, not npm.");
+    // exec's approval policy is "never", which refuses MCP calls that need approval: pre-approve Debrief's tools.
+    const run = await codexAsync(env, repo, 50_000, "exec", "-c", 'mcp_servers.debrief.default_tools_approval_mode="approve"', "From now on use bun, not npm.");
     const elapsedMs = Date.now() - started;
 
-    // What happened to the question, read from Memchor's own state rather than Codex's output.
-    const memory = openMemory({ cwd: repo, home: memchorHome, host: "codex", codexHome });
+    // What happened to the question, read from Debrief's own state rather than Codex's output.
+    const memory = openMemory({ cwd: repo, home: debriefHome, host: "codex", codexHome });
     const dbPath = memory.status().storage.dbPath ?? "";
     memory.close();
     const db = new Database(dbPath, { readonly: true });
@@ -139,7 +139,7 @@ describe.skipIf(SKIP !== null)(`real Codex ${CODEX_PINNED_VERSION} connection`, 
       }
     };
     db.close();
-    const stored = countPreferences(dbPath) + countPreferences(join(memchorHome, "global.sqlite"));
+    const stored = countPreferences(dbPath) + countPreferences(join(debriefHome, "global.sqlite"));
     // No row and nothing stored: the question was answered "no" (declined); a row: still pending.
     const outcome = candidate === undefined ? (stored > 0 ? "answered" : "declined") : candidate.relay === "refused" ? "cancelled or timed out" : "unavailable";
     const artifacts = join(import.meta.dirname, "__artifacts__");

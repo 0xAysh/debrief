@@ -35,7 +35,7 @@ describe("transcript import over MCP", () => {
     const server = await spawnServer({ cwd: repo, home, host: "claude-code", claudeConfigDir: config, networkLog });
     const first = await server.ok<{ import: ImportView; context: Pack }>("memory_bootstrap");
     expect(first.import.state).toBe("consent_required");
-    expect(first.import.question).toMatch(/^Memchor found 2 local Claude Code sessions \(1 in this project, 1 in other projects\)/);
+    expect(first.import.question).toMatch(/^Debrief found 2 local Claude Code sessions \(1 in this project, 1 in other projects\)/);
     expect(first.context.items).toEqual([]);
 
     const approved = await server.ok<{ import: ImportView; context: Pack }>("memory_bootstrap", { importChoice: "all" });

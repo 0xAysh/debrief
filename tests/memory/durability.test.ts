@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
-import { catchMemchorError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string, options: { host?: string; busyTimeoutMs?: number } = {}): Memory {
   const memory = openMemory({ cwd, home, host: options.host ?? "claude-code", ...(options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: options.busyTimeoutMs }) });
@@ -71,7 +71,7 @@ describe("durability", () => {
         operationKey: "ev-1",
       }),
     ).toEqual({ ...evidence, replayed: true });
-    expect(catchMemchorError(() => second.checkpoint({ expectedRevision: 0, goal: "g", status: "s" })).code).toBe("checkpoint_conflict");
+    expect(catchDebriefError(() => second.checkpoint({ expectedRevision: 0, goal: "g", status: "s" })).code).toBe("checkpoint_conflict");
   });
 
   test("rebuilding the search index preserves canonical records and search results", () => {
@@ -139,7 +139,7 @@ describe("read-only diagnostics", () => {
     const repo = initRepo();
     const home = tempDir();
     const boot = open(repo, home).bootstrap();
-    const other = join(tempDir("memchor-wt-"), "wt");
+    const other = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "unbound", other);
 
     const inspector = open(other, home);
@@ -185,7 +185,7 @@ describe("storage failures", () => {
     });
     other.exec("BEGIN IMMEDIATE");
 
-    const error = catchMemchorError(() => memory.record({ kind: "note", body: "blocked", attribution: "agent_inference" }));
+    const error = catchDebriefError(() => memory.record({ kind: "note", body: "blocked", attribution: "agent_inference" }));
     expect(error.code).toBe("storage_busy");
     expect(error.retryable).toBe(true);
 
@@ -197,14 +197,14 @@ describe("storage failures", () => {
   test("an unusable storage home is storage_unavailable", () => {
     const home = join(tempDir(), "home-is-a-file");
     writeFileSync(home, "");
-    const error = catchMemchorError(() => open(initRepo(), home).bootstrap());
+    const error = catchDebriefError(() => open(initRepo(), home).bootstrap());
     expect(error.code).toBe("storage_unavailable");
   });
 
   test("a corrupt registry fails closed and is left untouched", () => {
     const home = tempDir();
     writeFileSync(join(home, "registry.json"), "{ not json");
-    expect(catchMemchorError(() => open(initRepo(), home).bootstrap()).code).toBe("storage_unavailable");
+    expect(catchDebriefError(() => open(initRepo(), home).bootstrap()).code).toBe("storage_unavailable");
   });
 
   test("status reports the runtime gate and storage health", () => {
@@ -222,6 +222,6 @@ describe("storage failures", () => {
     const memory = open(initRepo(), tempDir());
     memory.bootstrap();
     memory.close();
-    expect(catchMemchorError(() => memory.recall()).code).toBe("storage_unavailable");
+    expect(catchDebriefError(() => memory.recall()).code).toBe("storage_unavailable");
   });
 });

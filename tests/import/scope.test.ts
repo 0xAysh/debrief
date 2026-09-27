@@ -18,7 +18,7 @@ function open(cwd: string, e: Env): Memory {
 }
 
 function addWorktree(repo: string, branch: string, create = false): string {
-  const path = join(tempDir("memchor-wt-"), "wt");
+  const path = join(tempDir("debrief-wt-"), "wt");
   git(repo, "worktree", "add", "--quiet", ...(create ? ["-b", branch, path] : [path, branch]));
   return path;
 }
@@ -35,7 +35,7 @@ function visibleText(memory: Memory): string {
   return parts.join("\n");
 }
 
-/** basic.jsonl, whose Memchor recall output reports `first` as the bound workstream, plus a second Memchor call reporting `second`. */
+/** basic.jsonl, whose Debrief recall output reports `first` as the bound workstream, plus a second Debrief call reporting `second`. */
 function transcriptNaming(cwd: string, sessionId: string, first: string, second: string): string {
   const lines = renderFixture("2.1.281/basic.jsonl", { cwd, sessionId })
     .replace('{\\"items\\":[', `{\\"scope\\":{\\"workstreamId\\":\\"${first}\\"},\\"items\\":[`)
@@ -51,7 +51,7 @@ function transcriptNaming(cwd: string, sessionId: string, first: string, second:
 }
 
 describe("imported history scope", () => {
-  test("a transcript whose Memchor output names two different workstreams is held: nothing enters any workstream or the workspace level", () => {
+  test("a transcript whose Debrief output names two different workstreams is held: nothing enters any workstream or the workspace level", () => {
     const e = { home: tempDir(), config: claudeConfigDir() };
     const repo = initRepo();
     const a = open(addWorktree(repo, "a", true), e);

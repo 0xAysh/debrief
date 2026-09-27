@@ -80,8 +80,8 @@ const METADATA_TYPES = new Set([
 
 /** Tools whose results are whole files or edits: only the call (path) is kept. */
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead"]);
-/** Memchor's own tools (every operation it offers), under whatever name the user gave the MCP server. */
-const MEMCHOR_TOOL = new RegExp(`^mcp__.+__(${Object.keys(OPERATION_SCHEMAS).join("|")})$`);
+/** Debrief's own tools (every operation it offers), under whatever name the user gave the MCP server. */
+const DEBRIEF_TOOL = new RegExp(`^mcp__.+__(${Object.keys(OPERATION_SCHEMAS).join("|")})$`);
 /** Context Claude Code injects into user turns; not something the user wrote. */
 const INJECTED = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
@@ -346,8 +346,8 @@ function subagentReported(entry: Entry, context: ReadContext): boolean {
 /** One-line description, touched paths and semantic kind of a tool call, from its input. */
 function describeCall(name: string, input: Entry, cwd: string): { summary: string; paths: string[]; urls: string[]; toolKind: ToolKind; inputDigest?: string } {
   const str = (key: string): string | null => (typeof input[key] === "string" ? input[key] : null);
-  const memchor = MEMCHOR_TOOL.exec(name);
-  if (memchor !== null) return { summary: `${memchor[1] ?? name} ${JSON.stringify(input)}`, paths: [], urls: [], toolKind: "memchor" };
+  const debrief = DEBRIEF_TOOL.exec(name);
+  if (debrief !== null) return { summary: `${debrief[1] ?? name} ${JSON.stringify(input)}`, paths: [], urls: [], toolKind: "debrief" };
   if (FILE_TOOLS.has(name)) {
     const path = str("file_path") ?? str("notebook_path");
     const offset = typeof input["offset"] === "number" ? input["offset"] : null;

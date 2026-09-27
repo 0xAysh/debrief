@@ -10,14 +10,14 @@ import { CLI, NO_NETWORK } from "./harness.js";
  * Drives the real Claude Code CLI for connection tests: `claude mcp add|list|get` and a
  * `claude -p` session, with HOME and CLAUDE_CONFIG_DIR in temporary directories and a localhost
  * stub of the Messages API, so no account, model or internet is involved. Claude Code (a native
- * binary) is not covered by the Node no-network preload; only the Memchor processes it starts are.
+ * binary) is not covered by the Node no-network preload; only the Debrief processes it starts are.
  * On macOS every Claude process also runs under a sandbox profile that denies the developer's real
- * Claude config, caches and Memchor home, and every outbound connection except to localhost.
+ * Claude config, caches and Debrief home, and every outbound connection except to localhost.
  */
 
 /** The Claude Code release these tests pin (native install, 2026-09). */
 export const CLAUDE_PINNED_VERSION = "2.1.283";
-export const CLAUDE_BIN = process.env["MEMCHOR_TEST_CLAUDE_BIN"] ?? onPath("claude") ?? join(homedir(), ".local/bin/claude");
+export const CLAUDE_BIN = process.env["DEBRIEF_TEST_CLAUDE_BIN"] ?? onPath("claude") ?? join(homedir(), ".local/bin/claude");
 
 function onPath(name: string): string | undefined {
   return (process.env["PATH"] ?? "")
@@ -33,12 +33,12 @@ export interface ClaudeSandbox {
 }
 
 export function claudeSandbox(): ClaudeSandbox {
-  return { home: tempDir("memchor-claude-home-"), configDir: tempDir("memchor-claude-config-") };
+  return { home: tempDir("debrief-claude-home-"), configDir: tempDir("debrief-claude-config-") };
 }
 
 /**
  * The environment Claude itself runs with. Claude Code passes its own environment on to the MCP
- * servers it starts, so this is also what Memchor inherits (plus the `-e` pairs).
+ * servers it starts, so this is also what Debrief inherits (plus the `-e` pairs).
  */
 export function claudeEnv(sandbox: ClaudeSandbox, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
@@ -59,7 +59,7 @@ const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 function guardProfile(): string {
   const home = homedir();
   const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const paths = [join(home, ".claude"), join(home, "Library/Caches/claude-cli-nodejs"), join(home, ".cache/claude-cli-nodejs"), join(home, ".memchor")];
+  const paths = [join(home, ".claude"), join(home, "Library/Caches/claude-cli-nodejs"), join(home, ".cache/claude-cli-nodejs"), join(home, ".debrief")];
   return [
     "(version 1)(allow default)",
     `(deny file-read* file-write* (regex #"^${escaped}/\\.claude\\.json") ${paths.map((p) => `(subpath "${p}")`).join(" ")})`,
@@ -73,9 +73,9 @@ function command(args: string[]): [string, string[]] {
 
 /** Null when the pinned binary is available; otherwise why the Claude Code tests are skipped. */
 export function claudeSkipReason(): string | null {
-  if (!existsSync(CLAUDE_BIN)) return `no Claude Code binary at ${CLAUDE_BIN} (set MEMCHOR_TEST_CLAUDE_BIN)`;
+  if (!existsSync(CLAUDE_BIN)) return `no Claude Code binary at ${CLAUDE_BIN} (set DEBRIEF_TEST_CLAUDE_BIN)`;
   // Runs at collection time, outside any test, so it cleans up after itself.
-  const scratch = mkdtempSync(join(tmpdir(), "memchor-claude-version-"));
+  const scratch = mkdtempSync(join(tmpdir(), "debrief-claude-version-"));
   const run = spawnSync(CLAUDE_BIN, ["--version"], { env: claudeEnv({ home: scratch, configDir: scratch }), encoding: "utf8", timeout: 20_000 });
   rmSync(scratch, { recursive: true, force: true });
   const version = /^(\d+\.\d+\.\d+)/.exec(run.stdout)?.[1];
@@ -155,15 +155,15 @@ export function claudeStream(env: NodeJS.ProcessEnv, cwd: string, ...args: strin
   };
 }
 
-/** The command `claude mcp add` registers: Memchor from this checkout's dist, with the no-network guard preloaded. */
-export const MEMCHOR_COMMAND = [process.execPath, "--import", NO_NETWORK, CLI, "mcp", "--host", "claude-code"];
+/** The command `claude mcp add` registers: Debrief from this checkout's dist, with the no-network guard preloaded. */
+export const DEBRIEF_COMMAND = [process.execPath, "--import", NO_NETWORK, CLI, "mcp", "--host", "claude-code"];
 
 /**
- * `claude mcp add` for Memchor in user scope. Claude Code would pass its own environment on
- * anyway; `-e` pins MEMCHOR_HOME whatever the environment Claude is started from.
+ * `claude mcp add` for Debrief in user scope. Claude Code would pass its own environment on
+ * anyway; `-e` pins DEBRIEF_HOME whatever the environment Claude is started from.
  */
-export function memchorAddArgs(options: { memchorHome: string; networkLog: string }): string[] {
-  return ["mcp", "add", "memchor", "-s", "user", "-e", `MEMCHOR_HOME=${options.memchorHome}`, "-e", `MEMCHOR_NETWORK_LOG=${options.networkLog}`, "--", ...MEMCHOR_COMMAND];
+export function debriefAddArgs(options: { debriefHome: string; networkLog: string }): string[] {
+  return ["mcp", "add", "debrief", "-s", "user", "-e", `DEBRIEF_HOME=${options.debriefHome}`, "-e", `DEBRIEF_NETWORK_LOG=${options.networkLog}`, "--", ...DEBRIEF_COMMAND];
 }
 
 /** Every line Claude Code logged for one MCP server (its stderr included), from the sandbox's cache. */
@@ -182,7 +182,7 @@ export function mcpServerLog(sandbox: ClaudeSandbox, server: string): string {
 }
 
 export interface StubToolUse {
-  /** Tool name inside the Memchor namespace, e.g. "memory_bootstrap"; with `builtin`, the host's own tool, e.g. "Agent". */
+  /** Tool name inside the Debrief namespace, e.g. "memory_bootstrap"; with `builtin`, the host's own tool, e.g. "Agent". */
   tool: string;
   builtin?: boolean;
   input: Record<string, unknown>;
@@ -195,14 +195,14 @@ export interface StubToolUse {
 
 /**
  * A localhost Messages API: while calls remain queued, each request that offers the next one's
- * tool is answered with it as a `tool_use` (Claude Code names Memchor's `mcp__memchor__<tool>`, or `mcpPrefix`);
+ * tool is answered with it as a `tool_use` (Claude Code names Debrief's `mcp__debrief__<tool>`, or `mcpPrefix`);
  * once the queue is empty, and for any request that does not offer it, with a
  * plain assistant message (`reply`, or what it returns for that request) that ends the turn. `requests` keeps every Messages request body, in order.
  */
 export async function startStubMessages(script: {
   calls: StubToolUse[];
   reply: string | ((request: Record<string, unknown>) => string);
-  /** How Claude Code names Memchor's tools: `mcp__memchor__` (user scope, the default) or the plugin's `mcp__plugin_memchor_memchor__`. */
+  /** How Claude Code names Debrief's tools: `mcp__debrief__` (user scope, the default) or the plugin's `mcp__plugin_debrief_debrief__`. */
   mcpPrefix?: string;
 }): Promise<{ port: number; offeredTools: string[][]; requests: Record<string, unknown>[] }> {
   const state = { port: 0, offeredTools: [] as string[][], requests: [] as Record<string, unknown>[] };
@@ -222,7 +222,7 @@ export async function startStubMessages(script: {
       const tools = (json.tools ?? []).map((t) => t.name);
       state.offeredTools.push(tools);
       const head = queue[0];
-      const name = (call: StubToolUse): string => (call.builtin === true ? call.tool : `${script.mcpPrefix ?? "mcp__memchor__"}${call.tool}`);
+      const name = (call: StubToolUse): string => (call.builtin === true ? call.tool : `${script.mcpPrefix ?? "mcp__debrief__"}${call.tool}`);
       const next = head !== undefined && tools.includes(name(head)) && (head.when === undefined || (typeof head.when === "string" ? body.includes(head.when) : head.when(json))) ? queue.shift() : undefined;
       const usage = { input_tokens: 1, output_tokens: 1 };
       const reply = typeof script.reply === "string" ? script.reply : script.reply(json);
