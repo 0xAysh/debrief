@@ -294,6 +294,8 @@ class Checker {
     if (this.refsLeft-- <= 0) return ["unknown", "check_limit"];
     const path = worktreePath(this.worktree, ref.path ?? ref.locator);
     if (path === null) return ["unknown", "outside_worktree"];
+    // Never read, not even against a hash the caller supplied: "current" would confirm a guess of a secret.
+    if (touchesSensitivePath([path])) return ["unknown", "not_observed"];
 
     const captured = ref.dirty !== undefined;
     const hashed = ref.observedHash !== undefined && HASH.test(ref.observedHash);

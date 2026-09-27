@@ -145,7 +145,8 @@ Memory is knowledge *about* the repository; the repository stays the source of t
 | Same bytes (hash), or clean at the observed commit and still clean at HEAD | `current` / `unchanged` | Equal bytes mean the observation still describes the file. The commit shortcut is sound only when the file was clean then and now: then Git guarantees identical bytes, even for files too large to hash |
 | Different bytes / file gone | `stale` / `changed`, `missing` | The record may describe code that no longer exists |
 | Imported Read/Edit path | `unknown` / `transcript_reference` | The transcript never fingerprinted what it saw; hashing at import would certify the version on disk *then*, not the one read |
-| No fingerprint (caller-pinned, sensitive path, file absent when written) | `unknown` / `not_observed` (`unknown_commit` if a pinned commit is not in the repository) | Nothing to compare against |
+| No fingerprint (caller-pinned, file absent when written) | `unknown` / `not_observed` (`unknown_commit` if a pinned commit is not in the repository) | Nothing to compare against |
+| Sensitive path (dotenv files, private keys, credential stores) | `unknown` / `not_observed` | Never read, not even against a hash the caller supplies: `current` would confirm a guess of a secret |
 | Path outside this worktree (another repository or worktree, a symlink escaping it, `..`) | `unknown` / `outside_worktree` | Never read. Repository identity needs no stored field: each repository has its own database |
 | Over 1 MiB and its Git state changed | `unknown` / `too_large` | Reading it would be unbounded work |
 | Document by path in this worktree (`docs/design.md`) | as code above | It is a file like any other |

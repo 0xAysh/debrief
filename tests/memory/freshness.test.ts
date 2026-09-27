@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -186,9 +187,10 @@ describe("local code freshness", () => {
     for (const ref of item.externalRefs) expect(ref).not.toHaveProperty("observedAt");
   });
 
-  test("a sensitive file inside the worktree is never fingerprinted, so it is never reported current", () => {
+  test("a sensitive file inside the worktree is never read: not fingerprinted, and never checked against a hash the caller supplies", () => {
     const repo = repoWithGateway();
-    writeFile(repo, ".env", "STRIPE_KEY=sk_live_not_a_real_key\n");
+    const env = "STRIPE_KEY=sk_live_not_a_real_key\n";
+    writeFile(repo, ".env", env);
     writeFile(repo, "deploy/id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----\n");
     const memory = open(repo, tempDir());
     const { recordId } = memory.record({
@@ -198,14 +200,17 @@ describe("local code freshness", () => {
       externalRefs: [
         { kind: "code", locator: ".env" },
         { kind: "code", locator: "deploy/id_ed25519" },
+        // A correct guess of the secret's hash: answering "current" would confirm the guess.
+        { kind: "code", locator: ".env", observedHash: `sha256:${createHash("sha256").update(env).digest("hex")}` },
       ],
     });
     const item = recallItem(memory, recordId);
-    for (const ref of item.externalRefs) {
-      expect(ref).not.toHaveProperty("observedAt");
-      expect(ref).not.toHaveProperty("observedHash");
-      expect(ref.freshness).not.toBe("current");
-    }
+    for (const ref of item.externalRefs) expect(ref).not.toHaveProperty("observedAt");
+    expect(item.externalRefs.map((ref) => [ref.freshness, ref.reason])).toEqual([
+      ["unknown", "not_observed"],
+      ["unknown", "not_observed"],
+      ["unknown", "not_observed"],
+    ]);
   });
 
   test("a caller-pinned commit this repository does not have is unknown", () => {
