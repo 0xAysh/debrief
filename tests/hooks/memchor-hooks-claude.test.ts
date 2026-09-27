@@ -6,7 +6,7 @@ import { locateWorkspace } from "../../src/bootstrap/workspace-resolution.js";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
 import { claudeTurn, installTranscript } from "../import/fixtures.js";
-import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, memchorAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
+import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, claudeStream, memchorAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
 import { CLI, NO_NETWORK } from "../mcp/harness.js";
 
 /**
@@ -251,4 +251,76 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(left.filter((excerpt) => excerpt.includes("SYNTHETIC-PRIVATE"))).toEqual([]);
     expect(after.status().hookFailures).toEqual([]);
   }, 120_000);
+
+  test("resume, compact and clear: the model's next request carries the checkpoint again, still without a tool call", async () => {
+    const sandbox = claudeSandbox();
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const memchorHome = tempDir();
+    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      setup.close();
+    });
+    setup.bootstrap({ importChoice: "current_project" });
+    setup.checkpoint({ expectedRevision: 0, goal: "Stop double charges", status: "Key drafted", nextSteps: ["SYNTHETIC-NEXT wire the idempotency key into charge()"] });
+    setup.close();
+    const stub = await startStubMessages({ calls: [], reply: "SYNTHETIC-REPLY ok." });
+    const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" });
+    const carried = (marker: string): boolean => {
+      const request = JSON.stringify(stub.requests.find((r) => JSON.stringify(r).includes(marker)) ?? {});
+      return request.includes("SessionStart hook additional context: ") && request.includes("SYNTHETIC-NEXT wire the idempotency key into charge()");
+    };
+
+    const session = claudeStream(env, repo, "--settings", hooksSettings(memchorHome));
+    const first = await session.send("SYNTHETIC-FIRST where were we?");
+    await session.send("/compact");
+    await session.send("SYNTHETIC-AFTER-COMPACT go on");
+    await session.send("/clear");
+    const cleared = await session.send("SYNTHETIC-AFTER-CLEAR go on");
+    const ended = await session.end();
+    expect(ended.code, ended.stderr).toBe(0);
+    expect(cleared["session_id"]).not.toBe(first["session_id"]);
+    expect(carried("SYNTHETIC-FIRST")).toBe(true);
+    expect(carried("SYNTHETIC-AFTER-COMPACT")).toBe(true);
+    expect(carried("SYNTHETIC-AFTER-CLEAR")).toBe(true);
+
+    const resumed = await claudeAsync(env, repo, "-p", "--resume", String(first["session_id"]), "SYNTHETIC-RESUMED go on", "--output-format", "json", "--settings", hooksSettings(memchorHome));
+    expect(resumed.code, resumed.stderr).toBe(0);
+    expect(carried("SYNTHETIC-RESUMED")).toBe(true);
+    expect(stub.offeredTools.flat().filter((t) => t.startsWith("mcp__"))).toEqual([]);
+  }, 180_000);
+
+  test("after /clear, \"don't remember this session\" forgets the conversation since /clear, not the one before it", async () => {
+    const sandbox = claudeSandbox();
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const memchorHome = tempDir();
+    const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+    expect(added.code, added.stderr).toBe(0);
+    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      setup.close();
+    });
+    setup.bootstrap({ importChoice: "current_project" });
+    setup.close();
+    const stub = await startStubMessages({ calls: [{ tool: "memory_manage", input: { action: "private_session" }, when: "SYNTHETIC-FORGET" }], reply: "SYNTHETIC-REPLY ok." });
+    const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" });
+
+    const session = claudeStream(env, repo, "--allowedTools", "mcp__memchor__memory_manage", "--settings", hooksSettings(memchorHome));
+    await session.send("SYNTHETIC-KEEP the retry budget is three");
+    await session.send("/clear");
+    await session.send("SYNTHETIC-SECRET the staging password rotation");
+    const forgot = await session.send("SYNTHETIC-FORGET don't remember this session");
+    const ended = await session.end();
+    expect(ended.code, ended.stderr).toBe(0);
+    expect(sessionToolTraffic(sandbox, String(forgot["session_id"])).uses).toEqual(["mcp__memchor__memory_manage"]);
+
+    const after = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      after.close();
+    });
+    after.bootstrap({});
+    const excerpts = after.recall({ query: "SYNTHETIC-KEEP SYNTHETIC-SECRET SYNTHETIC-FORGET", maxTokens: 8_000 }).items.map((i) => i.excerpt);
+    expect(excerpts.filter((e) => e.includes("SYNTHETIC-SECRET") || e.includes("SYNTHETIC-FORGET"))).toEqual([]);
+    expect(excerpts.some((e) => e.includes("SYNTHETIC-KEEP the retry budget is three"))).toBe(true);
+    expect(after.status().hookFailures).toEqual([]);
+  }, 180_000);
 });

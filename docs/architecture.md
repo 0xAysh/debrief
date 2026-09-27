@@ -29,7 +29,7 @@ The adapters contain no memory policy. Host differences outside the transcript f
 | `sessionStart({hostSessionId?})` | Bootstrap rendered as session-start text for a host hook, plus a one-line notice for the user; null outside a Git worktree. Memory that cannot be read yields context saying so, never empty memory. See [Host hooks](#host-hooks) |
 | `endTurn({transcriptPath, stopHookActive?, maxMs?})` | The Stop hook: `captureTurn`, then (unless `stopHookActive`) `nudge`, a request to update a checkpoint that fell five turns of work behind, and `notice`, the user's line: `saved turn (N events)`, or why the turn was not saved. See [Host hooks](#host-hooks) |
 | `promptHint({prompt})` | One line for the agent when a prompt states a lasting preference; null otherwise and outside a Git worktree. No database |
-| `approveTool({tool, input})` | `{notice}` when a call may skip the host's permission prompt (Memchor's read-only calls, by exact server name), else null. No database |
+| `approveTool({tool, input, toolUseId?, hostSessionId?})` | `{notice}` when a call may skip the host's permission prompt (Memchor's read-only calls, by exact server name), else null. For any Memchor call with both ids, notes which session made it for the MCP server (`$MEMCHOR_HOME/tool-sessions.jsonl`). No database |
 | `continueImport({maxMs?})` | One bounded step of the remaining approved import (current project first, then other projects' own workspaces). The MCP server calls it between requests while alive. Not an agent tool |
 | `record({kind, body, attribution, …})` | Appends one record with its links and search chunks; `operationKey` makes it idempotent. `kind: "preference"` stores nothing: it returns a question for the user (see [Preferences](#preferences)) |
 | `settlePreference({candidateId, outcome})` | What happened when a preference question was put to the user directly: their answer, `cancelled`, or `unavailable`. Transports call it; it is not an agent tool |
@@ -200,7 +200,7 @@ Identity and context. Legacy events carry no ids, and the files are append-only,
 
 Forks. A fork's file starts with a verbatim, re-timestamped copy of its parent's rollout. When the parent is on disk, each copied line that equals the parent's line (timestamp ignored), from the parent's first line up to the first difference, keeps the *parent's* event id and time, so the copy is a copy of the same observation in recall, never independent corroboration.
 
-Live binding. Codex sends `_meta.threadId` (the rollout's id) on every `tools/call` and nothing in `initialize`. `memchor mcp --host codex` adopts it as the host session id before the first operation binds the session (a per-host `_meta` key in `src/transports/mcp.ts`; Claude Code sends none), so the thread's rollout, when imported, resolves to the live session's workstream by step 1.
+Live binding. Codex sends `_meta.threadId` (the rollout's id) on every `tools/call` and nothing in `initialize`. `memchor mcp --host codex` adopts it as the host session id before the first operation binds the session (`sessionMetaKey` in `src/hosts.ts`), so the thread's rollout, when imported, resolves to the live session's workstream by step 1. Claude Code sends no session id in `_meta`; see [Host hooks](#host-hooks) for how its MCP server learns the session.
 
 Known Codex limits:
 
@@ -318,17 +318,17 @@ Known limits: lifecycle changes to global preferences are not reported through t
 "Don't remember this session" is `memory_manage private_session`. One transaction (`forgetSession` in `lifecycle.ts`; markers in `private-session.ts`):
 
 ```text
-transcripts of the session   Codex: the thread id (host session id) · Claude Code: transcripts whose Memchor output
-                             named it as scope.sessionId (transcript_sessions, recorded at import)
+transcripts of the session   the host session id (Codex: the thread id · Claude Code: the session id, which names its transcript)
+                             + transcripts whose Memchor output named it as scope.sessionId (transcript_sessions, recorded at import)
 forget (no preview; the request is its own confirmation)   records the session wrote + records imported from those transcripts
                              + global preferences it confirmed (global.sqlite) + preference questions it raised
 mark                         sessions.private = 1 · private_transcripts += those transcripts
 ledger                       forget entries + a private_session entry (a restored older copy is marked again)
 ```
 
-Afterwards `record`, `checkpoint`, `settlePreference` and every changing `memory_manage` action throw `session_private` (reads still work). A later Memchor session of the same host session (a resumed Codex thread) is private too. The importer never reads a private transcript again, and a batch whose Memchor output names a private session as its scope drops what that transcript brought in and marks it private. Only `scope.sessionId` links (in every result it directly follows `headRevision`): recalled items name their writer's session, and recalling a private session's records does not make a transcript that session's. Marking twice does nothing more.
+Afterwards `record`, `checkpoint`, `settlePreference` and every changing `memory_manage` action throw `session_private` (reads still work). A later Memchor session of the same host session (a resumed Codex thread) is private too. The importer never reads a private transcript again: it checks before reading and again in each batch's write transaction, so a marking committed by another process while a Stop capture is between batches stops the capture there (`tests/hooks/stop-hook.test.ts`, the race test). A batch whose Memchor output names a private session as its scope drops what that transcript brought in and marks it private. Only `scope.sessionId` links (in every result it directly follows `headRevision`): recalled items name their writer's session, and recalling a private session's records does not make a transcript that session's. Marking twice does nothing more.
 
-Known limits: the host's own transcript file is untouched; a Claude Code transcript is recognized only once Memchor output appears in it (before the session's first Memchor call there is none), and a resumed Claude Code session gets a new Memchor session that starts non-private (its transcript, if it is the same file, stays private).
+Known limits: the host's own transcript file is untouched, and a resumed session gets a new Memchor session that starts non-private (its transcript, if it is the same file, stays private). Claude Code's session is known to the MCP server from its environment, or after `/clear` from the PreToolUse hook (see [Host hooks](#host-hooks)); with no hooks installed, "this session" after `/clear` is still the session the process started with.
 
 ## Handoff
 
@@ -357,7 +357,7 @@ The host connections are pinned to the releases they were tested with: Claude Co
 
 ## Host hooks
 
-Where a host runs lifecycle hooks, `memchor hook <event> --host <h>` is a second transport next to `memchor mcp`: it parses the host's payload from stdin, calls the memory module, and prints what the host should see. Only hosts with a non-null `hooks` entry in `src/hosts.ts` get hooks, and an entry is added only with driven tests against the pinned binary (`tests/hooks/`); today that is Claude Code 2.1.283. Codex hooks come with #29's third PR.
+Where a host runs lifecycle hooks, `memchor hook <event> --host <h>` is a second transport next to `memchor mcp`: it parses the host's payload from stdin, calls the memory module, and prints what the host should see. Only hosts with a non-null `hooks` entry in `src/hosts.ts` get hooks, and an entry is added only with driven tests against the pinned binary (`tests/hooks/`); today that is Claude Code 2.1.283. Codex hooks are deferred with the cross-agent work.
 
 ```text
 SessionStart      memchor hook session-start     → sessionStart(session_id)         prints the host's JSON:
@@ -367,7 +367,8 @@ SessionStart      memchor hook session-start     → sessionStart(session_id)   
                                                    ≤ 9,000 characters (Claude Code caps hook context at 10,000)
                                                    + a one-line notice for the user (never shown to the model)
 UserPromptSubmit  memchor hook user-prompt-submit → promptHint(prompt)               one line of context, or nothing
-PreToolUse        memchor hook pre-tool-use       → approveTool(tool_name, input)    "allow" (+ a notice for a recall), or nothing
+PreToolUse        memchor hook pre-tool-use       → approveTool(tool_name, input,    "allow" (+ a notice for a recall), or nothing
+                                                     tool_use_id, session_id)       (and notes the call's session for the MCP server)
   matcher mcp__(plugin_memchor_)?memchor__.*
 Stop              memchor hook stop               → endTurn(transcript_path,         {"decision":"block","reason":nudge}
                                                      stop_hook_active)                + {"systemMessage": notice}, or nothing
@@ -381,7 +382,8 @@ Stop              memchor hook stop               → endTurn(transcript_path,  
 - **Auto-allow** (`approveTool`): bootstrap, recall, read, status and `memory_manage` inspect, by exact server name. A bootstrap carrying `importChoice` (the user's consent answer), every write, and any other server's tool of the same name go to the host's normal approval.
 - **The digest** is built without a model from imported events: the newest session after the head checkpoint (from its first later prompt), or the last session when there is none, with its last three prompts, last reply, last commands (✓/✗ from the tool-error flag, not an exit code), files its tool calls named, and end time.
 - **Items are labelled** `kind · age · host · freshness` (the checkpoint `checkpoint rN · …`) by `src/retrieval/label.ts`, from fields the JSON pack also carries.
-- **Pinned host behaviour** (Claude Code 2.1.283): context arrives as a system message prefixed `SessionStart hook additional context:`, `systemMessage` never reaches the model, a transcript may lack a tool turn's last lines when Stop runs (the next capture or session start picks them up), `claude -p` kills `async` hooks still running at exit, a PreToolUse `"allow"` runs an MCP tool in `-p` without `--allowedTools`, and a Stop block reaches the model as a user message `Stop hook feedback:\n<reason>` (the next Stop has `stop_hook_active: true`). Research notes: `docs/research/hooks-2026-09-26.md`.
+- **One Claude Code session, one host session id.** Each process (a hook, the MCP server, the importer) opens its own `sessions` row, and the rows of one Claude Code session share `host_session_id` = Claude's `session_id`, which is also its transcript's file name. Workstream resolution (step 1), private sessions and the importer join on that id, and the digest reads only imported events (one Memchor session per transcript), so the extra rows are not a second session anywhere it matters. The MCP server learns the id from `CLAUDE_CODE_SESSION_ID`, which Claude Code sets when it starts the server. Claude Code does not restart the server on `/clear`, which starts a new `session_id`, so the environment goes stale; the PreToolUse hook (registered for Memchor's tools) notes each call's `tool_use_id` with the current `session_id` in `$MEMCHOR_HOME/tool-sessions.jsonl` (`src/bootstrap/host-sessions.ts`, appended and rotated like the failure log), and the server looks up the `_meta["claudecode/toolUseId"]` of each call there. A call from a new session closes the server's Memory and opens one for that session.
+- **Pinned host behaviour** (Claude Code 2.1.283): context arrives as a system message prefixed `SessionStart hook additional context:`, `systemMessage` never reaches the model, a transcript may lack a tool turn's last lines when Stop runs (the next capture or session start picks them up), `claude -p` kills `async` hooks still running at exit, a PreToolUse `"allow"` runs an MCP tool in `-p` without `--allowedTools`, and a Stop block reaches the model as a user message `Stop hook feedback:\n<reason>` (the next Stop has `stop_hook_active: true`). `/compact` and `/clear` work in `claude -p --input-format stream-json`: `/compact` fires SessionStart `compact` with the same `session_id`, `/clear` fires SessionStart `clear` with a new one, and `--resume` fires `resume` with the same one; each time the model's next request carries the context again (`tests/hooks/memchor-hooks-claude.test.ts`). The MCP server is started once per process and keeps its environment across `/clear`; every `tools/call` carries `_meta["claudecode/toolUseId"]`, the `tool_use_id` the PreToolUse hook saw. The transcript does not reliably contain a tool call's `tool_use` when the hook runs. Research notes: `docs/research/hooks-2026-09-26.md`.
 
 ## Runtime gate
 

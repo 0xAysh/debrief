@@ -12,6 +12,8 @@ import type { HostReply, Memory, PreferenceQuestion } from "../memory.js";
 import { openMemory } from "../memory.js";
 import { LIMITS, OPERATION_SCHEMAS, type OperationName } from "../schemas.js";
 import { PROTOCOL } from "../protocol.js";
+import { toolCallSession } from "../bootstrap/host-sessions.js";
+import { resolveHome } from "../bootstrap/workspace-resolution.js";
 
 /**
  * Thin MCP adapter over the memory module. It holds no memory policy: it forwards raw
@@ -74,16 +76,19 @@ const TOOL_LIST = (Object.keys(OPERATION_SCHEMAS) as OperationName[]).map((name)
 const isOperation = (name: string): name is OperationName => Object.hasOwn(OPERATION_SCHEMAS, name);
 
 /**
- * The host's own session id: from a `tools/call` `_meta`, under the key its descriptor names
- * (src/hosts.ts), else from the environment variable it names. An id longer than a host session
- * id may be is ignored rather than cut: a prefix is a different identity, and two threads
- * sharing one would be bound as one session.
+ * The host's own session id for a `tools/call`, by what its descriptor names (src/hosts.ts): the
+ * session id in `_meta`; else the session its PreToolUse hook noted for the call id in `_meta`;
+ * else the environment variable. An id longer than a host session id may be is ignored rather
+ * than cut: a prefix is a different identity, and two threads sharing one would be bound as one session.
  */
-function hostSession(host: string | undefined, meta: Record<string, unknown> | undefined, env: NodeJS.ProcessEnv): string | undefined {
+function hostSession(host: string | undefined, meta: Record<string, unknown> | undefined, env: NodeJS.ProcessEnv, home: string): string | undefined {
   const descriptor = hostDescriptor(host);
-  const metaKey = descriptor?.sessionMetaKey ?? null;
-  const envKey = descriptor?.sessionEnv ?? null;
-  return validSessionId(metaKey === null ? undefined : meta?.[metaKey]) ?? validSessionId(envKey === null ? undefined : env[envKey]);
+  if (descriptor === null) return undefined;
+  const fromMeta = descriptor.sessionMetaKey === null ? undefined : validSessionId(meta?.[descriptor.sessionMetaKey]);
+  if (fromMeta !== undefined) return fromMeta;
+  const toolUseId = descriptor.toolUseMetaKey === null ? undefined : validSessionId(meta?.[descriptor.toolUseMetaKey]);
+  const noted = toolUseId === undefined || host === undefined ? undefined : toolCallSession(home, host, toolUseId);
+  return noted ?? (descriptor.sessionEnv === null ? undefined : validSessionId(env[descriptor.sessionEnv]));
 }
 
 function validSessionId(value: unknown): string | undefined {
@@ -121,11 +126,21 @@ export interface McpServerOptions {
  */
 export function createMcpServer(options: McpServerOptions): { server: Server; close: () => void } {
   const log = options.log ?? ((message: string) => process.stderr.write(`memchor: ${message}\n`));
+  const home = resolveHome(options.home);
   const server = new Server({ name: "memchor", version: "0.0.0" }, { capabilities: { tools: {} }, instructions: PROTOCOL });
   let memory: Memory | undefined;
+  let memorySession: string | undefined;
   // The Memory opens on the first call, so a session id the host sends with it is known before
-  // bootstrap binds the session. One process serves one host session: later ids are not adopted.
+  // bootstrap binds the session. A call from another host session (Claude Code after `/clear`)
+  // closes it and opens a Memory for that session; a call naming no session keeps the current one.
   const getMemory = (hostSessionId: string | undefined): Memory => {
+    if (memory !== undefined && hostSessionId !== undefined && hostSessionId !== memorySession) {
+      if (backfill !== undefined) clearTimeout(backfill);
+      backfill = undefined;
+      memory.close();
+      memory = undefined;
+    }
+    if (memory === undefined) memorySession = hostSessionId;
     memory ??= openMemory({
       cwd: options.cwd,
       host: options.host ?? server.getClientVersion()?.name ?? "unknown",
@@ -229,7 +244,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     if (!isOperation(name)) throw new McpError(ErrorCode.InvalidParams, `Unknown tool ${name}`);
     const spec = TOOLS[name];
     try {
-      const memory = getMemory(hostSession(options.host, request.params._meta, options.env ?? process.env));
+      const memory = getMemory(hostSession(options.host, request.params._meta, options.env ?? process.env, home));
       const result = spec.run(memory, request.params.arguments ?? {}) as Record<string, unknown>;
       if (name === "memory_bootstrap" && (result["import"] as { state?: unknown } | undefined)?.state === "in_progress") {
         failures = 0;
