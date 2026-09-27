@@ -114,6 +114,47 @@ export function claudeAsync(env: NodeJS.ProcessEnv, cwd: string, ...args: string
   });
 }
 
+/**
+ * One `claude -p` process fed prompts (and slash commands such as `/compact` and `/clear`) over
+ * stream-json, so one Claude Code session can go on across them. `send` resolves when the
+ * prompt's result arrives; `end` closes stdin and resolves when Claude exits.
+ */
+export function claudeStream(env: NodeJS.ProcessEnv, cwd: string, ...args: string[]): { send: (text: string) => Promise<Record<string, unknown>>; end: () => Promise<Run> } {
+  const [bin, argv] = command(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...args]);
+  const child = spawn(bin, argv, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  onCleanup(() => {
+    child.kill();
+  });
+  let stdout = "";
+  let stderr = "";
+  let seen = 0;
+  const waiting: ((result: Record<string, unknown>) => void)[] = [];
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString();
+    const lines = stdout.split("\n");
+    lines.pop(); // the line still being written
+    const results = lines.filter((line) => line.includes('"type":"result"')).map((line) => JSON.parse(line) as Record<string, unknown>).filter((message) => message["type"] === "result");
+    while (seen < results.length) waiting.shift()?.(results[seen++] ?? {});
+  });
+  child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+  const closed = new Promise<Run>((resolve) => child.on("close", (code) => { resolve({ code, stdout, stderr }); }));
+  return {
+    send: (text) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { reject(new Error(`no result for ${JSON.stringify(text)}; stderr: ${stderr}`)); }, 60_000);
+        waiting.push((result) => {
+          clearTimeout(timer);
+          resolve(result);
+        });
+        child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`);
+      }),
+    end: () => {
+      child.stdin.end();
+      return closed;
+    },
+  };
+}
+
 /** The command `claude mcp add` registers: Memchor from this checkout's dist, with the no-network guard preloaded. */
 export const MEMCHOR_COMMAND = [process.execPath, "--import", NO_NETWORK, CLI, "mcp", "--host", "claude-code"];
 
@@ -144,6 +185,8 @@ export interface StubToolUse {
   /** Tool name inside the Memchor namespace, e.g. "memory_bootstrap". */
   tool: string;
   input: Record<string, unknown>;
+  /** Made only once a request contains this text (a later prompt); otherwise at the first request that offers the tool. */
+  when?: string;
 }
 
 /**
@@ -169,7 +212,8 @@ export async function startStubMessages(script: { calls: StubToolUse[]; reply: s
       state.requests.push(json);
       const tools = (json.tools ?? []).map((t) => t.name);
       state.offeredTools.push(tools);
-      const next = queue[0] !== undefined && tools.includes(`mcp__memchor__${queue[0].tool}`) ? queue.shift() : undefined;
+      const head = queue[0];
+      const next = head !== undefined && tools.includes(`mcp__memchor__${head.tool}`) && (head.when === undefined || body.includes(head.when)) ? queue.shift() : undefined;
       const usage = { input_tokens: 1, output_tokens: 1 };
       const stop = next === undefined ? "end_turn" : "tool_use";
       const block =

@@ -1,6 +1,7 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
@@ -219,4 +220,53 @@ describe("memchor hook pre-tool-use (Claude Code payload on stdin)", () => {
     expect(hook(env, ["pre-tool-use"], call("mcp__memchor__memory_record", { kind: "note", body: "x", attribution: "agent_inference" }))).toMatchObject({ code: 0, stdout: "", stderr: "" });
     expect(open(env).status().hookFailures).toEqual([]);
   });
+
+  test("\"don't remember this session\" racing a Stop capture of the same session in another process: nothing survives, and later import passes don't bring it back", async () => {
+    const at = new Date(Date.now() - 600_000);
+    // Staggered so the private marking lands before, during and after the hook's import. Which
+    // stagger lands between two batches varies by machine and load; before the per-batch check,
+    // one of these leaked the batches imported after the marking.
+    for (const delayMs of [0, 40, 80, 120, 160, 240]) {
+      const env = approvedRepo();
+      const sessionId = `2ace0000-0000-4000-8000-${String(delayMs).padStart(12, "0")}`;
+      const { path } = installTranscript(env.config, "", { cwd: env.repo, sessionId, content: "" });
+      let after: string | null = null;
+      const turn = (n: number) => {
+        const t = claudeTurn({ cwd: env.repo, sessionId, n, at: new Date(at.getTime() + n * 1_000), prompt: `SYNTHETIC-RACE step ${n} ${"padding ".repeat(1_000)}`, command: `npm test -- step${n}`, after });
+        after = t.last;
+        return t.lines;
+      };
+      appendFileSync(path, turn(1));
+      expect(stopHook(env, payload(env, path, sessionId)).code).toBe(0);
+      // A long turn: several import batches (one transaction each), so the marking can land between two.
+      appendFileSync(path, Array.from({ length: 400 }, (_, i) => turn(i + 2)).join(""));
+
+      const hook = spawn(process.execPath, [CLI, "hook", "stop", "--host", "claude-code"], {
+        cwd: env.repo,
+        env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+        stdio: ["pipe", "ignore", "pipe"],
+      });
+      let stderr = "";
+      hook.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+      const exited = new Promise<number | null>((resolve) => hook.on("close", resolve));
+      hook.stdin.end(payload(env, path, sessionId));
+      await sleep(delayMs);
+      // The MCP server of the same Claude Code session (its id from CLAUDE_CODE_SESSION_ID).
+      const live = openMemory({ cwd: env.repo, home: env.home, host: "claude-code", claudeConfigDir: env.config, hostSessionId: sessionId });
+      onCleanup(() => {
+        live.close();
+      });
+      expect(live.manage({ action: "private_session" })).toMatchObject({ action: "private_session" });
+      live.close();
+      expect(await exited, stderr).toBe(0);
+
+      // Another Stop and a bootstrap import pass later: still nothing.
+      expect(stopHook(env, payload(env, path, sessionId)).code).toBe(0);
+      const later = open(env);
+      later.bootstrap({});
+      const left = later.recall({ query: "SYNTHETIC-RACE step", maxTokens: 8_000 }).items.map((i) => i.excerpt);
+      expect(left.filter((excerpt) => excerpt.includes("SYNTHETIC-RACE")), `delay ${delayMs} ms`).toEqual([]);
+      later.close();
+    }
+  }, 120_000);
 });
