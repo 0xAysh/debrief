@@ -50,8 +50,8 @@ import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
 import { sessionDigest } from "./retrieval/digest.js";
 import { renderSessionStart, type SessionStart, unreadableSessionStart } from "./retrieval/session-context.js";
-import { type CaptureFailure, recordCaptureFailure, recentCaptureFailures } from "./import/capture-failures.js";
-import { type CaptureResult, type ImportStatus, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
+import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
+import { type CaptureResult, type CaptureSkip, type ImportStatus, readToolResultTitle, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
 import { type Citation, citationsFor, importedFrom, type ImportedSource, independentRoots, linksOf } from "./integrity/provenance.js";
 import {
   type ClaimGroup,
@@ -90,6 +90,7 @@ import {
   CheckpointInput,
   CaptureTurnInput,
   ContinueImportInput,
+  SessionStartInput,
   effectiveBudget,
   type Freshness,
   LIMITS,
@@ -118,9 +119,9 @@ import { appendRecord, recordFields } from "./storage/records.js";
 
 export type { ImportedSource, Citation } from "./integrity/provenance.js";
 export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
-export type { CaptureFailure } from "./import/capture-failures.js";
+export type { HookFailure } from "./import/hook-failures.js";
 export type { SessionStart } from "./retrieval/session-context.js";
-export type { CaptureResult, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
+export type { CaptureResult, CaptureSkip, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
 export type { CandidateSignal, ResolutionBasis, ScopeAmbiguity, WorkstreamCandidate } from "./bootstrap/workstream-resolution.js";
 export type { CheckpointSummary } from "./integrity/checkpoints.js";
@@ -305,6 +306,9 @@ export interface BootstrapResult {
   preferences: PreferenceBlock;
 }
 
+/** A Stop hook's capture, with the failure it recorded (null when it imported, or skipped by rule). */
+export type TurnCapture = CaptureResult & { failure: { code: string; message: string } | null };
+
 /** What `record` returns for `kind: "preference"`: a question for the user, not a stored record. */
 export interface PreferenceRecordResult {
   recordId: null;
@@ -488,8 +492,8 @@ export interface StatusResult {
   capabilities: { operations: string[]; freshnessValidation: boolean; transcriptImport: boolean };
   /** Consent, discovered transcripts, this project's import progress and capture gaps; null when scope is unresolved. */
   import: ImportStatus | null;
-  /** The newest hook captures that failed on this machine (any host, any repository), oldest first. */
-  captureFailures: CaptureFailure[];
+  /** The newest host hooks that failed on this machine (any host, any repository), oldest first. */
+  hookFailures: HookFailure[];
 }
 
 /**
@@ -534,14 +538,15 @@ export interface Memory {
    * session, so a hook running every turn adds no session rows; a repository without consent
    * gets no database.
    */
-  captureTurn(input: CaptureTurnInput): CaptureResult;
+  captureTurn(input: CaptureTurnInput): TurnCapture;
   /**
    * What a session-start hook injects: bootstrap (binding this session, with the host's session
    * id when given, and catching up on this repository's transcripts), rendered as text for the
-   * model plus one line for the user. Never throws for storage: memory that cannot be read
-   * becomes context saying so, and a capture failure on record.
+   * model plus one line for the user. Null outside a Git worktree (nothing to say). Memory that
+   * cannot be read becomes context saying so, and a hook failure on record; it never passes
+   * for empty memory.
    */
-  sessionStart(input: { source?: string; hostSessionId?: string }): SessionStart;
+  sessionStart(input?: SessionStartInput): SessionStart | null;
   /**
    * Appends one attributed record with provenance links and external references. A
    * `preference` is not stored: it becomes a question for the user (see `settlePreference`).
@@ -591,9 +596,6 @@ export interface Memory {
  * repository still gets a working `status` and a clear `scope_unresolved` elsewhere.
  * `status` and `checkIntegrity` only read; every other operation binds scope first.
  */
-/** The pack's share of session-start context; the protocol and preferences take the rest. */
-const SESSION_PACK_BYTES = 6_000;
-
 export function openMemory(options: OpenMemoryOptions): Memory {
   return new LocalMemory(options);
 }
@@ -609,6 +611,12 @@ const PRIVATE_NOTICE =
 const FORGET_NOTICE =
   "Nothing has been removed yet. Show the user the targets and the impact, and ask them to confirm explicitly; only then call memory_manage with action forget and this confirmToken. Forgetting cannot be undone. Records listed as invalidated or quarantined keep their own content (forget them too if the user wants). Host transcripts, loaded model contexts, exports and backups are not erased.";
 const DEFAULT_IMPORT_BUDGET_MS = 3_000;
+/** The pack's share of session-start context; the protocol, digest and preferences take the rest. */
+const SESSION_PACK_BYTES = 6_000;
+
+function skippedCapture(reason: CaptureSkip): CaptureResult {
+  return { state: "skipped", reason, transcriptId: null, events: 0, complete: true, problem: null };
+}
 
 interface Bound {
   db: Db;
@@ -746,27 +754,51 @@ class LocalMemory implements Memory {
     });
   }
 
-  captureTurn(input: CaptureTurnInput): CaptureResult {
-    return this.guard(() => {
+  captureTurn(input: CaptureTurnInput): TurnCapture {
+    const result = this.guard((): CaptureResult => {
       const parsed = parse(CaptureTurnInput, input);
-      if (this.importer === null) return { state: "skipped", reason: "unsupported_host", transcriptId: null, events: 0, complete: true, problem: null };
+      if (this.importer === null) return skippedCapture("unsupported_host");
       if (this.closed) throw new MemchorError("storage_unavailable", "This Memory has been closed.");
-      const location = this.bound?.location ?? locateWorkspace(this.cwd, this.home);
+      let location: WorkspaceLocation;
+      try {
+        location = this.bound?.location ?? locateWorkspace(this.cwd, this.home);
+      } catch (error) {
+        // Outside a Git worktree Memchor keeps no memory: a skip, not a failure.
+        if (error instanceof MemchorError && error.code === "scope_unresolved") return skippedCapture("not_a_repository");
+        throw error;
+      }
       return this.importer.capture(location, () => this.workspaceDb(location), parsed.transcriptPath, parsed.maxMs);
     });
+    // Failures are what should have been captured and was not: storage or read errors, and a
+    // path the host named that is not one of its transcripts. Skips (no consent, another
+    // repository, not a repository) are the rules working.
+    const failure =
+      result.state === "failed"
+        ? (result.problem ?? { code: "internal", message: "capture failed" })
+        : result.reason === "not_a_transcript"
+          ? { code: "not_a_transcript", message: `${input.transcriptPath} is not a transcript Memchor imports for ${this.host}` }
+          : null;
+    if (failure !== null) recordHookFailure(this.home, { host: this.host, event: "stop", cwd: this.cwd, ...failure });
+    return { ...result, failure };
   }
 
-  sessionStart(input: { source?: string; hostSessionId?: string }): SessionStart {
-    try {
-      const boot = this.bootstrap({ maxBytes: SESSION_PACK_BYTES, ...(input.hostSessionId === undefined ? {} : { hostSessionId: input.hostSessionId }) });
-      const workstreamId = boot.scope.workstreamId;
-      const digest = workstreamId === null || this.bound === undefined ? null : sessionDigest(this.bound.db, workstreamId, boot.context.checkpoint?.createdAt ?? null);
-      return renderSessionStart(boot, { protocol: PROTOCOL, failures: recentCaptureFailures(this.home), now: new Date(), digest });
-    } catch (error) {
-      if (!(error instanceof MemchorError) || !error.code.startsWith("storage_")) throw error;
-      recordCaptureFailure(this.home, { host: this.host, event: "session-start", code: error.code, message: error.message });
-      return unreadableSessionStart(error.code);
-    }
+  sessionStart(input: SessionStartInput = {}): SessionStart | null {
+    return this.guard(() => {
+      const parsed = parse(SessionStartInput, input);
+      try {
+        const boot = this.bootstrap({ maxBytes: SESSION_PACK_BYTES, ...(parsed.hostSessionId === undefined ? {} : { hostSessionId: parsed.hostSessionId }) });
+        const workstreamId = boot.scope.workstreamId;
+        const digest = workstreamId === null || this.bound === undefined ? null : sessionDigest(this.bound.db, workstreamId, boot.context.checkpoint?.createdAt ?? null);
+        const failures = recentHookFailures(this.home, { within: boot.scope.worktree });
+        return renderSessionStart(boot, { protocol: PROTOCOL, failures, now: new Date(), digest });
+      } catch (error) {
+        if (!(error instanceof MemchorError)) throw error;
+        // Outside a Git worktree there is no memory to speak of: say nothing.
+        if (error.code === "scope_unresolved") return null;
+        recordHookFailure(this.home, { host: this.host, event: "session-start", cwd: this.cwd, code: error.code, message: error.message });
+        return unreadableSessionStart(error.code);
+      }
+    });
   }
 
   recall(input: RecallInput = {}): ContextPack {
@@ -948,7 +980,7 @@ class LocalMemory implements Memory {
         problem: null,
         capabilities: { operations: OPERATIONS, freshnessValidation: true, transcriptImport: this.importer !== null },
         import: null,
-        captureFailures: recentCaptureFailures(this.home),
+        hookFailures: recentHookFailures(this.home),
       };
       let db: Db | null = null;
       try {
@@ -1440,7 +1472,7 @@ function freshnessSubject(row: RecordRow, imported: boolean): FreshnessSubject {
 /**
  * Whether a test run's citations include the run itself as Memchor captured it: a tool result
  * imported from the host's transcript whose call summary (the first line of its body) contains
- * the command, and whose error flag (" (error)" in the title the importer writes) agrees with
+ * the command, and whose error flag (in the title the importer writes) agrees with
  * the outcome. Anything else, including unrelated captured output, leaves the run an assertion.
  */
 function capturedOutput(db: Db, supportedBy: readonly string[], run: { command: string; outcome: "passed" | "failed" }): boolean {
@@ -1453,7 +1485,7 @@ function capturedOutput(db: Db, supportedBy: readonly string[], run: { command: 
     .all(JSON.stringify(supportedBy)) as { title: string | null; body: string }[];
   const squash = (text: string): string => text.replace(/\s+/gu, " ").trim();
   const command = squash(run.command);
-  return rows.some((row) => squash(row.body.split("\n", 1)[0] ?? "").includes(command) && (row.title?.includes(" (error):") ?? false) === (run.outcome === "failed"));
+  return rows.some((row) => squash(row.body.split("\n", 1)[0] ?? "").includes(command) && (readToolResultTitle(row.title)?.failed ?? false) === (run.outcome === "failed"));
 }
 
 /**

@@ -55,14 +55,14 @@ describe("memchor hook stop --import (Claude Code payload on stdin)", () => {
     expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
     const memory = open(env);
     expect(memory.recall({ query: "idempotency key per order" }).items.some((i) => i.excerpt.includes("idempotency key per order"))).toBe(true);
-    expect(memory.status().captureFailures).toEqual([]);
+    expect(memory.status().hookFailures).toEqual([]);
   });
 
   test("without consent it imports nothing, prints nothing and records no failure", () => {
     const env = { repo: initRepo(), home: tempDir(), config: claudeConfigDir() };
     const session = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
     expect(stopHook(env, payload(env, session.path, session.sessionId))).toMatchObject({ code: 0, stdout: "", stderr: "" });
-    expect(open(env).status().captureFailures).toEqual([]);
+    expect(open(env).status().hookFailures).toEqual([]);
   });
 
   test("a payload it cannot use fails open: exit 0, empty stdout, and a capture failure on record", () => {
@@ -72,11 +72,25 @@ describe("memchor hook stop --import (Claude Code payload on stdin)", () => {
     for (const stdin of ["not json", JSON.stringify({ hook_event_name: "Stop" }), payload(env, outside, "5e550000-0000-4000-8000-0000000000d1")]) {
       expect(stopHook(env, stdin)).toMatchObject({ code: 0, stdout: "" });
     }
-    expect(open(env).status().captureFailures.map((f) => [f.host, f.event, f.code])).toEqual([
+    expect(open(env).status().hookFailures.map((f) => [f.host, f.event, f.code])).toEqual([
       ["claude-code", "stop", "invalid_input"],
       ["claude-code", "stop", "invalid_input"],
       ["claude-code", "stop", "not_a_transcript"],
     ]);
+  });
+
+  test("a host without driven hook evidence (Codex, until it is pinned) is refused, and nothing is imported", () => {
+    const env = approvedRepo();
+    const session = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
+    const run = spawnSync(process.execPath, [CLI, "hook", "stop", "--import", "--host", "codex"], {
+      cwd: env.repo,
+      input: payload(env, session.path, session.sessionId),
+      encoding: "utf8",
+      env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+    });
+    expect(run).toMatchObject({ status: 0, stdout: "" });
+    expect(run.stderr).toMatch(/--host must be one of claude-code \(got codex\)/);
+    expect(open(env).status().hookFailures.map((f) => [f.host, f.code])).toEqual([["codex", "invalid_input"]]);
   });
 
   test("unusable storage still exits 0 at once with empty stdout, records the failure and says why on stderr", () => {
@@ -89,7 +103,7 @@ describe("memchor hook stop --import (Claude Code payload on stdin)", () => {
     expect(run).toMatchObject({ code: 0, stdout: "" });
     expect(run.stderr).toMatch(/^memchor hook stop: storage_/);
     expect(run.ms).toBeLessThan(5_000);
-    expect(open(env).status().captureFailures.map((f) => f.code)).toEqual([expect.stringMatching(/^storage_/)]);
+    expect(open(env).status().hookFailures.map((f) => f.code)).toEqual([expect.stringMatching(/^storage_/)]);
   });
 });
 
@@ -134,6 +148,6 @@ describe("memchor hook session-start (Claude Code payload on stdin)", () => {
   test("a payload it cannot use prints nothing and records the failure", () => {
     const env = approvedRepo();
     expect(sessionStartHook(env, "{}")).toMatchObject({ code: 0, stdout: "" });
-    expect(open(env).status().captureFailures.map((f) => [f.event, f.code])).toEqual([["session-start", "invalid_input"]]);
+    expect(open(env).status().hookFailures.map((f) => [f.event, f.code])).toEqual([["session-start", "invalid_input"]]);
   });
 });

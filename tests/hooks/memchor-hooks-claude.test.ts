@@ -69,7 +69,7 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     });
     const texts = after.recall({ query: "SYNTHETIC-PROMPT double-charge", maxTokens: 8_000 }).items.map((i) => i.excerpt);
     expect(texts.some((t) => t.includes("SYNTHETIC-PROMPT where did we leave the double-charge fix?"))).toBe(true);
-    expect(after.status().captureFailures).toEqual([]);
+    expect(after.status().hookFailures).toEqual([]);
     after.close();
 
     // The next session starts with that turn digested under the checkpoint, still without a tool call.

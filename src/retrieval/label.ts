@@ -29,5 +29,5 @@ export function itemLabel(item: { kind: string; createdAt: string; host: string;
 }
 
 export function checkpointLabel(checkpoint: { revision: number; createdAt: string; host: string; freshness: Freshness }, now: Date): string {
-  return `checkpoint r${checkpoint.revision} · ${age(checkpoint.createdAt, now)} · ${checkpoint.host} · ${checkpoint.freshness}`;
+  return itemLabel({ ...checkpoint, kind: `checkpoint r${checkpoint.revision}` }, now);
 }

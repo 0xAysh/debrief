@@ -29,9 +29,9 @@ export interface HostDescriptor {
    */
   sessionMetaKey: string | null;
   /**
-   * How the host's hooks take Memchor's output, or null where Memchor has no driven evidence
-   * for them yet (then `memory_bootstrap` is the path). Each host validates this differently
-   * (Codex rejects unknown keys), so the shape lives here, per host.
+   * The host's hooks, or null where Memchor has no driven evidence for them yet (then no
+   * `memchor hook` runs for it and `memory_bootstrap` is the path). Output shapes live here,
+   * per host, because each host validates them differently (Codex rejects unknown keys).
    */
   hooks: HookOutput | null;
 }
@@ -68,6 +68,9 @@ export const HOSTS = {
 export type HostId = keyof typeof HOSTS;
 
 export const HOST_IDS = Object.keys(HOSTS) as HostId[];
+
+/** Hosts whose hooks Memchor has driven evidence for (`memchor hook … --host`). */
+export const HOOK_HOSTS = HOST_IDS.filter((id) => HOSTS[id].hooks !== null);
 
 /** Hosts whose transcripts Memchor can import. */
 export const TRANSCRIPT_HOSTS = HOST_IDS.filter((id) => HOSTS[id].transcripts !== null);

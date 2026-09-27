@@ -1,4 +1,4 @@
-import type { CaptureFailure } from "../import/capture-failures.js";
+import type { HookFailure } from "../import/hook-failures.js";
 import type { BootstrapResult } from "../memory.js";
 import type { SessionDigest } from "./digest.js";
 import { checkpointLabel, itemLabel } from "./label.js";
@@ -14,6 +14,8 @@ import { checkpointLabel, itemLabel } from "./label.js";
 
 /** Claude Code caps hook context at 10,000 characters; this leaves room for its own framing. */
 export const SESSION_CONTEXT_CHARS = 9_000;
+/** The checkpoint's share; with the protocol (≤ 2,048), a digest (~2,000) and preferences (≤ 4 KB) the fixed parts stay near the cap. */
+const CHECKPOINT_CHARS = 2_500;
 /** One item's text in the list; `memory_read` has the rest. */
 const ITEM_CHARS = 300;
 /** Capture failures this recent are news to the user at session start. */
@@ -24,22 +26,25 @@ export interface SessionStart {
   notice: string;
 }
 
-export function renderSessionStart(boot: BootstrapResult, input: { protocol: string; failures: readonly CaptureFailure[]; now: Date; digest: SessionDigest | null }): SessionStart {
+export function renderSessionStart(boot: BootstrapResult, input: { protocol: string; failures: readonly HookFailure[]; now: Date; digest: SessionDigest | null }): SessionStart {
   const { scope, context: pack, preferences, import: imported } = boot;
   const fixed: string[] = [`# Memchor: ${scope.workspaceLabel} / ${scope.workstreamLabel ?? "(no workstream bound)"}, head r${scope.headRevision}`, input.protocol];
 
   if (scope.ambiguity !== null) fixed.push(`## Workstream to confirm\n${scope.ambiguity.question}\nAsk the user, then call memory_bootstrap with workstream = their choice.`);
   if (imported.state === "consent_required" && imported.question !== null) fixed.push(`## Transcript import needs the user's answer\n${imported.question}\nAsk the user verbatim, then call memory_bootstrap with importChoice = their answer.`);
 
+  // Questions for the user come before anything long, so no cut can drop them.
+  const question = preferences.pending[0];
+  if (question !== undefined) fixed.push(`## Preference question for the user\n${question.question}\nChoices: ${question.choices.map((c) => c.label).join(" / ")}. Relay their answer with memory_manage answer_preference.`);
+
   if (pack.checkpoint !== null) {
     const warning = pack.checkpoint.warning === null ? "" : `\n⚠ ${pack.checkpoint.warning}`;
-    fixed.push(`## Checkpoint [${checkpointLabel(pack.checkpoint, input.now)}]\n${pack.checkpoint.excerpt}${warning}`);
+    const body = pack.checkpoint.excerpt.length <= CHECKPOINT_CHARS ? pack.checkpoint.excerpt : `${pack.checkpoint.excerpt.slice(0, CHECKPOINT_CHARS)}… (memory_read ${pack.checkpoint.recordId} for all of it)`;
+    fixed.push(`## Checkpoint [${checkpointLabel(pack.checkpoint, input.now)}]\n${body}${warning}`);
   }
   const { digest } = input;
   if (digest !== null) fixed.push(renderDigest(digest, pack.checkpoint?.revision ?? null));
   if (preferences.items.length > 0) fixed.push(`## Preferences (${preferences.note})\n${preferences.items.map((p) => `- ${p.text}`).join("\n")}`);
-  const question = preferences.pending[0];
-  if (question !== undefined) fixed.push(`## Preference question for the user\n${question.question}\nChoices: ${question.choices.map((c) => c.label).join(" / ")}. Relay their answer with memory_manage answer_preference.`);
 
   const empty = pack.empty && preferences.items.length === 0 && digest === null;
   if (empty) {
@@ -103,7 +108,7 @@ export function unreadableSessionStart(code: string): SessionStart {
   };
 }
 
-function notice(boot: BootstrapResult, shown: number, empty: boolean, input: { failures: readonly CaptureFailure[]; now: Date; digest: SessionDigest | null }): string {
+function notice(boot: BootstrapResult, shown: number, empty: boolean, input: { failures: readonly HookFailure[]; now: Date; digest: SessionDigest | null }): string {
   const parts = ["◪ memchor"];
   if (empty) parts.push("no memory yet");
   else {
@@ -118,7 +123,7 @@ function notice(boot: BootstrapResult, shown: number, empty: boolean, input: { f
   if (boot.scope.ambiguity !== null) parts.push("workstream to confirm");
   const recent = input.failures.filter((f) => input.now.getTime() - Date.parse(f.at) < FAILURE_WINDOW_MS);
   const last = recent.at(-1);
-  if (last !== undefined) parts.push(`⚠ ${recent.length} capture failure${recent.length === 1 ? "" : "s"} (${last.code}): memchor diag status`);
+  if (last !== undefined) parts.push(`⚠ ${recent.length} hook failure${recent.length === 1 ? "" : "s"} (${last.code}): memchor diag status`);
   return parts.join(" · ");
 }
 

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { resolveHome } from "./bootstrap/workspace-resolution.js";
 import { MemchorError } from "./errors.js";
-import { HOST_IDS, hostDescriptor, TRANSCRIPT_HOSTS } from "./hosts.js";
+import { HOOK_HOSTS, HOST_IDS, hostDescriptor, TRANSCRIPT_HOSTS } from "./hosts.js";
 import { type ImportStatus, openMemory, type Memory } from "./memory.js";
 import { IMPORT_CHOICES, type ImportChoice, LIMITS } from "./schemas.js";
 import { assertEmbeddedRuntime } from "./storage/database.js";
@@ -15,9 +15,10 @@ import { runStdioServer } from "./transports/mcp.js";
 const USAGE = `Usage:
   memchor mcp [--host ${HOST_IDS.join("|")}]
                                                       Serve MCP over stdio (started by the agent host)
-  memchor hook stop --import --host ${TRANSCRIPT_HOSTS.join("|")}
+  memchor hook stop --import --host ${HOOK_HOSTS.join("|")}
                                                       Capture the session's latest turn (run by the host's Stop hook; payload on stdin)
-  memchor hook session-start --host claude-code        Print session-start context (run by the host's SessionStart hook; payload on stdin)
+  memchor hook session-start --host ${HOOK_HOSTS.join("|")}
+                                                      Print session-start context (run by the host's SessionStart hook; payload on stdin)
   memchor diag status                                 Runtime, storage and scope health
   memchor diag records [--query <text>] [--kind <k>]  List eligible records for this worktree
   memchor diag reindex                                Rebuild the search index from canonical records

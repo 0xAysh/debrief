@@ -1,10 +1,12 @@
+import { readToolResultTitle } from "../import/reconcile.js";
 import { type Db, prepared } from "../storage/database.js";
 import { VISIBLE_SQL } from "./eligibility.js";
 
 /**
- * What the last session did after the head checkpoint (or at all, when there is none), built
- * without a model from its imported transcript events. Session start shows it so a crashed or
- * killed session is not lost, and a stale checkpoint never looks like the whole story.
+ * What the last session did after the head checkpoint (once a new prompt shows it went on), or
+ * at all when there is no checkpoint, built without a model from its imported transcript
+ * events. Session start shows it so a crashed or killed session is not lost, and a stale
+ * checkpoint never looks like the whole story.
  */
 
 export interface SessionDigest {
@@ -16,7 +18,7 @@ export interface SessionDigest {
   lastReply: string | null;
   /** Files its tool calls named, most recent first (paths only). */
   files: string[];
-  /** Its last shell commands, oldest first, and whether each failed. */
+  /** Its last shell commands (`$ …` call summaries), oldest first, and whether each failed. */
   commands: { command: string; failed: boolean }[];
   /** Later-than-`since` sessions not shown (only the newest one is digested). */
   otherSessions: number;
@@ -54,11 +56,15 @@ export function sessionDigest(db: Db, workstreamId: string, since: string | null
   const own = rows.filter((row) => row.session_id === newest.session_id);
 
   const prompts = own.filter((row) => row.attribution === "user_direction").slice(0, PROMPTS).reverse();
+  // After a checkpoint, the agent's closing reply and bookkeeping are not more work: only a new
+  // prompt means the session went on.
+  if (since !== null && prompts.length === 0) return null;
   const reply = own.find((row) => row.attribution === "agent_inference") ?? null;
   const results = own.filter((row) => row.attribution === "direct_observation");
   const commands = results
-    .map((row) => ({ row, command: commandOf(row.title) }))
-    .filter((c): c is { row: Row; command: string } => c.command !== null)
+    .map((row) => ({ row, title: readToolResultTitle(row.title) }))
+    .filter((c): c is { row: Row; title: { failed: boolean; summary: string } } => c.title?.summary.startsWith("$ ") === true)
+    .map(({ row, title }) => ({ row, command: title.summary.slice(2), failed: title.failed }))
     .slice(0, COMMANDS)
     .reverse();
   const files = [...new Set(results.flatMap((row) => codePaths(row.external_refs)))].slice(0, FILES);
@@ -69,16 +75,10 @@ export function sessionDigest(db: Db, workstreamId: string, since: string | null
     prompts: prompts.map((row) => row.body),
     lastReply: reply?.body ?? null,
     files,
-    commands: commands.map(({ row, command }) => ({ command, failed: (row.title ?? "").includes(" (error): ") })),
+    commands: commands.map(({ command, failed }) => ({ command, failed })),
     otherSessions: sessions.size - 1,
     recordIds: [...prompts, ...(reply === null ? [] : [reply]), ...commands.map((c) => c.row)].map((row) => row.id),
   };
-}
-
-/** A tool result's title is `<tool>[ (error)]: <call summary>`; shell calls summarize as `$ <command>`. */
-function commandOf(title: string | null): string | null {
-  const summary = title?.slice(title.indexOf(": ") + 2) ?? "";
-  return summary.startsWith("$ ") ? summary.slice(2) : null;
 }
 
 function codePaths(refs: string): string[] {

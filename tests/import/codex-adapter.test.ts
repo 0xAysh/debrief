@@ -1,7 +1,8 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { codexAdapter } from "../../src/import/adapters/codex.js";
+import { tempDir } from "../helpers.js";
 import type { NormalizedEvent, TranscriptFile } from "../../src/import/normalized-event.js";
 import { codexHome, codexThreadId, installCodexRollout, renderCodexFixture, type CodexVars } from "./fixtures.js";
 
@@ -120,6 +121,20 @@ describe("Codex adapter", () => {
       ["memchor", 'memory_manage {"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}'],
       ["memchor", 'memory_manage {"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}'],
     ]);
+  });
+
+  test("fileAt finds a rollout a hook names in sessions/YYYY/MM/DD or archived_sessions, and nothing else", () => {
+    const home = codexHome();
+    const live = installCodexRollout(home, "0.142.5/basic.jsonl", { cwd: CWD });
+    const archived = installCodexRollout(home, "0.142.5/basic.jsonl", { cwd: CWD, archived: true });
+    const adapter = codexAdapter({ codexHome: home });
+    expect(adapter.fileAt(live.path)).toMatchObject({ transcriptId: live.sessionId, path: live.path });
+    expect(adapter.fileAt(archived.path)).toMatchObject({ transcriptId: archived.sessionId });
+    const misplaced = join(home, "sessions", basename(live.path));
+    writeFileSync(misplaced, readFileSync(live.path));
+    const elsewhere = join(tempDir(), basename(live.path));
+    writeFileSync(elsewhere, readFileSync(live.path));
+    for (const path of [misplaced, elsewhere, join(home, "sessions", "2026", "01", "01", "notes.jsonl")]) expect(adapter.fileAt(path)).toBeNull();
   });
 
   test("context Codex injects into user turns is excluded; only what the user typed is imported", () => {

@@ -117,8 +117,8 @@ export interface ImportStatus {
   problem: { code: ErrorCode; message: string } | null;
 }
 
-/** Why a capture imported nothing: no answer yet, declined, not a transcript of this host, or not this approved repository. */
-export type CaptureSkip = "unsupported_host" | "consent_required" | "declined" | "not_a_transcript" | "not_approved";
+/** Why a capture imported nothing: no answer yet, declined, not a transcript of this host, not this approved repository, or no repository at all. */
+export type CaptureSkip = "unsupported_host" | "consent_required" | "declined" | "not_a_transcript" | "not_approved" | "not_a_repository";
 
 export interface CaptureResult {
   /** captured: the transcript was reconciled (possibly with nothing new) · skipped: see `reason` · failed: see `problem`. */
@@ -912,6 +912,13 @@ function toolResultRecord(batch: Batch, call: CallMeta | null, event: Extract<No
   for (const path of call?.paths ?? []) refs.push({ kind: "code", locator: path, path });
   for (const url of call?.urls ?? []) refs.push({ kind: "url", locator: url });
   return { kind: "evidence", title, body: `${summary}\n\n${output}`, attribution: "direct_observation", externalRefs: refs.slice(0, 10) };
+}
+
+/** Reads back the title {@link toolResultRecord} writes: `<tool>[ (error)]: <first line of the call summary>`. */
+export function readToolResultTitle(title: string | null): { failed: boolean; summary: string } | null {
+  const colon = title?.indexOf(": ") ?? -1;
+  if (title === null || colon < 0) return null;
+  return { failed: title.slice(0, colon).endsWith(" (error)"), summary: title.slice(colon + 2) };
 }
 
 /** Redacts, then bounds; counts both. */
