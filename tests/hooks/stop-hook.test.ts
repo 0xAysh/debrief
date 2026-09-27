@@ -300,3 +300,32 @@ describe("memchor hook pre-tool-use (Claude Code payload on stdin)", () => {
     }
   }, 120_000);
 });
+
+describe("each hook's last run (for memchor status)", () => {
+  test("every hook records when it last ran, where, and how it ended; a hook that never ran has no entry", () => {
+    const env = approvedRepo();
+    const session = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
+    const before = Date.now();
+    expect(stopHook(env, payload(env, session.path, session.sessionId)).code).toBe(0);
+    expect(hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: "Fix the retry loop." }).code).toBe(0);
+    expect(hook(env, ["subagent-start"], { hook_event_name: "SubagentStart", session_id: "" }).code).toBe(0);
+    const runs = open(env).status().hookRuns;
+    expect(runs.map((r) => [r.host, r.event, r.cwd, r.outcome, r.code])).toEqual([
+      ["claude-code", "stop", env.repo, "ok", null],
+      ["claude-code", "subagent-start", env.repo, "failed", "invalid_input"],
+      ["claude-code", "user-prompt-submit", env.repo, "ok", null],
+    ]);
+    for (const run of runs) expect(Date.parse(run.at)).toBeGreaterThanOrEqual(before - 1_000);
+  });
+
+  test("the latest run wins, and a capture that failed is a failed run", () => {
+    const env = approvedRepo();
+    const session = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
+    expect(stopHook(env, payload(env, session.path, session.sessionId)).code).toBe(0);
+    const dbPath = open(env).status().storage.dbPath ?? "";
+    for (const suffix of ["-wal", "-shm"]) rmSync(dbPath + suffix, { force: true });
+    writeFileSync(dbPath, "this is not a SQLite database, and it is long enough to have a header".repeat(20));
+    expect(stopHook(env, payload(env, session.path, session.sessionId)).code).toBe(0);
+    expect(open(env).status().hookRuns.map((r) => [r.event, r.outcome, r.code])).toEqual([["stop", "failed", expect.stringMatching(/^storage_/)]]);
+  });
+});

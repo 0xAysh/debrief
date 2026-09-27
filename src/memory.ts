@@ -54,6 +54,7 @@ import { PROTOCOL } from "./protocol.js";
 import { sessionDigest, workSince } from "./retrieval/digest.js";
 import { oneLine, renderSessionStart, renderSubagentStart, type SessionStart, type SubagentStart, type TurnEnd, unreadableSessionStart, unreadableSubagentStart, userNotice } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
+import { type HookRun, lastHookRuns } from "./import/hook-runs.js";
 import { removePrivateEverywhere } from "./import/privacy.js";
 import { type CaptureResult, type CaptureSkip, type ImportStatus, readToolResultTitle, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
 import { type Citation, citationsFor, importedFrom, type ImportedSource, independentRoots, linksOf } from "./integrity/provenance.js";
@@ -128,6 +129,7 @@ import { appendRecord, recordFields } from "./storage/records.js";
 export type { ImportedSource, Citation } from "./integrity/provenance.js";
 export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
 export type { HookFailure } from "./import/hook-failures.js";
+export type { HookRun } from "./import/hook-runs.js";
 export type { SessionStart, SubagentStart, TurnEnd } from "./retrieval/session-context.js";
 export type { CaptureResult, CaptureSkip, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
@@ -502,6 +504,8 @@ export interface StatusResult {
   import: ImportStatus | null;
   /** The newest host hooks that failed on this machine (any host, any repository), oldest first. */
   hookFailures: HookFailure[];
+  /** Each host hook's last run on this machine (any repository), by host then event; a hook that never ran has none. */
+  hookRuns: HookRun[];
 }
 
 /**
@@ -1098,6 +1102,7 @@ class LocalMemory implements Memory {
         capabilities: { operations: OPERATIONS, freshnessValidation: true, transcriptImport: this.importer !== null },
         import: null,
         hookFailures: recentHookFailures(this.home),
+        hookRuns: lastHookRuns(this.home),
       };
       let db: Db | null = null;
       try {
