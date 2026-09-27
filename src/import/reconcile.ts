@@ -278,8 +278,8 @@ export class TranscriptImporter {
 
   /**
    * Imports the one transcript a host hook named (its `transcript_path`), and the transcripts of
-   * the sub-agents that session started, without inventorying the rest: consent first, then the path must be one of this host's transcripts, recorded in
-   * this repository. `open` binds the database only once all of that holds, so a session in an
+   * the sub-agents that session started, without inventorying the rest: consent first, then the
+   * path must be one of this host's transcripts, recorded in this repository. `open` binds the database only once all of that holds, so a session in an
    * unapproved repository leaves nothing behind.
    */
   capture(location: WorkspaceLocation, open: () => Db, path: string, maxMs: number): CaptureResult {
