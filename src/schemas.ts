@@ -215,11 +215,11 @@ export const CheckpointInput = z.strictObject({
   /** The head revision the caller last read (0 before the first checkpoint). */
   expectedRevision: z.int().min(0).describe("The head revision you last read (scope.headRevision); 0 before the first checkpoint"),
   goal: z.string().min(1).max(LIMITS.checkpointEntryChars),
-  status: z.string().min(1).max(2 * LIMITS.checkpointEntryChars),
+  status: z.string().min(1).max(2 * LIMITS.checkpointEntryChars).describe("What is true now: what works, what fails, what was verified"),
   decisions: CheckpointList,
   failedAttempts: CheckpointList,
   openQuestions: CheckpointList,
-  nextSteps: CheckpointList,
+  nextSteps: CheckpointList.describe('Each entry: the next concrete step and why ("add the Windows branch; its test already fails"), not a status like "in progress"'),
   preferences: CheckpointList,
   externalRefs: z.array(ExternalRef).max(LIMITS.externalRefsPerRecord).default([]),
   supportedBy: z.array(RecordId).max(LIMITS.linksPerRecord).default([]),

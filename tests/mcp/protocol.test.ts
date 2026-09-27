@@ -30,6 +30,15 @@ describe("MCP protocol surface", () => {
     expect(server.client.getInstructions()).toMatch(/memory_bootstrap first/);
   });
 
+  test("the checkpoint tool asks for intent, the next concrete step and why, not status words", async () => {
+    const server = await spawnServer({ cwd: initRepo(), home: tempDir() });
+    const checkpoint = (await server.client.listTools()).tools.find((t) => t.name === "memory_checkpoint");
+    expect(checkpoint?.description).toMatch(/next concrete step and why/);
+    const fields = checkpoint?.inputSchema.properties as Record<string, { description?: string }>;
+    expect(fields["nextSteps"]?.description).toMatch(/next concrete step and why .* not a status/i);
+    expect(fields["status"]?.description).toMatch(/what is true now/i);
+  });
+
   test("the instructions fit Claude Code's 2048-character limit and keep every rule", async () => {
     const server = await spawnServer({ cwd: initRepo(), home: tempDir() });
     const instructions = server.client.getInstructions() ?? "";

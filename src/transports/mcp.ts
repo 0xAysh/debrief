@@ -50,7 +50,7 @@ const TOOLS: Record<OperationName, ToolSpec> = {
   },
   memory_checkpoint: {
     description:
-      "Publish the workstream's continuation state (goal, status, decisions, failed attempts, open questions, next steps) before finishing. Compare-and-swap: pass expectedRevision = the headRevision you last read; a checkpoint_conflict means someone else published first, so recall and reconcile. Fails with scope_ambiguous while no workstream is chosen.",
+      "Publish the workstream's continuation state (goal, status, decisions, failed attempts, open questions, next steps) before finishing. Write it as intent for whoever continues: each next step is the next concrete step and why (\"add the Windows branch; its test already fails\"), never a status word like \"in progress\". Compare-and-swap: pass expectedRevision = the headRevision you last read; a checkpoint_conflict means someone else published first, so recall and reconcile. Fails with scope_ambiguous while no workstream is chosen.",
     run: (memory, args) => memory.checkpoint(args as never),
   },
   memory_manage: {
