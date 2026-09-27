@@ -7,6 +7,9 @@
   "bin": {
     "memchor": "dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=24"
   },
