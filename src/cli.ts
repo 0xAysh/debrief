@@ -19,6 +19,8 @@ const USAGE = `Usage:
                                                       Capture the session's latest turn; ask for a stale checkpoint (the host's Stop hook; payload on stdin)
   memchor hook session-start --host ${HOOK_HOSTS.join("|")}
                                                       Print session-start context (run by the host's SessionStart hook; payload on stdin)
+  memchor hook subagent-start --host ${HOOK_HOSTS.join("|")}
+                                                      Print a sub-agent's starting context (run by the host's SubagentStart hook; payload on stdin)
   memchor hook user-prompt-submit --host ${HOOK_HOSTS.join("|")}
                                                       Hint the agent when a prompt states a lasting preference (payload on stdin)
   memchor hook pre-tool-use --host ${HOOK_HOSTS.join("|")}

@@ -41,12 +41,15 @@ interface Row {
   attribution: string;
   external_refs: string;
   created_at: string;
+  /** The transcript branch it was imported from ("main", or a sub-agent's). */
+  branch: string;
 }
 
 export function sessionDigest(db: Db, workstreamId: string, since: string | null): SessionDigest | null {
   const rows = prepared(
     db,
-    `SELECT r.id, r.session_id, r.host, r.title, r.body, r.attribution, r.external_refs, r.created_at FROM records r
+    `SELECT r.id, r.session_id, r.host, r.title, r.body, r.attribution, r.external_refs, r.created_at,
+       coalesce((SELECT e.branch FROM import_events e WHERE e.record_id = r.id LIMIT 1), 'main') AS branch FROM records r
      WHERE ${VISIBLE_SQL} AND r.source_id IS NOT NULL AND r.kind = 'evidence' AND ($since IS NULL OR r.created_at > $since)
      ORDER BY r.created_at DESC, r.seq DESC LIMIT ${ROWS}`,
   ).all({ workstreamId, since }) as Row[];
@@ -59,7 +62,8 @@ export function sessionDigest(db: Db, workstreamId: string, since: string | null
   // After a checkpoint, the agent's closing reply and bookkeeping are not more work: only a new
   // prompt means the session went on.
   if (since !== null && prompts.length === 0) return null;
-  const reply = own.find((row) => row.attribution === "agent_inference") ?? null;
+  // The session's own agent answering the user: not a sub-agent, nor the prompt it was given.
+  const reply = own.find((row) => row.attribution === "agent_inference" && row.branch === "main") ?? null;
   const results = own.filter((row) => row.attribution === "direct_observation");
   const commands = results
     .map((row) => ({ row, title: readToolResultTitle(row.title) }))

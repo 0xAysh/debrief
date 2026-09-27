@@ -157,6 +157,11 @@ const TAIL_RESERVE = 60;
 const CUT = "\n[cut by Memchor to fit session-start context: call memory_bootstrap for all of it]";
 const SUBAGENT_CUT = "\n[cut by Memchor to fit sub-agent context: use memory_recall for the rest]";
 
+/** A sub-agent cannot tell the user; its parent's session start already did, and its report can. */
+export function unreadableSubagentStart(code: string): SubagentStart {
+  return { context: `Memory could not be loaded (${code}). Do not assume this project has none; say so in your report.` };
+}
+
 export function unreadableSessionStart(code: string): SessionStart {
   return {
     context: `Memory could not be loaded (${code}). Do not assume this project has none. Tell the user, and do not rely on memory tools this session unless memory_status reports storage healthy.`,

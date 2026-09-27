@@ -27,7 +27,8 @@ import { inCompatibility } from "../versions.js";
  * never from the directory name. A sub-agent's transcript is
  * `<project>/<session>/subagents/agent-<agentId>.jsonl`, with the kind of agent in the
  * `.meta.json` beside it (pinned in tests/hooks/claude-subagents.test.ts); its id here is
- * `<session>/agent-<agentId>`, and it belongs to that session. Its final report also appears in
+ * `<session>/agent-<agentId>`, and it belongs to that session: discovery lists it, and
+ * `subagentsOf` hands it to the capture of its session (a hook never names it). Its final report also appears in
  * the parent's transcript, as the Agent tool's result, which is then left out
  * (`subagent_report`) so the report is one observation. Auto memory (`<project>/memory/`) is not read.
  *
@@ -123,14 +124,11 @@ function discover(root: string): TranscriptFile[] {
   return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
-/** `<root>/<project>/<session>.jsonl`, or a sub-agent's `<root>/<project>/<session>/subagents/agent-<id>.jsonl`; nothing else. */
+/** Only `<root>/<project>/<session>.jsonl`: a hook names a session's transcript, and its sub-agents' come with it (`subagentsOf`). */
 function fileAt(root: string, path: string): TranscriptFile | null {
   const resolved = resolve(path);
-  if (!resolved.endsWith(".jsonl")) return null;
-  if (dirname(dirname(resolved)) === resolve(root)) return statTranscript(resolved);
-  const subagents = dirname(resolved);
-  if (basename(subagents) !== "subagents" || dirname(dirname(dirname(subagents))) !== resolve(root)) return null;
-  return subagentFile(dirname(subagents), basename(resolved));
+  if (!resolved.endsWith(".jsonl") || dirname(dirname(resolved)) !== resolve(root)) return null;
+  return statTranscript(resolved);
 }
 
 function subagentsOf(file: TranscriptFile): TranscriptFile[] {
@@ -195,7 +193,7 @@ function inspect(file: TranscriptFile): TranscriptHead {
 
 function read(file: TranscriptFile, from: number, maxBytes: number): TranscriptChunk {
   const chunk: TranscriptChunk = { events: [], end: from, excluded: {}, stop: null };
-  const context: ReadContext = { file, subagents: join(sessionDir(file), "subagents") };
+  const context: ReadContext = { file, subagentsDir: join(sessionDir(file), "subagents") };
   const exclude = (reason: ExclusionReason, n = 1): void => {
     chunk.excluded[reason] = (chunk.excluded[reason] ?? 0) + n;
   };
@@ -228,7 +226,7 @@ type Excluder = (reason: ExclusionReason, n?: number) => void;
 /** The transcript being read, and where its session's sub-agent transcripts are. */
 interface ReadContext {
   file: TranscriptFile;
-  subagents: string;
+  subagentsDir: string;
 }
 
 function normalizeEntry(entry: Entry, line: { start: number; end: number }, out: NormalizedEvent[], exclude: Excluder, context: ReadContext): void {
@@ -343,7 +341,8 @@ function subagentReported(entry: Entry, context: ReadContext): boolean {
   const agentId = result["agentId"];
   if (typeof agentId !== "string") return false;
   if (result["status"] === "async_launched") return true;
-  return SUBAGENT_FILE.test(`agent-${agentId}.jsonl`) && existsSync(join(context.subagents, `agent-${agentId}.jsonl`));
+  const name = `agent-${agentId}.jsonl`;
+  return SUBAGENT_FILE.test(name) && existsSync(join(context.subagentsDir, name));
 }
 
 /** One-line description, touched paths and semantic kind of a tool call, from its input. */

@@ -61,10 +61,11 @@ export function linkTranscriptSessions(db: Db, host: string, transcriptId: strin
 export function transcriptsOf(db: Db, session: { sessionId: string; host: string; hostSessionId: string | undefined }): { host: string; transcriptId: string }[] {
   const linked = prepared(db, "SELECT host, transcript_id AS transcriptId FROM transcript_sessions WHERE session_id = ?").all(session.sessionId) as { host: string; transcriptId: string }[];
   const own = session.hostSessionId === undefined ? [] : [{ host: session.host, transcriptId: session.hostSessionId }];
+  // Found through the import session's host session id, which is the parent's: it holds even when the parent's own transcript was never imported.
   const sameSession = prepared(
     db,
-    `SELECT other.host, other.transcript_id AS transcriptId FROM import_cursors mine JOIN import_cursors other ON other.host = mine.host AND other.session_id = mine.session_id
-     WHERE mine.host = ? AND mine.transcript_id = ?`,
+    `SELECT c.host, c.transcript_id AS transcriptId FROM import_cursors c JOIN sessions s ON s.id = c.session_id
+     WHERE s.host = ? AND s.host_session_id = ?`,
   );
   const sessions = [...own, ...linked].flatMap((t) => [t, ...(sameSession.all(t.host, t.transcriptId) as { host: string; transcriptId: string }[])]);
   return [...new Map(sessions.map((t) => [`${t.host}\u0000${t.transcriptId}`, t])).values()];

@@ -244,8 +244,8 @@ describe("Claude Code adapter", () => {
       [`${a.sessionId}/agent-2`, join(subagents, "agent-2.jsonl"), { transcriptId: a.sessionId, agentType: null }],
     ]);
     expect(adapter.subagentsOf?.(found[0] as TranscriptFile).map((f) => f.transcriptId)).toEqual([`${a.sessionId}/agent-1`, `${a.sessionId}/agent-2`]);
-    expect(adapter.fileAt(join(subagents, "agent-1.jsonl"))?.transcriptId).toBe(`${a.sessionId}/agent-1`);
-    expect(adapter.fileAt(join(subagents, "notes.jsonl"))).toBeNull();
+    // A hook names only a session's transcript; its sub-agents' come with it.
+    expect(adapter.fileAt(join(subagents, "agent-1.jsonl"))).toBeNull();
     expect(adapter.fileAt(join(projects, "-work-store", "memory", "notes.jsonl"))).toBeNull();
     expect(adapter.inspect(found[0] as TranscriptFile)).toEqual({ cwd: CWD, hostVersion: "2.1.281", supported: true });
     expect(claudeCodeAdapter({ configDir: join(config, "missing") }).discover()).toEqual([]);

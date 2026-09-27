@@ -102,8 +102,10 @@ export interface ImportStatus {
   choices: ImportChoice[] | null;
   transcriptsRoot: string | null;
   compatibility: readonly CompatibilityRow[];
-  /** Everything discovered (metadata only; no content is read before consent). Null when not inventoried (declined). */
-  /** Sessions found; a sub-agent's transcript counts with its session. */
+  /**
+   * Sessions discovered (metadata only; no content is read before consent); a sub-agent's
+   * transcript counts with its session. Null when not inventoried (declined).
+   */
   transcripts: { found: number; currentProject: number; otherProjects: number; unassigned: number; unsupportedVersion: number } | null;
   /** This repository's transcripts (all worktrees). */
   currentProject: { transcripts: number; complete: number; pending: number; stopped: number; quarantined: number; counters: ImportCounters } | null;
@@ -295,9 +297,13 @@ export class TranscriptImporter {
       const head = this.options.adapter.inspect(file);
       // No complete first line yet: nothing to attribute, so nothing to capture this turn.
       if (head.cwd === null) return { state: "captured", reason: null, transcriptId, workstreamId: null, events: 0, complete: true, problem: null };
-      const target = this.locate(head.cwd);
       // Another repository's transcript is imported by that repository's sessions (or backfill), never into this one.
-      if (target === null || target.workspaceId !== location.workspaceId || !approvesTarget(consent, target)) return skipped("not_approved", transcriptId);
+      const approved = (cwd: string): Target | null => {
+        const target = this.locate(cwd);
+        return target !== null && target.workspaceId === location.workspaceId && approvesTarget(consent, target) ? target : null;
+      };
+      const target = approved(head.cwd);
+      if (target === null) return skipped("not_approved", transcriptId);
       const db = open();
       const stored = prepared(db, "SELECT count(*) AS n FROM import_events WHERE host = ? AND transcript_id = ?");
       const deadline = Date.now() + maxMs;
@@ -314,9 +320,8 @@ export class TranscriptImporter {
       // (at SubagentStop they are not reliably so). A line still being written is left for the next capture.
       for (const sub of this.options.adapter.subagentsOf?.(file) ?? []) {
         const subHead = this.options.adapter.inspect(sub);
-        const subTarget = subHead.cwd === null ? null : this.locate(subHead.cwd);
-        if (subHead.cwd === null || subTarget === null || subTarget.workspaceId !== location.workspaceId || !approvesTarget(consent, subTarget)) continue;
-        importOne({ file: sub, cwd: subHead.cwd, supported: subHead.supported, target: subTarget });
+        const subTarget = subHead.cwd === null ? null : approved(subHead.cwd);
+        if (subHead.cwd !== null && subTarget !== null) importOne({ file: sub, cwd: subHead.cwd, supported: subHead.supported, target: subTarget });
       }
       const workstreamId = readCursor(db, this.host, transcriptId)?.workstream_id ?? null;
       return { state: "captured", reason: null, transcriptId, workstreamId, events, complete, problem: null };

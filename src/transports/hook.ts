@@ -4,7 +4,7 @@ import { MemchorError } from "../errors.js";
 import { HOOK_HOSTS, hostDescriptor } from "../hosts.js";
 import { recordHookFailure } from "../import/hook-failures.js";
 import { type Memory, openMemory } from "../memory.js";
-import { unreadableSessionStart } from "../retrieval/session-context.js";
+import { unreadableSessionStart, unreadableSubagentStart } from "../retrieval/session-context.js";
 import { LIMITS } from "../schemas.js";
 
 /**
@@ -99,7 +99,7 @@ export function runHook(run: HookRun): HookOutcome {
       return rendered === null ? QUIET : { stdout: hooks.sessionStart(rendered), stderr: "" };
     }
     if (event === "subagent-start") {
-      unreadable = (code) => hooks.subagentStart({ context: unreadableSessionStart(code).context });
+      unreadable = (code) => hooks.subagentStart(unreadableSubagentStart(code));
       const start = payload(SubagentStartPayload);
       if (start === null) return fail("invalid_input", "the hook payload is not a SubagentStart payload with session_id");
       const rendered = withMemory(run, host, (memory) => memory.subagentStart({ hostSessionId: start.session_id }));

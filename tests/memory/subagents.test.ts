@@ -137,11 +137,38 @@ describe("a sub-agent's work is kept under the session that started it", () => {
     expect(recalled(memory, "retry budget three attempts retry.ts", "SYNTHETIC-REPORT").map((r) => r.source?.transcriptId)).toEqual([`${PARENT}/agent-${AGENT}`]);
   });
 
-  test("a Stop hook naming a sub-agent's transcript itself imports it", () => {
+  test("a Stop hook cannot name a sub-agent's transcript itself: it is imported only with its session", () => {
     const s = delegated();
-    const capture = s.open().captureTurn({ transcriptPath: s.subagent ?? "" });
-    expect(capture).toMatchObject({ state: "captured", transcriptId: `${PARENT}/agent-${AGENT}`, failure: null });
-    expect(recalled(s.open(), "retry budget attempts", "SYNTHETIC-FINDING")).toHaveLength(1);
+    expect(s.open().captureTurn({ transcriptPath: s.subagent ?? "" })).toMatchObject({ state: "skipped", reason: "not_a_transcript" });
+    expect(recalled(s.open(), "retry budget attempts", "SYNTHETIC-FINDING")).toEqual([]);
+  });
+
+  test("a sub-agent's transcript gets the main transcript's privacy rules: <private> spans, secrets and oversized output", () => {
+    const w = workspace();
+    const at = new Date(Date.now() - 60_000);
+    const turn = claudeDelegatedTurn({ cwd: w.repo, sessionId: PARENT, n: 1, at, prompt: "Check the retry budget.", agentId: AGENT, subagentPrompt: `${SUBAGENT_PROMPT} <private>SYNTHETIC-HIDDEN staging host</private>`, report: REPORT });
+    const parent = installTranscript(w.config, "", { cwd: w.repo, sessionId: PARENT, content: turn.lines });
+    const output = `SYNTHETIC-FINDING token ghp_${"a1B2c3D4e5".repeat(4)} ${"retry line ".repeat(2_000)}`;
+    installSubagent(w.config, { cwd: w.repo, sessionId: PARENT, agentId: AGENT, toolUseId: turn.toolUseId, at, prompt: `${SUBAGENT_PROMPT} <private>SYNTHETIC-HIDDEN staging host</private>`, command: "grep -rn budget src", output, report: REPORT });
+    w.open().endTurn({ transcriptPath: parent.path });
+    const memory = w.open();
+    const [prompt] = recalled(memory, "SYNTHETIC-DELEGATED retry budget", "SYNTHETIC-DELEGATED");
+    expect(prompt?.excerpt).toContain("[private]");
+    expect(prompt?.excerpt).not.toContain("SYNTHETIC-HIDDEN");
+    const [finding] = recalled(memory, "retry budget SYNTHETIC-FINDING", "SYNTHETIC-FINDING");
+    const body = memory.read({ recordId: finding?.recordId ?? "", maxBytes: 32_000 }).body;
+    expect(body).toContain("[redacted:");
+    expect(body).not.toContain("ghp_a1B2");
+    expect(body).toMatch(/\[… [\d,]+ bytes omitted by Memchor …\]/);
+  });
+
+  test("the digest's last reply is the session's own agent, not a sub-agent or the prompt it was given", () => {
+    const s = delegated({ background: true });
+    const context = (() => {
+      s.open().endTurn({ transcriptPath: s.parent });
+      return s.open().sessionStart()?.context ?? "";
+    })();
+    expect(context).toContain("Last reply: Done with turn 1.");
   });
 });
 
@@ -165,6 +192,18 @@ describe("\"don't remember this session\" in the parent covers its sub-agents", 
     expect(recalled(after, "retry budget three attempts SYNTHETIC", "SYNTHETIC")).toEqual([]);
   });
 
+  test("its sub-agents' records are forgotten even when the session's own transcript was never imported", () => {
+    const s = delegated();
+    // The parent's transcript is gone (retention, a moved config): catch-up import still finds the sub-agent's.
+    rmSync(s.parent);
+    s.open().bootstrap();
+    expect(recalled(s.open(), "retry budget attempts", "SYNTHETIC-FINDING")).toHaveLength(1);
+    const live = s.open(PARENT);
+    live.bootstrap();
+    expect(markPrivate(live).forgotten.length).toBeGreaterThan(0);
+    expect(recalled(s.open(), "retry budget three attempts SYNTHETIC", "SYNTHETIC")).toEqual([]);
+  });
+
   test("a sub-agent transcript that appears after the marking is never imported", () => {
     const s = delegated({ subagent: false });
     const live = s.open(PARENT);
@@ -173,7 +212,6 @@ describe("\"don't remember this session\" in the parent covers its sub-agents", 
     const later = installSubagent(s.config, { cwd: s.repo, sessionId: PARENT, agentId: AGENT, toolUseId: "toolu_agent_1", at: new Date(), prompt: SUBAGENT_PROMPT, command: "grep -rn budget src", output: FINDING, report: REPORT });
     const memory = s.open();
     expect(memory.endTurn({ transcriptPath: s.parent }).failure).toBeNull();
-    expect(memory.captureTurn({ transcriptPath: later.path })).toMatchObject({ events: 0, failure: null });
     memory.bootstrap();
     expect(recalled(memory, "retry budget attempts", "SYNTHETIC-FINDING")).toEqual([]);
     rmSync(later.path);

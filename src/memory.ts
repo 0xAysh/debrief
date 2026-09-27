@@ -52,7 +52,7 @@ import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
 import { sessionDigest, workSince } from "./retrieval/digest.js";
-import { oneLine, renderSessionStart, renderSubagentStart, type SessionStart, type SubagentStart, type TurnEnd, unreadableSessionStart, userNotice } from "./retrieval/session-context.js";
+import { oneLine, renderSessionStart, renderSubagentStart, type SessionStart, type SubagentStart, type TurnEnd, unreadableSessionStart, unreadableSubagentStart, userNotice } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
 import { removePrivateEverywhere } from "./import/privacy.js";
 import { type CaptureResult, type CaptureSkip, type ImportStatus, readToolResultTitle, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
@@ -858,7 +858,7 @@ class LocalMemory implements Memory {
         if (!(error instanceof MemchorError)) throw error;
         if (error.code === "scope_unresolved") return null;
         recordHookFailure(this.home, { host: this.host, event: "subagent-start", cwd: this.cwd, code: error.code, message: error.message });
-        return { context: unreadableSessionStart(error.code).context };
+        return unreadableSubagentStart(error.code);
       }
     });
   }

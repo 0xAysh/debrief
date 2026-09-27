@@ -95,7 +95,8 @@ describe("subagentStart: what a sub-agent starts knowing", () => {
     for (const suffix of ["-wal", "-shm"]) rmSync(dbPath + suffix, { force: true });
     writeFileSync(dbPath, "not a database ".repeat(100));
     const context = started(open(repo, home, config));
-    expect(context).toMatch(/^Memory could not be loaded \(storage_\w+\)\. Do not assume this project has none\./);
+    // A sub-agent cannot tell the user: it says so in its report.
+    expect(context).toMatch(/^Memory could not be loaded \(storage_\w+\)\. Do not assume this project has none; say so in your report\.$/);
     expect(open(repo, home, config).status().hookFailures.map((f) => [f.event, f.code.startsWith("storage_")])).toEqual([["subagent-start", true]]);
   });
 
