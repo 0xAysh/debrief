@@ -177,7 +177,9 @@ describe("MCP protocol surface", () => {
     const send = (message: object | string): void => {
       child.stdin.write((typeof message === "string" ? message : JSON.stringify(message)) + "\n");
     };
-    const call = (id: number, name: string, args: unknown): void => send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+    const call = (id: number, name: string, args: unknown): void => {
+      send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+    };
     const record = (body: unknown) => ({ kind: "note", body, attribution: "agent_inference" });
 
     send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "raw", version: "0" } } });
