@@ -3,12 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "description": "Local, agent-facing working memory for coding agents.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "debrief": "dist/debrief.mjs"
   },
   "files": [
-    "dist/debrief.mjs"
+    "dist/debrief.mjs",
+    "dist/THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=24"
