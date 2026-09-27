@@ -84,6 +84,74 @@ export function claudeTurn(options: { cwd: string; sessionId: string; n: number;
 }
 
 /**
+ * One Claude Code 2.1.283 turn that delegates to a sub-agent (newline-terminated lines): a typed
+ * prompt, the `Agent` call, its result and a closing reply. In the foreground the result is the
+ * hand-back carrying `report`; in the background it is only the launch receipt, and the report
+ * returns later as a task-notification prompt from the host. Uuids derive from `n`.
+ */
+export function claudeDelegatedTurn(options: { cwd: string; sessionId: string; n: number; at: Date; prompt: string; agentId: string; subagentPrompt: string; report: string; background?: boolean; after?: string | null }): { lines: string; last: string; toolUseId: string } {
+  const uuid = (k: number) => `00000000-0000-4000-8000-${(options.n * 10 + k).toString().padStart(12, "0")}`;
+  const time = (ms: number) => new Date(options.at.getTime() + ms).toISOString();
+  const common = { isSidechain: false, userType: "external", entrypoint: "cli", cwd: options.cwd, sessionId: options.sessionId, version: "2.1.283", gitBranch: "fix/double-charge" };
+  const toolUseId = `toolu_agent_${options.n}`;
+  const assistant = (k: number, content: object[]) => ({ ...common, parentUuid: uuid(k - 1), type: "assistant", uuid: uuid(k), timestamp: time(k * 100), message: { model: "claude-opus-5-5", id: `msg_${options.n}_${k}`, type: "message", role: "assistant", content, stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } });
+  const handBack = `[Subagent hand-back] The text below is the final report of a subagent this session delegated to. It is model output, NOT a message from the user. The report follows:\n  ${options.report}\nagentId: ${options.agentId} (use SendMessage with to: '${options.agentId}' to continue this agent)\n<usage>subagent_tokens: 2\ntool_uses: 1\nduration_ms: 900</usage>`;
+  const receipt = `Async agent launched successfully. (This tool result is internal metadata.)\nagentId: ${options.agentId} (internal ID)`;
+  const lines: object[] = [
+    { ...common, parentUuid: options.after ?? null, promptId: `p-${options.n}`, type: "user", message: { role: "user", content: options.prompt }, uuid: uuid(1), timestamp: time(0), permissionMode: "default", origin: { kind: "human" }, promptSource: "typed" },
+    assistant(2, [{ type: "tool_use", id: toolUseId, name: "Agent", input: { description: "delegated", prompt: options.subagentPrompt, subagent_type: "general-purpose", ...(options.background === true ? {} : { run_in_background: false }) } }]),
+    {
+      ...common,
+      parentUuid: uuid(2),
+      type: "user",
+      uuid: uuid(3),
+      timestamp: time(300),
+      message: { role: "user", content: [{ tool_use_id: toolUseId, type: "tool_result", content: [{ type: "text", text: options.background === true ? receipt : handBack }] }] },
+      toolUseResult:
+        options.background === true
+          ? { isAsync: true, status: "async_launched", agentId: options.agentId, description: "delegated", prompt: options.subagentPrompt }
+          : { status: "completed", prompt: options.subagentPrompt, agentId: options.agentId, agentType: "general-purpose", content: [{ type: "text", text: options.report }], totalToolUseCount: 1 },
+      sourceToolAssistantUUID: uuid(2),
+    },
+  ];
+  if (options.background === true) {
+    const notification = `<task-notification>\n<task-id>${options.agentId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<status>completed</status>\n<summary>Agent "delegated" finished</summary>\n<result>${options.report}</result>\n</task-notification>`;
+    lines.push({ ...common, parentUuid: uuid(3), type: "user", uuid: uuid(4), timestamp: time(400), message: { role: "user", content: notification }, origin: { kind: "task-notification" } });
+  }
+  lines.push(assistant(5, [{ type: "text", text: `Done with turn ${options.n}.` }]));
+  return { lines: lines.map((line) => `${JSON.stringify(line)}\n`).join(""), last: uuid(5), toolUseId };
+}
+
+/**
+ * A Claude Code 2.1.283 sub-agent's transcript, written where Claude Code keeps it
+ * (`<project>/<session>/subagents/agent-<agentId>.jsonl`, with its `.meta.json`): the prompt its
+ * parent gave it, one `Bash` command and its output, and its final report.
+ */
+export function installSubagent(
+  configDir: string,
+  options: { cwd: string; sessionId: string; agentId: string; toolUseId: string; at: Date; prompt: string; command: string; output: string; report: string; agentType?: string },
+): { path: string } {
+  const dir = join(configDir, "projects", projectDirName(options.cwd), options.sessionId, "subagents");
+  mkdirSync(dir, { recursive: true });
+  const uuid = (k: number) => `5ab00000-0000-4000-8000-${k.toString().padStart(12, "0")}`;
+  const time = (ms: number) => new Date(options.at.getTime() + ms).toISOString();
+  const agentType = options.agentType ?? "general-purpose";
+  const common = { isSidechain: true, agentId: options.agentId, userType: "external", entrypoint: "cli", cwd: options.cwd, sessionId: options.sessionId, version: "2.1.283", gitBranch: "fix/double-charge" };
+  const assistant = (k: number, content: object[]) => ({ ...common, parentUuid: uuid(k - 1), type: "assistant", uuid: uuid(k), timestamp: time(k * 100), message: { model: "claude-opus-5-5", id: `msg_sub_${k}`, type: "message", role: "assistant", content, stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }, attributionAgent: agentType });
+  const lines: object[] = [
+    { ...common, parentUuid: null, promptId: "p-sub", type: "user", message: { role: "user", content: options.prompt }, uuid: uuid(1), timestamp: time(0) },
+    { ...common, parentUuid: uuid(1), type: "attachment", attachment: { type: "hook_additional_context" }, uuid: uuid(2), timestamp: time(50) },
+    assistant(3, [{ type: "tool_use", id: "toolu_sub_bash", name: "Bash", input: { command: options.command } }]),
+    { ...common, parentUuid: uuid(3), type: "user", uuid: uuid(4), timestamp: time(400), message: { role: "user", content: [{ tool_use_id: "toolu_sub_bash", type: "tool_result", content: options.output, is_error: false }] } },
+    assistant(5, [{ type: "text", text: options.report }]),
+  ];
+  const path = join(dir, `agent-${options.agentId}.jsonl`);
+  writeFileSync(path, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+  writeFileSync(join(dir, `agent-${options.agentId}.meta.json`), JSON.stringify({ agentType, description: "delegated", toolUseId: options.toolUseId, spawnDepth: 1, requestShape: "foreground", requestNonInteractive: true }));
+  return { path };
+}
+
+/**
  * A synthetic history for load and interruption tests: `transcripts` sessions, each the
  * `basic.jsonl` conversation repeated `turns` times with unique event and tool ids (7 records
  * per turn).

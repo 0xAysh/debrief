@@ -358,6 +358,13 @@ export const SessionStartInput = z.strictObject({
 });
 export type SessionStartInput = z.input<typeof SessionStartInput>;
 
+/** A sub-agent starting inside a session, from a host hook (not an agent tool). */
+export const SubagentStartInput = z.strictObject({
+  /** The host's id for the session that started the sub-agent (Claude Code's `session_id`, which is the parent's). */
+  hostSessionId: z.string().min(1).max(LIMITS.hostSessionIdChars),
+});
+export type SubagentStartInput = z.input<typeof SubagentStartInput>;
+
 /**
  * Every operation the memory module offers to agents, with its input schema. Adapters
  * build their tool lists from this map (the single source of operation names).

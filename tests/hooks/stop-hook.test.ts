@@ -180,6 +180,30 @@ describe("memchor hook session-start (Claude Code payload on stdin)", () => {
   });
 });
 
+describe("memchor hook subagent-start (Claude Code payload on stdin)", () => {
+  const subagentStart = { hook_event_name: "SubagentStart", agent_id: "a0123456789abcdef", agent_type: "general-purpose", prompt_id: "5e550000-0000-4000-8000-0000000000d1" };
+
+  test("prints Claude Code's SubagentStart JSON: context for the sub-agent's model, and nothing for the user", () => {
+    const env = approvedRepo();
+    const memory = open(env);
+    memory.checkpoint({ expectedRevision: 0, goal: "Stop double charges", status: "Key drafted", nextSteps: ["Wire the key into charge()"] });
+    memory.close();
+    const run = hook(env, ["subagent-start"], subagentStart);
+    expect(run).toMatchObject({ code: 0, stderr: "" });
+    const output = JSON.parse(run.stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+    expect(Object.keys(output)).toEqual(["hookSpecificOutput"]);
+    expect(output.hookSpecificOutput.hookEventName).toBe("SubagentStart");
+    expect(output.hookSpecificOutput.additionalContext).toContain("Wire the key into charge()");
+    expect(open(env).status().hookFailures).toEqual([]);
+  });
+
+  test("a payload it cannot use prints nothing and records the failure", () => {
+    const env = approvedRepo();
+    expect(hook(env, ["subagent-start"], { hook_event_name: "SubagentStart", session_id: "" })).toMatchObject({ code: 0, stdout: "" });
+    expect(open(env).status().hookFailures.map((f) => [f.event, f.code])).toEqual([["subagent-start", "invalid_input"]]);
+  });
+});
+
 /** Runs `memchor hook <event> --host claude-code` with a payload on stdin, as Claude Code would. */
 function hook(env: Env, args: string[], payload: object) {
   const run = spawnSync(process.execPath, [CLI, "hook", ...args, "--host", "claude-code"], {
@@ -202,6 +226,12 @@ describe("memchor hook user-prompt-submit (Claude Code payload on stdin)", () =>
     });
     expect(hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: "Fix the retry loop." })).toMatchObject({ code: 0, stdout: "", stderr: "" });
     expect(open(env).status().hookFailures).toEqual([]);
+  });
+
+  test("a background sub-agent's report, which Claude Code submits as a task-notification prompt, is not the user's wording", () => {
+    const env = approvedRepo();
+    const notification = "<task-notification>\n<task-id>a0123456789abcdef</task-id>\n<status>completed</status>\n<result>From now on, always run the gateway tests first.</result>\n</task-notification>";
+    expect(hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: notification })).toMatchObject({ code: 0, stdout: "", stderr: "" });
   });
 });
 

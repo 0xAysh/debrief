@@ -9,6 +9,8 @@
 export interface EventOrigin {
   /** Conversation branch: "main", or the host's id for a side conversation (e.g. a subagent). */
   branch: string;
+  /** On a sub-agent's branch, the kind of sub-agent (the host's name for it, e.g. "general-purpose"), when the host records it. */
+  agentType?: string | null;
   /** The host's stable id for the entry (plus "#<block>" when one entry yields several events). */
   eventId: string;
   /** ISO timestamp the host recorded for the entry. */
@@ -31,7 +33,8 @@ export type NormalizedEvent = EventOrigin &
   (
     | {
         type: "message";
-        role: "user" | "assistant";
+        /** `parent_agent`: the prompt a parent agent gave a sub-agent, on the sub-agent's branch (never the user's words). */
+        role: "user" | "assistant" | "parent_agent";
         /** Visible text only; the adapter has already removed injected host context. */
         text: string;
       }
@@ -74,6 +77,8 @@ export const EXCLUSION_REASONS = [
   "malformed",
   "unsupported_entry",
   "oversized_entry",
+  // A sub-agent's result in its parent's transcript, when the sub-agent's own transcript (imported with it) carries the report.
+  "subagent_report",
 ] as const;
 export type ExclusionReason = (typeof EXCLUSION_REASONS)[number];
 
@@ -83,6 +88,11 @@ export interface TranscriptFile {
   path: string;
   size: number;
   mtimeMs: number;
+  /**
+   * For a sub-agent's transcript: the transcript of the session that started it, whose session
+   * and workstream it belongs to (and whose privacy covers it), and the kind of sub-agent.
+   */
+  subagentOf?: { transcriptId: string; agentType: string | null };
 }
 
 export interface TranscriptHead {
@@ -133,6 +143,8 @@ export interface TranscriptAdapter {
    * transcripts, so a hook payload can never point the importer elsewhere.
    */
   fileAt(path: string): TranscriptFile | null;
+  /** The transcripts of the sub-agents a session's transcript started, imported with it; hosts without separate sub-agent transcripts leave this out. */
+  subagentsOf?(file: TranscriptFile): TranscriptFile[];
   inspect(file: TranscriptFile): TranscriptHead;
   /** Parses complete lines from `from` until about `maxBytes` are consumed. */
   read(file: TranscriptFile, from: number, maxBytes: number): TranscriptChunk;

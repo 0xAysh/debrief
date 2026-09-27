@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
@@ -24,9 +24,13 @@ import { inCompatibility } from "../versions.js";
  * `$CLAUDE_CONFIG_DIR/projects/<project>/<session-id>.jsonl`, `CLAUDE_CONFIG_DIR` defaulting to
  * `~/.claude`. `<project>` is the cwd with non-alphanumerics replaced by "-" (truncated and
  * hashed past 200 characters), so it is lossy: the workspace comes from each entry's own `cwd`,
- * never from the directory name. Subagent transcripts (`<session>/subagents/`) and auto memory
- * (`<project>/memory/`) are not read: the subagent's final report already appears in the parent
- * transcript as the Agent tool's result.
+ * never from the directory name. A sub-agent's transcript is
+ * `<project>/<session>/subagents/agent-<agentId>.jsonl`, with the kind of agent in the
+ * `.meta.json` beside it (pinned in tests/hooks/claude-subagents.test.ts); its id here is
+ * `<session>/agent-<agentId>`, and it belongs to that session: discovery lists it, and
+ * `subagentsOf` hands it to the capture of its session (a hook never names it). Its final report also appears in
+ * the parent's transcript, as the Agent tool's result, which is then left out
+ * (`subagent_report`) so the report is one observation. Auto memory (`<project>/memory/`) is not read.
  *
  * Format: one JSON object per line. The docs state that "the entry format is internal to Claude
  * Code and changes between versions", so this adapter reads only the fields below, pins the
@@ -96,6 +100,7 @@ export function claudeCodeAdapter(options: { configDir?: string } = {}): Transcr
     root,
     discover: () => discover(root),
     fileAt: (path) => fileAt(root, path),
+    subagentsOf,
     inspect,
     read,
   };
@@ -107,19 +112,62 @@ function discover(root: string): TranscriptFile[] {
     if (!project.isDirectory()) continue;
     const dir = join(root, project.name);
     for (const entry of listDir(dir)) {
-      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-      const file = statTranscript(join(dir, entry.name));
-      if (file !== null) files.push(file);
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        const file = statTranscript(join(dir, entry.name));
+        if (file !== null) files.push(file);
+      } else if (entry.isDirectory()) {
+        // A session's directory: its sub-agents' transcripts, whether or not the session's own transcript is still there.
+        files.push(...subagentFiles(join(dir, entry.name)));
+      }
     }
   }
   return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
-/** Only `<root>/<project>/<session>.jsonl` is a main-session transcript (subagents live deeper). */
+/** Only `<root>/<project>/<session>.jsonl`: a hook names a session's transcript, and its sub-agents' come with it (`subagentsOf`). */
 function fileAt(root: string, path: string): TranscriptFile | null {
   const resolved = resolve(path);
   if (!resolved.endsWith(".jsonl") || dirname(dirname(resolved)) !== resolve(root)) return null;
   return statTranscript(resolved);
+}
+
+function subagentsOf(file: TranscriptFile): TranscriptFile[] {
+  return file.subagentOf === undefined ? subagentFiles(sessionDir(file)) : [];
+}
+
+/** The directory Claude Code keeps a session's own files in (its sub-agents' transcripts among them). */
+function sessionDir(file: TranscriptFile): string {
+  return file.subagentOf === undefined ? file.path.slice(0, -".jsonl".length) : dirname(dirname(file.path));
+}
+
+const SUBAGENT_FILE = /^agent-([A-Za-z0-9_-]{1,64})\.jsonl$/;
+
+function subagentFiles(session: string): TranscriptFile[] {
+  return listDir(join(session, "subagents"))
+    .filter((entry) => entry.isFile())
+    .map((entry) => subagentFile(session, entry.name))
+    .filter((file) => file !== null);
+}
+
+function subagentFile(session: string, name: string): TranscriptFile | null {
+  const agentId = SUBAGENT_FILE.exec(name)?.[1];
+  if (agentId === undefined) return null;
+  const path = join(session, "subagents", name);
+  const file = statTranscript(path);
+  if (file === null) return null;
+  const parent = basename(session);
+  return { ...file, transcriptId: `${parent}/agent-${agentId}`, subagentOf: { transcriptId: parent, agentType: agentTypeOf(path) } };
+}
+
+/** The kind of sub-agent, from the `.meta.json` Claude Code writes beside its transcript; null when that is missing or unreadable. */
+function agentTypeOf(transcript: string): string | null {
+  try {
+    const meta = parseObject(readFileSync(transcript.replace(/\.jsonl$/, ".meta.json"), "utf8"));
+    const type = meta?.["agentType"];
+    return typeof type === "string" && type.trim() !== "" ? type.trim().slice(0, 64) : null;
+  } catch {
+    return null;
+  }
 }
 
 function statTranscript(path: string): TranscriptFile | null {
@@ -145,6 +193,7 @@ function inspect(file: TranscriptFile): TranscriptHead {
 
 function read(file: TranscriptFile, from: number, maxBytes: number): TranscriptChunk {
   const chunk: TranscriptChunk = { events: [], end: from, excluded: {}, stop: null };
+  const context: ReadContext = { file, subagentsDir: join(sessionDir(file), "subagents") };
   const exclude = (reason: ExclusionReason, n = 1): void => {
     chunk.excluded[reason] = (chunk.excluded[reason] ?? 0) + n;
   };
@@ -166,7 +215,7 @@ function read(file: TranscriptFile, from: number, maxBytes: number): TranscriptC
       chunk.stop = { reason: "unsupported_version", hostVersion: typeof version === "string" ? version : "missing", offset: line.start };
       return chunk;
     }
-    normalizeEntry(entry, line, chunk.events, exclude);
+    normalizeEntry(entry, line, chunk.events, exclude, context);
     chunk.end = line.end;
   }
   return chunk;
@@ -174,8 +223,13 @@ function read(file: TranscriptFile, from: number, maxBytes: number): TranscriptC
 
 type Entry = JsonObject;
 type Excluder = (reason: ExclusionReason, n?: number) => void;
+/** The transcript being read, and where its session's sub-agent transcripts are. */
+interface ReadContext {
+  file: TranscriptFile;
+  subagentsDir: string;
+}
 
-function normalizeEntry(entry: Entry, line: { start: number; end: number }, out: NormalizedEvent[], exclude: Excluder): void {
+function normalizeEntry(entry: Entry, line: { start: number; end: number }, out: NormalizedEvent[], exclude: Excluder, context: ReadContext): void {
   const type = entry["type"];
   if (typeof type !== "string") { exclude("malformed"); return; }
   if (METADATA_TYPES.has(type)) { exclude("host_metadata"); return; }
@@ -185,8 +239,11 @@ function normalizeEntry(entry: Entry, line: { start: number; end: number }, out:
   if (typeof uuid !== "string" || typeof timestamp !== "string" || typeof cwd !== "string" || typeof version !== "string") {
     exclude("malformed"); return;
   }
+  const sidechain = entry["isSidechain"] === true;
+  const attributed = typeof entry["attributionAgent"] === "string" ? entry["attributionAgent"] : null;
   const origin = {
-    branch: entry["isSidechain"] === true ? (typeof entry["agentId"] === "string" ? entry["agentId"] : "sidechain") : "main",
+    branch: sidechain ? (typeof entry["agentId"] === "string" ? entry["agentId"] : "sidechain") : "main",
+    ...(sidechain ? { agentType: context.file.subagentOf?.agentType ?? attributed } : {}),
     observedAt: timestamp,
     cwd,
     gitBranch: typeof entry["gitBranch"] === "string" && entry["gitBranch"] !== "" ? entry["gitBranch"] : null,
@@ -223,9 +280,12 @@ function normalizeEntry(entry: Entry, line: { start: number; end: number }, out:
     if (!Array.isArray(content)) { exclude("malformed"); return; }
     let text = "";
     let textBlock = -1;
+    const reported = subagentReported(entry, context);
     content.forEach((block: unknown, index) => {
       const b = block as { type?: unknown; text?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown };
-      if (b.type === "tool_result" && typeof b.tool_use_id === "string") {
+      if (b.type === "tool_result" && typeof b.tool_use_id === "string" && reported) {
+        exclude("subagent_report");
+      } else if (b.type === "tool_result" && typeof b.tool_use_id === "string") {
         out.push({ ...origin, eventId: eventId(index), type: "tool_result", callId: b.tool_use_id, text: resultText(b.content, exclude), isError: b.is_error === true });
       } else if (b.type === "text" && typeof b.text === "string") {
         if (textBlock < 0) textBlock = index;
@@ -263,8 +323,26 @@ function normalizeEntry(entry: Entry, line: { start: number; end: number }, out:
       return "";
     });
     if (injected > 0) exclude("injected_context", injected);
-    if (text.trim() !== "") out.push({ ...origin, eventId: eventId(block), type: "message", role: "user", text: text.trim() });
+    // On a sub-agent's branch the "user" is the parent agent that prompted it.
+    if (text.trim() !== "") out.push({ ...origin, eventId: eventId(block), type: "message", role: sidechain ? "parent_agent" : "user", text: text.trim() });
   }
+}
+
+/**
+ * Whether a tool result is a sub-agent's hand-back that its own transcript, imported with this
+ * one, carries instead. The Agent tool's result names the agent in `toolUseResult.agentId`. In the
+ * background it is only a launch receipt (`status: "async_launched"`), always left out: the
+ * sub-agent's transcript may not be written yet when the parent stops, and the report returns as
+ * a task-notification. In the foreground it is the report, left out while the sub-agent's
+ * transcript is on disk (it is by then), kept otherwise.
+ */
+function subagentReported(entry: Entry, context: ReadContext): boolean {
+  const result = asObject(entry["toolUseResult"]);
+  const agentId = result["agentId"];
+  if (typeof agentId !== "string") return false;
+  if (result["status"] === "async_launched") return true;
+  const name = `agent-${agentId}.jsonl`;
+  return SUBAGENT_FILE.test(name) && existsSync(join(context.subagentsDir, name));
 }
 
 /** One-line description, touched paths and semantic kind of a tool call, from its input. */

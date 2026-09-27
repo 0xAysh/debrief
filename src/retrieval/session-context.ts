@@ -1,5 +1,6 @@
 import type { HookFailure } from "../import/hook-failures.js";
-import type { BootstrapResult } from "../memory.js";
+import type { PreferenceBlock } from "../integrity/preferences.js";
+import type { BootstrapResult, ContextPack } from "../memory.js";
 import type { SessionDigest } from "./digest.js";
 import { checkpointLabel, itemLabel } from "./label.js";
 
@@ -26,6 +27,21 @@ export interface SessionStart {
   notice: string;
 }
 
+/** A sub-agent's start: context for its model only (the user sees the parent's session start). */
+export interface SubagentStart {
+  context: string;
+}
+
+/**
+ * A sub-agent's share, well under the session start's: it needs where the task stands, not the
+ * session's history. The checkpoint gets up to 1,500 characters, preferences what they take
+ * (normally a few lines), and items the rest.
+ */
+export const SUBAGENT_CONTEXT_CHARS = 4_000;
+const SUBAGENT_CHECKPOINT_CHARS = 1_500;
+const SUBAGENT_GUIDE =
+  "Memchor is the working memory of the session that started you (you are its sub-agent). The checkpoint below is where the task stands; the parent session keeps it, so do not call memory_checkpoint. What you do is kept from your transcript: put what you found in your final report. memory_recall has more.";
+
 /** What a Stop hook says: a request to the agent to update a stale checkpoint, and a line for the user. */
 export interface TurnEnd {
   nudge: string | null;
@@ -50,14 +66,10 @@ export function renderSessionStart(boot: BootstrapResult, input: { protocol: str
   const question = preferences.pending[0];
   if (question !== undefined) fixed.push(`## Preference question for the user\n${question.question}\nChoices: ${question.choices.map((c) => c.label).join(" / ")}. Relay their answer with memory_manage answer_preference.`);
 
-  if (pack.checkpoint !== null) {
-    const warning = pack.checkpoint.warning === null ? "" : `\n⚠ ${pack.checkpoint.warning}`;
-    const body = pack.checkpoint.excerpt.length <= CHECKPOINT_CHARS ? pack.checkpoint.excerpt : `${pack.checkpoint.excerpt.slice(0, CHECKPOINT_CHARS)}… (memory_read ${pack.checkpoint.recordId} for all of it)`;
-    fixed.push(`## Checkpoint [${checkpointLabel(pack.checkpoint, input.now)}]\n${body}${warning}`);
-  }
+  if (pack.checkpoint !== null) fixed.push(checkpointSection(pack.checkpoint, CHECKPOINT_CHARS, input.now));
   const { digest } = input;
   if (digest !== null) fixed.push(renderDigest(digest, pack.checkpoint?.revision ?? null));
-  if (preferences.items.length > 0) fixed.push(`## Preferences (${preferences.note})\n${preferences.items.map((p) => `- ${p.text}`).join("\n")}`);
+  if (preferences.items.length > 0) fixed.push(preferencesSection(preferences));
 
   const empty = pack.empty && preferences.items.length === 0 && digest === null;
   if (empty) {
@@ -68,28 +80,58 @@ export function renderSessionStart(boot: BootstrapResult, input: { protocol: str
     );
   }
 
-  // Items fill what the fixed parts leave; whatever does not fit is named, never silently dropped.
-  let text = fixed.join("\n\n");
-  let shown = 0;
   // Preferences are listed above; the pack carries them too.
   const listed = new Set([...preferences.items.map((p) => p.recordId), ...(digest?.recordIds ?? [])]);
+  const { text, shown } = withItems(fixed.join("\n\n"), pack, listed, SESSION_CONTEXT_CHARS, CUT, input.now);
+  return { context: text, notice: notice(boot, shown, empty, input) };
+}
+
+/**
+ * What a sub-agent starts with (a host's sub-agent-start hook): the head checkpoint, confirmed
+ * preferences and labelled items, from the session that started it. No protocol and no digest
+ * (the parent has them), and nothing meant for the user (import consent, a workstream to
+ * confirm, preference questions): a sub-agent cannot ask them.
+ */
+export function renderSubagentStart(input: { scope: BootstrapResult["scope"]; pack: ContextPack; preferences: PreferenceBlock; newWorkspace: boolean; now: Date }): SubagentStart {
+  const { scope, pack, preferences } = input;
+  const fixed: string[] = [`# Memchor: ${scope.workspaceLabel} / ${scope.workstreamLabel ?? "(no workstream bound)"}, head r${scope.headRevision}`, SUBAGENT_GUIDE];
+  if (pack.checkpoint !== null) fixed.push(checkpointSection(pack.checkpoint, SUBAGENT_CHECKPOINT_CHARS, input.now));
+  if (preferences.items.length > 0) fixed.push(preferencesSection(preferences));
+  if (pack.empty && preferences.items.length === 0) fixed.push(input.newWorkspace ? "No memory for this repository yet." : "No memory for this workstream yet.");
+  const listed = new Set(preferences.items.map((p) => p.recordId));
+  return { context: withItems(fixed.join("\n\n"), pack, listed, SUBAGENT_CONTEXT_CHARS, SUBAGENT_CUT, input.now).text };
+}
+
+function checkpointSection(checkpoint: NonNullable<ContextPack["checkpoint"]>, maxChars: number, now: Date): string {
+  const warning = checkpoint.warning === null ? "" : `\n⚠ ${checkpoint.warning}`;
+  const body = checkpoint.excerpt.length <= maxChars ? checkpoint.excerpt : `${checkpoint.excerpt.slice(0, maxChars)}… (memory_read ${checkpoint.recordId} for all of it)`;
+  return `## Checkpoint [${checkpointLabel(checkpoint, now)}]\n${body}${warning}`;
+}
+
+function preferencesSection(preferences: PreferenceBlock): string {
+  return `## Preferences (${preferences.note})\n${preferences.items.map((p) => `- ${p.text}`).join("\n")}`;
+}
+
+/** Items fill what the fixed parts leave, up to `cap`; whatever does not fit is named, never silently dropped. */
+function withItems(fixed: string, pack: ContextPack, listed: ReadonlySet<string>, cap: number, cut: string, now: Date): { text: string; shown: number } {
+  let text = fixed;
+  let shown = 0;
   const items = pack.items.filter((item) => !listed.has(item.recordId));
   if (items.length > 0) {
     text += "\n\n## Recent memory";
     for (const item of items) {
       const body = oneLine(item.title ?? item.excerpt, ITEM_CHARS);
       const warning = item.warning === null ? "" : `\n  ⚠ ${item.warning}`;
-      const line = `\n- [${itemLabel(item, input.now)}] ${body} (${item.recordId})${warning}`;
-      if (text.length + line.length + TAIL_RESERVE > SESSION_CONTEXT_CHARS) break;
+      const line = `\n- [${itemLabel(item, now)}] ${body} (${item.recordId})${warning}`;
+      if (text.length + line.length + TAIL_RESERVE > cap) break;
       text += line;
       shown++;
     }
   }
   const hidden = items.length - shown + pack.omissions.reduce((n, o) => n + o.count, 0);
   if (hidden > 0) text += `\n${hidden} more not shown: use memory_recall.`;
-
-  if (text.length > SESSION_CONTEXT_CHARS) text = text.slice(0, SESSION_CONTEXT_CHARS - CUT.length) + CUT;
-  return { context: text, notice: notice(boot, shown, empty, input) };
+  if (text.length > cap) text = text.slice(0, cap - cut.length) + cut;
+  return { text, shown };
 }
 
 const DIGEST_PROMPT_CHARS = 240;
@@ -113,6 +155,12 @@ function renderDigest(digest: SessionDigest, checkpointRevision: number | null):
 /** Room kept for the "N more not shown" line. */
 const TAIL_RESERVE = 60;
 const CUT = "\n[cut by Memchor to fit session-start context: call memory_bootstrap for all of it]";
+const SUBAGENT_CUT = "\n[cut by Memchor to fit sub-agent context: use memory_recall for the rest]";
+
+/** A sub-agent cannot tell the user; its parent's session start already did, and its report can. */
+export function unreadableSubagentStart(code: string): SubagentStart {
+  return { context: `Memory could not be loaded (${code}). Do not assume this project has none; say so in your report.` };
+}
 
 export function unreadableSessionStart(code: string): SessionStart {
   return {

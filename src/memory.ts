@@ -52,7 +52,7 @@ import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
 import { sessionDigest, workSince } from "./retrieval/digest.js";
-import { oneLine, renderSessionStart, type SessionStart, type TurnEnd, unreadableSessionStart, userNotice } from "./retrieval/session-context.js";
+import { oneLine, renderSessionStart, renderSubagentStart, type SessionStart, type SubagentStart, type TurnEnd, unreadableSessionStart, unreadableSubagentStart, userNotice } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
 import { removePrivateEverywhere } from "./import/privacy.js";
 import { type CaptureResult, type CaptureSkip, type ImportStatus, readToolResultTitle, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
@@ -98,6 +98,7 @@ import {
   ApproveToolInput,
   ContinueImportInput,
   SessionStartInput,
+  SubagentStartInput,
   effectiveBudget,
   type Freshness,
   LIMITS,
@@ -127,7 +128,7 @@ import { appendRecord, recordFields } from "./storage/records.js";
 export type { ImportedSource, Citation } from "./integrity/provenance.js";
 export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
 export type { HookFailure } from "./import/hook-failures.js";
-export type { SessionStart, TurnEnd } from "./retrieval/session-context.js";
+export type { SessionStart, SubagentStart, TurnEnd } from "./retrieval/session-context.js";
 export type { CaptureResult, CaptureSkip, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
 export type { CandidateSignal, ResolutionBasis, ScopeAmbiguity, WorkstreamCandidate } from "./bootstrap/workstream-resolution.js";
@@ -555,6 +556,13 @@ export interface Memory {
    */
   sessionStart(input?: SessionStartInput): SessionStart | null;
   /**
+   * What a sub-agent-start hook injects: the head checkpoint, confirmed preferences and a small
+   * pack for the session that started it (`SUBAGENT_CONTEXT_CHARS`), without importing and
+   * without anything meant for the user. Null outside a Git worktree; memory that cannot be
+   * read becomes context saying so, as at session start.
+   */
+  subagentStart(input: SubagentStartInput): SubagentStart | null;
+  /**
    * The end of a turn (the Stop hook): {@link captureTurn}, then, unless the host is already
    * continuing because of a Stop hook, a request to update the checkpoint when it fell
    * five turns of work behind (`NUDGE_TURNS`). The user's line says what was saved, or that
@@ -563,7 +571,8 @@ export interface Memory {
   endTurn(input: EndTurnInput): TurnEnd;
   /**
    * One line for the agent when the prompt the user just submitted states a lasting preference
-   * (a prompt-submit hook), else null; null outside a Git worktree. No model, no network, no
+   * (a prompt-submit hook), else null; null outside a Git worktree and for a prompt the host
+   * submitted itself (`hostPrompt` in src/hosts.ts). No model, no network, no
    * database: the agent decides whether to propose it.
    */
   promptHint(input: PromptHintInput): string | null;
@@ -638,8 +647,12 @@ const PRIVATE_NOTICE =
 const FORGET_NOTICE =
   "Nothing has been removed yet. Show the user the targets and the impact, and ask them to confirm explicitly; only then call memory_manage with action forget and this confirmToken. Forgetting cannot be undone. Records listed as invalidated or quarantined keep their own content (forget them too if the user wants). Host transcripts, loaded model contexts, exports and backups are not erased.";
 const DEFAULT_IMPORT_BUDGET_MS = 3_000;
-/** The pack's share of session-start context; the protocol, digest and preferences take the rest. */
-const SESSION_PACK_BYTES = 6_000;
+/**
+ * The pack a start hook renders from (session or sub-agent). Pack items carry provenance JSON, so
+ * this holds more than the rendered text keeps; the text caps (`SESSION_CONTEXT_CHARS`,
+ * `SUBAGENT_CONTEXT_CHARS`) bound what the model gets.
+ */
+const START_PACK_BYTES = 6_000;
 
 function skippedCapture(reason: CaptureSkip): CaptureResult {
   return { state: "skipped", reason, transcriptId: null, workstreamId: null, events: 0, complete: true, problem: null };
@@ -816,7 +829,7 @@ class LocalMemory implements Memory {
     return this.guard(() => {
       const parsed = parse(SessionStartInput, input);
       try {
-        const boot = this.bootstrap({ maxBytes: SESSION_PACK_BYTES, ...(parsed.hostSessionId === undefined ? {} : { hostSessionId: parsed.hostSessionId }) });
+        const boot = this.bootstrap({ maxBytes: START_PACK_BYTES, ...(parsed.hostSessionId === undefined ? {} : { hostSessionId: parsed.hostSessionId }) });
         const workstreamId = boot.scope.workstreamId;
         const digest = workstreamId === null || this.bound === undefined ? null : sessionDigest(this.bound.db, workstreamId, boot.context.checkpoint?.createdAt ?? null);
         const failures = recentHookFailures(this.home, { within: boot.scope.worktree });
@@ -827,6 +840,25 @@ class LocalMemory implements Memory {
         if (error.code === "scope_unresolved") return null;
         recordHookFailure(this.home, { host: this.host, event: "session-start", cwd: this.cwd, code: error.code, message: error.message });
         return unreadableSessionStart(error.code);
+      }
+    });
+  }
+
+  subagentStart(input: SubagentStartInput): SubagentStart | null {
+    return this.guard(() => {
+      const parsed = parse(SubagentStartInput, input);
+      try {
+        this.adoptHostSessionId(parsed.hostSessionId);
+        const { db, scope, location } = this.bind();
+        // No pending questions: re-asking one marks it asked in this session, and a sub-agent cannot ask the user.
+        const preferences = preferenceBlock(this.preferenceStores(db, scope), []);
+        const pack = this.pack(db, scope, parse(RecallInput, { maxBytes: START_PACK_BYTES }));
+        return renderSubagentStart({ scope: scopeView(db, scope), pack, preferences, newWorkspace: location.isNew, now: new Date() });
+      } catch (error) {
+        if (!(error instanceof MemchorError)) throw error;
+        if (error.code === "scope_unresolved") return null;
+        recordHookFailure(this.home, { host: this.host, event: "subagent-start", cwd: this.cwd, code: error.code, message: error.message });
+        return unreadableSubagentStart(error.code);
       }
     });
   }
@@ -859,6 +891,8 @@ class LocalMemory implements Memory {
   promptHint(input: PromptHintInput): string | null {
     return this.guard(() => {
       const parsed = parse(PromptHintInput, input);
+      // The host's own prompts (a sub-agent's report) are not the user's wording.
+      if (hostDescriptor(this.host)?.hostPrompt?.test(parsed.prompt) === true) return null;
       if (!statesLastingPreference(parsed.prompt)) return null;
       try {
         locateWorkspace(this.cwd, this.home);

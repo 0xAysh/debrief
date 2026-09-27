@@ -181,7 +181,8 @@ export function codexAdapter(options: { codexHome?: string } = {}): TranscriptAd
     } catch {
       return null; // removed or archived between listing and stat
     }
-    // A subagent's "user" is its parent agent, and the parent already holds its result (like Claude's subagents).
+    // A subagent's "user" is its parent agent, and the parent already holds its result. Unlike
+    // Claude Code's, Codex sub-agent threads are not imported: that waits for the cross-agent work.
     return headOf(path)?.subagent === true ? null : file;
   };
 

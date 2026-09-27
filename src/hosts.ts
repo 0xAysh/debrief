@@ -1,7 +1,7 @@
 import { claudeCodeAdapter } from "./import/adapters/claude.js";
 import { codexAdapter } from "./import/adapters/codex.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
-import type { SessionStart, TurnEnd } from "./retrieval/session-context.js";
+import type { SessionStart, SubagentStart, TurnEnd } from "./retrieval/session-context.js";
 
 /**
  * Everything Memchor knows about each agent host, in one place: the memory module picks the
@@ -52,11 +52,18 @@ export interface HostDescriptor {
    * is group 1); null where that is not pinned. Another server's tool of the same name never matches.
    */
   memchorTool: RegExp | null;
+  /**
+   * Prompts the host submits itself through its prompt hook, which are not the user's words (a
+   * background sub-agent's report); null where none are pinned.
+   */
+  hostPrompt: RegExp | null;
 }
 
 export interface HookOutput {
   /** Stdout for a session-start hook: context for the model, and the one-line notice for the user. */
   sessionStart(start: SessionStart): string;
+  /** Stdout for a sub-agent-start hook: context for the sub-agent's model. */
+  subagentStart(start: SubagentStart): string;
   /** Stdout for a Stop hook: a request that the agent continue (the nudge), and the user's line; empty for neither. */
   stop(end: TurnEnd): string;
   /** Stdout for a prompt-submit hook: one line of context for the agent. */
@@ -65,9 +72,11 @@ export interface HookOutput {
   allowTool(notice: string | null): string;
 }
 
-/** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts). */
+/** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts, tests/hooks/claude-subagents.test.ts). */
 const CLAUDE_CODE_HOOKS: HookOutput = {
   sessionStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: start.context }, systemMessage: start.notice }),
+  // Only additionalContext reaches the sub-agent; plain stdout does not (tests/hooks/claude-subagents.test.ts).
+  subagentStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: start.context } }),
   stop: (end) =>
     end.nudge === null && end.notice === null
       ? ""
@@ -89,6 +98,8 @@ export const HOSTS = {
     editTools: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
     // User-scope `mcp__memchor__…`, or the plugin-bundled server's `mcp__plugin_memchor_memchor__…`.
     memchorTool: /^mcp__(?:plugin_memchor_)?memchor__(memory_[a-z_]+)$/,
+    // A background sub-agent's report arrives as a UserPromptSubmit prompt (tests/hooks/claude-subagents.test.ts).
+    hostPrompt: /^<task-notification>\n/,
   },
   codex: {
     transcripts: (paths) => codexAdapter(paths.codexHome === undefined ? {} : { codexHome: paths.codexHome }),
@@ -102,9 +113,10 @@ export const HOSTS = {
     hooks: null,
     editTools: ["apply_patch"],
     memchorTool: null,
+    hostPrompt: null,
   },
-  pi: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null },
-  unknown: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null },
+  pi: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null, hostPrompt: null },
+  unknown: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null, hostPrompt: null },
 } as const satisfies Record<string, HostDescriptor>;
 
 export type HostId = keyof typeof HOSTS;

@@ -1,9 +1,10 @@
 import type { Freshness } from "../schemas.js";
 
 /**
- * One line per pack entry: what it is, how old, which host wrote it, and whether its code
- * references still hold, e.g. `checkpoint r7 · 2d · codex · current`. Built from fields every
- * pack entry already carries (the JSON pack keeps them structured, without this duplicate), for
+ * One line per pack entry: what it is, how old, which host wrote it (and which of its
+ * sub-agents, if one did), and whether its code references still hold, e.g.
+ * `checkpoint r7 · 2d · codex · current` or `evidence · 5m · claude-code/general-purpose · unknown`.
+ * Built from fields every pack entry already carries (the JSON pack keeps them structured, without this duplicate), for
  * text context such as session start.
  */
 
@@ -24,8 +25,9 @@ export function age(iso: string, now: Date): string {
   return "now";
 }
 
-export function itemLabel(item: { kind: string; createdAt: string; host: string; freshness: Freshness }, now: Date): string {
-  return `${item.kind} · ${age(item.createdAt, now)} · ${item.host} · ${item.freshness}`;
+export function itemLabel(item: { kind: string; createdAt: string; host: string; freshness: Freshness; source?: { agentType: string | null } | null }, now: Date): string {
+  const agent = item.source?.agentType ?? null;
+  return `${item.kind} · ${age(item.createdAt, now)} · ${item.host}${agent === null ? "" : `/${agent}`} · ${item.freshness}`;
 }
 
 export function checkpointLabel(checkpoint: { revision: number; createdAt: string; host: string; freshness: Freshness }, now: Date): string {
