@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory } from "../../src/memory.js";
@@ -105,6 +105,18 @@ describe("debrief delete-data", () => {
     expect(existsSync(join(home, "notes.txt")) && existsSync(join(home, "photos", "cat.jpg"))).toBe(true);
     expect(readdirSync(home).sort()).toEqual(["notes.txt", "photos"]);
     expect(snapshotTree(home).map((entry) => entry.split(":")[0])).toEqual(["notes.txt", "photos/cat.jpg"]);
+  });
+
+  test("a home that is a symbolic link to a directory: the data in it is deleted, the link and the directory are left", () => {
+    const { home: real, repo } = usedHome();
+    const link = join(tempDir(), "debrief-link");
+    symlinkSync(real, link);
+    const run = debrief(repo, link, "delete-data", "--yes");
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).toContain("  workspaces    2\n");
+    expect(run.stdout).toContain(`Deleted Debrief's data from ${link}.`);
+    expect(readdirSync(real)).toEqual([]);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
   });
 
   test("with no data there is nothing to delete, and nothing is created", () => {

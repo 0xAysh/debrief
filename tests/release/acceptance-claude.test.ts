@@ -36,7 +36,9 @@ const toolResultWith =
   };
 
 function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
-  return Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => { reject(new Error(what)); }, ms))]);
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => (timer = setTimeout(() => { reject(new Error(what)); }, ms)));
+  return Promise.race([promise, timeout]).finally(() => { clearTimeout(timer); });
 }
 
 async function until(ready: () => boolean): Promise<void> {
@@ -147,6 +149,7 @@ describe.skipIf(SKIP !== null)(`acceptance: Debrief installed as a user installs
     const s4 = await startStubMessages({ calls: [{ tool: "memory_manage", input: { action: "private_session" }, when: "SYNTHETIC-S4-FORGET" }], reply: "SYNTHETIC-S4-REPLY ok.", mcpPrefix: PLUGIN_TOOL });
     const four = claudeStream(env(s4), repo, "--allowedTools", `${PLUGIN_TOOL}memory_manage`);
     await four.send("SYNTHETIC-S4-SECRET the staging password rotation");
+    expect(recalled("SYNTHETIC-S4-SECRET staging", "SYNTHETIC-S4-SECRET"), "the turn was captured before the user asked to forget it").not.toEqual([]);
     await four.send("SYNTHETIC-S4-FORGET don't remember this session");
     const fourEnded = await four.end();
     expect(fourEnded.code, fourEnded.stderr).toBe(0);

@@ -70,11 +70,21 @@ It checks the plugin, the MCP handshake, when each hook last ran, the last captu
 
 - Wrap text in `<private>…</private>` in a prompt, and it is never stored.
 - Tell the agent **"don't remember this session"**. Debrief forgets what the session stored, never imports its transcript, and refuses its later writes. Claude Code's own transcript files still hold the conversation: that is Claude Code's data, not Debrief's.
-- To fix a wrong memory, say so ("that's wrong", "that changed"); the agent corrects or retracts it.
+- To fix a wrong memory, say so ("that's wrong", "that changed"). The agent is instructed to correct or retract it with `memory_manage`.
 
 ## Uninstall, and deleting your data
 
 Uninstalling and deleting data are separate steps, so removing Debrief never deletes memory by accident.
+
+To delete your memory, do it first, while the `debrief` command is still installed:
+
+```sh
+debrief delete-data
+```
+
+It shows the path, size and number of repositories, and deletes only after you type `delete` (`--yes` skips the question, and is required when there is no terminal). Close Claude Code sessions first, since a running session keeps writing. It removes only the files Debrief created: anything else in `$DEBRIEF_HOME` is left alone.
+
+Then uninstall:
 
 ```text
 /plugin uninstall debrief@debrief     # in Claude Code
@@ -84,18 +94,12 @@ Uninstalling and deleting data are separate steps, so removing Debrief never del
 npm uninstall -g debrief-cli
 ```
 
-Your memory stays in `~/.debrief` until you delete it:
-
-```sh
-debrief delete-data
-```
-
-It shows the path, size and number of repositories, and deletes only after you type `delete` (`--yes` skips the question, and is required when there is no terminal). Close Claude Code sessions first, since a running session keeps writing. It removes only the files Debrief created: anything else in `$DEBRIEF_HOME` is left alone. Run it before `npm uninstall`.
+Without `delete-data`, your memory stays in `~/.debrief`.
 
 ## Known limits
 
-- Claude Code only. Codex can be connected by hand ([docs/hosts.md](docs/hosts.md)); its hooks, and Pi, are not packaged yet.
-- Claude Code writes its transcript about 0.1 s after each step. A session killed inside that window loses that last step.
+- Claude Code on your machine only. Codex can be connected by hand ([docs/hosts.md](docs/hosts.md)); its hooks, and Pi, are not packaged yet. Cloud agents and sandboxes (Claude Code on the web, remote sandboxes) are not supported: memory lives on the machine that runs `debrief`.
+- Claude Code writes each step to its transcript a moment after taking it (about 0.1 s, measured on 2.1.283). A session killed inside that moment loses that step.
 - Memory is what agents observed and concluded, not ground truth. Freshness warnings cover code that has changed; issues, PRs and other external state are not checked.
 
 ## Supported versions

@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, rmdirSync, rmSync } from "node:fs";
+import { lstatSync, readdirSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -6,7 +6,9 @@ import { join } from "node:path";
  *
  * Deletion removes only the entries Debrief writes there, never the directory's other contents:
  * `DEBRIEF_HOME` is user-set, and a mistaken value (the home directory, a project) must not
- * cost the user their files. The directory itself goes only when nothing else is left in it.
+ * cost the user their files. The directory itself goes only when nothing else is left in it, and
+ * never when the home is a symbolic link: the data behind the link goes, the link and its
+ * directory stay.
  */
 
 /**
@@ -38,7 +40,7 @@ export interface HomeContents {
 export function describeHome(home: string): HomeContents {
   let names: string[];
   try {
-    names = lstatSync(home).isDirectory() ? readdirSync(home).sort() : [];
+    names = statSync(home).isDirectory() ? readdirSync(home).sort() : [];
   } catch {
     names = [];
   }
@@ -52,12 +54,22 @@ export function describeHome(home: string): HomeContents {
   return { path: home, owned, foreign: names.filter((name) => !owned.includes(name)), bytes: owned.reduce((sum, name) => sum + size(join(home, name)), 0), workspaces };
 }
 
-/** Deletes Debrief's entries, then the directory if that left it empty; returns what was kept. */
-export function deleteHome(home: string): { kept: string[] } {
-  const contents = describeHome(home);
-  for (const name of contents.owned) rmSync(join(home, name), { recursive: true, force: true });
-  if (contents.foreign.length === 0 && contents.owned.length > 0) rmdirSync(home);
-  return { kept: contents.foreign };
+/**
+ * Deletes Debrief's entries, then the directory if that left it empty. Returns what was kept, and
+ * any of Debrief's entries that are there again afterwards: a session still running wrote them.
+ */
+export function deleteHome(home: string): { kept: string[]; rewritten: string[] } {
+  for (const name of describeHome(home).owned) rmSync(join(home, name), { recursive: true, force: true });
+  const after = describeHome(home);
+  if (after.owned.length === 0 && after.foreign.length === 0 && lstatSync(home, { throwIfNoEntry: false })?.isDirectory() === true) {
+    try {
+      rmdirSync(home);
+    } catch {
+      // Written to since it was listed: reported below as it is now.
+    }
+  }
+  const left = describeHome(home);
+  return { kept: left.foreign, rewritten: left.owned };
 }
 
 function size(path: string): number {

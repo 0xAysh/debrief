@@ -259,10 +259,12 @@ async function deleteData(yes: boolean): Promise<number> {
       return 1;
     }
   }
-  const { kept } = deleteHome(home.path);
+  const { kept, rewritten } = deleteHome(home.path);
   process.stdout.write(`Deleted Debrief's data from ${home.path}.\n`);
   if (kept.length > 0) process.stdout.write(`Kept ${kept.length} entries Debrief did not create: ${kept.join(", ")}\n`);
-  return 0;
+  if (rewritten.length === 0) return 0;
+  process.stdout.write(`A running session wrote ${rewritten.join(", ")} again while deleting: close Claude Code sessions and run debrief delete-data again.\n`);
+  return 1;
 }
 
 /** Each host Debrief installs into as a plugin, checked from this directory; exit 1 when any has a problem. */

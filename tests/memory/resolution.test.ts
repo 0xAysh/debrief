@@ -106,6 +106,8 @@ describe("workstream resolution", () => {
     expect(pack.notice).toMatch(/No workstream is bound yet/);
     expect(catchDebriefError(() => memory.read({ recordId: privateRecord.recordId })).code).toBe("scope_denied");
     expect(memory.read({ recordId: shared.recordId }).body).toMatch(/zebracorn preference/);
+    // The user sees that the agent will ask.
+    expect(memory.sessionStart()?.notice).toContain("workstream to confirm");
   });
 
   test("a chosen id must be a workstream of this workspace; another workspace's id is not found and nothing widens", () => {
