@@ -8,7 +8,7 @@ import { CLI, NO_NETWORK } from "../mcp/harness.js";
 
 /**
  * Seam ② for #29 with Memchor's own hooks: the real Claude Code runs `memchor hook
- * session-start` and `memchor hook stop --import`, registered with `--settings`, against a
+ * session-start` and `memchor hook stop`, registered with `--settings`, against a
  * localhost stub model. What the model received is read from the stub's request bodies.
  */
 
@@ -22,7 +22,7 @@ function hooksSettings(memchorHome: string): string {
     JSON.stringify({
       hooks: {
         SessionStart: [{ hooks: [{ type: "command", command: memchor("session-start") }] }],
-        Stop: [{ hooks: [{ type: "command", command: memchor("stop --import") }] }],
+        Stop: [{ hooks: [{ type: "command", command: memchor("stop") }] }],
       },
     }),
   );

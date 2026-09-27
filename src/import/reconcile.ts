@@ -125,6 +125,8 @@ export interface CaptureResult {
   state: "captured" | "skipped" | "failed";
   reason: CaptureSkip | null;
   transcriptId: string | null;
+  /** The workstream the transcript is imported into; null until its first import. */
+  workstreamId: string | null;
   /** Events newly stored by this capture. */
   events: number;
   /** False when the budget ran out first; the rest waits for the next capture or session start. */
@@ -277,7 +279,7 @@ export class TranscriptImporter {
    * unapproved repository leaves nothing behind.
    */
   capture(location: WorkspaceLocation, open: () => Db, path: string, maxMs: number): CaptureResult {
-    const skipped = (reason: CaptureSkip, transcriptId: string | null = null): CaptureResult => ({ state: "skipped", reason, transcriptId, events: 0, complete: true, problem: null });
+    const skipped = (reason: CaptureSkip, transcriptId: string | null = null): CaptureResult => ({ state: "skipped", reason, transcriptId, workstreamId: null, events: 0, complete: true, problem: null });
     let transcriptId: string | null = null;
     try {
       const consent = readConsent(this.options.home, this.host);
@@ -288,7 +290,7 @@ export class TranscriptImporter {
       transcriptId = file.transcriptId;
       const head = this.options.adapter.inspect(file);
       // No complete first line yet: nothing to attribute, so nothing to capture this turn.
-      if (head.cwd === null) return { state: "captured", reason: null, transcriptId, events: 0, complete: true, problem: null };
+      if (head.cwd === null) return { state: "captured", reason: null, transcriptId, workstreamId: null, events: 0, complete: true, problem: null };
       const target = this.locate(head.cwd);
       // Another repository's transcript is imported by that repository's sessions (or backfill), never into this one.
       if (target === null || target.workspaceId !== location.workspaceId || !approvesTarget(consent, target)) return skipped("not_approved", transcriptId);
@@ -298,11 +300,12 @@ export class TranscriptImporter {
       this.batches = 0;
       const outcome = this.importTranscript(db, { file, cwd: head.cwd, supported: head.supported, target }, Date.now() + maxMs);
       const events = (stored.get(this.host, transcriptId) as { n: number }).n - before;
-      return { state: "captured", reason: null, transcriptId, events: Math.max(events, 0), complete: outcome === "done", problem: null };
+      const workstreamId = readCursor(db, this.host, transcriptId)?.workstream_id ?? null;
+      return { state: "captured", reason: null, transcriptId, workstreamId, events: Math.max(events, 0), complete: outcome === "done", problem: null };
     } catch (error) {
       const mapped = toStorageError(error);
       if (!(mapped instanceof MemchorError)) throw mapped;
-      return { state: "failed", reason: null, transcriptId, events: 0, complete: false, problem: { code: mapped.code, message: mapped.message } };
+      return { state: "failed", reason: null, transcriptId, workstreamId: null, events: 0, complete: false, problem: { code: mapped.code, message: mapped.message } };
     }
   }
 
@@ -915,10 +918,12 @@ function toolResultRecord(batch: Batch, call: CallMeta | null, event: Extract<No
 }
 
 /** Reads back the title {@link toolResultRecord} writes: `<tool>[ (error)]: <first line of the call summary>`. */
-export function readToolResultTitle(title: string | null): { failed: boolean; summary: string } | null {
+export function readToolResultTitle(title: string | null): { tool: string; failed: boolean; summary: string } | null {
   const colon = title?.indexOf(": ") ?? -1;
   if (title === null || colon < 0) return null;
-  return { failed: title.slice(0, colon).endsWith(" (error)"), summary: title.slice(colon + 2) };
+  const head = title.slice(0, colon);
+  const failed = head.endsWith(" (error)");
+  return { tool: failed ? head.slice(0, -" (error)".length) : head, failed, summary: title.slice(colon + 2) };
 }
 
 /** Removes private spans, redacts, then bounds; counts redactions and clipping. */

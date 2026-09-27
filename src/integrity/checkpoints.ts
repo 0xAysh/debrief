@@ -165,3 +165,20 @@ function renderCheckpoint(content: CheckpointContent): string {
     entries.length === 0 ? "" : `\n\n${heading}:\n${entries.map((entry) => `- ${entry}`).join("\n")}`;
   return `${GOAL}${content.goal}${STATUS}${content.status}` + SECTIONS.map(([field, heading]) => section(heading, content[field])).join("");
 }
+
+/** Turns of work a checkpoint may fall behind before the Stop hook asks for a new one, and again at each multiple. */
+export const NUDGE_TURNS = 5;
+
+/**
+ * What the Stop hook tells the agent when the checkpoint fell behind real work: every
+ * {@link NUDGE_TURNS} prompts after the head checkpoint (or ever, with none), if any of them
+ * changed a file or ran a command. Derived from imported events alone, so it needs no stored
+ * state; at most once per {@link NUDGE_TURNS} turns because the count moves on.
+ */
+export function checkpointNudge(work: { turns: number; changed: boolean }, head: { revision: number; covers: boolean }): string | null {
+  if (!work.changed || work.turns === 0 || work.turns % NUDGE_TURNS !== 0) return null;
+  const how = `with memory_checkpoint (expectedRevision ${head.revision}): the next concrete step and why, not a status.`;
+  return head.covers
+    ? `Memchor: the checkpoint (r${head.revision}) is ${work.turns} turns behind, and those turns changed files or ran commands. Before you finish, update it ${how}`
+    : `Memchor: ${work.turns} turns changed files or ran commands and no checkpoint covers them. Before you finish, write one ${how}`;
+}

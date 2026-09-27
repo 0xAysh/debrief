@@ -327,6 +327,15 @@ export const CaptureTurnInput = z.strictObject({
 });
 export type CaptureTurnInput = z.input<typeof CaptureTurnInput>;
 
+/** The end of a turn, from a host's Stop hook (not an agent tool). */
+export const EndTurnInput = z.strictObject({
+  transcriptPath: z.string().min(1).max(4_096),
+  /** The host is already continuing this turn because a Stop hook asked it to. */
+  stopHookActive: z.boolean().default(false),
+  maxMs: z.int().min(0).max(60_000).default(5_000),
+});
+export type EndTurnInput = z.input<typeof EndTurnInput>;
+
 /** A prompt the user just submitted, from a host hook (not an agent tool). */
 export const PromptHintInput = z.strictObject({
   prompt: z.string().max(1_000_000),

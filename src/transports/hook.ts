@@ -34,6 +34,7 @@ const StopPayload = z.looseObject({
   session_id: z.string().min(1),
   transcript_path: z.string().min(1),
   hook_event_name: z.literal("Stop"),
+  stop_hook_active: z.boolean().default(false),
 });
 const SessionStartPayload = z.looseObject({
   session_id: z.string().min(1).max(LIMITS.hostSessionIdChars),
@@ -61,7 +62,7 @@ export function runHook(run: HookRun): HookOutcome {
   };
   let output: HookOutput | null = null;
   try {
-    const { values, positionals } = parseArgs({ args: run.args, options: { host: { type: "string" }, import: { type: "boolean" } }, allowPositionals: true, strict: true });
+    const { values, positionals } = parseArgs({ args: run.args, options: { host: { type: "string" } }, allowPositionals: true, strict: true });
     event = positionals[0] ?? "unknown";
     host = values.host ?? "unknown";
     const hooks = hostDescriptor(values.host)?.hooks ?? null;
@@ -75,26 +76,26 @@ export function runHook(run: HookRun): HookOutcome {
       }
     };
 
-    if (event === "stop" && values.import === true) {
+    if (event === "stop") {
       const stop = payload(StopPayload);
       if (stop === null) return fail("invalid_input", "the hook payload is not a Stop payload with session_id and transcript_path");
-      const captured = withMemory(run, host, (memory) => memory.captureTurn({ transcriptPath: stop.transcript_path }));
-      return captured.failure === null ? QUIET : { stdout: "", stderr: `memchor hook stop: ${captured.failure.code}: ${captured.failure.message}\n` };
+      const ended = withMemory(run, host, (memory) => memory.endTurn({ transcriptPath: stop.transcript_path, stopHookActive: stop.stop_hook_active }));
+      return { stdout: hooks.stop(ended), stderr: ended.failure === null ? "" : `memchor hook stop: ${ended.failure.code}: ${ended.failure.message}\n` };
     }
-    if (event === "session-start" && values.import !== true) {
+    if (event === "session-start") {
       output = hooks;
       const start = payload(SessionStartPayload);
       if (start === null) return fail("invalid_input", "the hook payload is not a SessionStart payload with session_id");
       const rendered = withMemory(run, host, (memory) => memory.sessionStart({ hostSessionId: start.session_id }));
       return rendered === null ? QUIET : { stdout: hooks.sessionStart(rendered), stderr: "" };
     }
-    if (event === "user-prompt-submit" && values.import !== true) {
+    if (event === "user-prompt-submit") {
       const submitted = payload(UserPromptSubmitPayload);
       if (submitted === null) return fail("invalid_input", "the hook payload is not a UserPromptSubmit payload with prompt");
       const hint = withMemory(run, host, (memory) => memory.promptHint({ prompt: submitted.prompt }));
       return hint === null ? QUIET : { stdout: hooks.promptHint(hint), stderr: "" };
     }
-    if (event === "pre-tool-use" && values.import !== true) {
+    if (event === "pre-tool-use") {
       const call = payload(PreToolUsePayload);
       if (call === null) return fail("invalid_input", "the hook payload is not a PreToolUse payload with tool_name");
       const approval = withMemory(run, host, (memory) => memory.approveTool({ tool: call.tool_name, input: call.tool_input }));

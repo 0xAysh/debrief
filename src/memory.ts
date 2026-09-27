@@ -14,7 +14,7 @@ import {
 } from "./bootstrap/workstream-resolution.js";
 import { headCommit, locateWorkspace, registerWorkspace, resolveHome, type WorkspaceLocation } from "./bootstrap/workspace-resolution.js";
 import { type ErrorCode, MemchorError } from "./errors.js";
-import { headCheckpointRecordId, headRevision, publishCheckpoint } from "./integrity/checkpoints.js";
+import { checkpointNudge, headCheckpointRecordId, headRevision, publishCheckpoint } from "./integrity/checkpoints.js";
 import {
   type Affected,
   changeClaim,
@@ -50,7 +50,7 @@ import {
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
-import { sessionDigest } from "./retrieval/digest.js";
+import { sessionDigest, workSince } from "./retrieval/digest.js";
 import { renderSessionStart, type SessionStart, unreadableSessionStart } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
 import { removePrivateEverywhere } from "./import/privacy.js";
@@ -92,6 +92,7 @@ import {
   BootstrapInput,
   CheckpointInput,
   CaptureTurnInput,
+  EndTurnInput,
   PromptHintInput,
   ApproveToolInput,
   ContinueImportInput,
@@ -313,6 +314,14 @@ export interface BootstrapResult {
 
 /** A Stop hook's capture, with the failure it recorded (null when it imported, or skipped by rule). */
 export type TurnCapture = CaptureResult & { failure: { code: string; message: string } | null };
+
+/** What a Stop hook says: a request to the agent to update a stale checkpoint, and a line for the user. */
+export interface TurnEnd {
+  nudge: string | null;
+  notice: string | null;
+  /** Why the turn was not saved (also on record as a hook failure). */
+  failure: { code: string; message: string } | null;
+}
 
 /** What `record` returns for `kind: "preference"`: a question for the user, not a stored record. */
 export interface PreferenceRecordResult {
@@ -553,6 +562,13 @@ export interface Memory {
    */
   sessionStart(input?: SessionStartInput): SessionStart | null;
   /**
+   * The end of a turn (the Stop hook): {@link captureTurn}, then, unless the host is already
+   * continuing because of a Stop hook, a request to update the checkpoint when it fell
+   * five turns of work behind (`NUDGE_TURNS`). The user's line says what was saved, or that
+   * nothing could be.
+   */
+  endTurn(input: EndTurnInput): TurnEnd;
+  /**
    * One line for the agent when the prompt the user just submitted states a lasting preference
    * (a prompt-submit hook), else null; null outside a Git worktree. No model, no network, no
    * database: the agent decides whether to propose it.
@@ -635,7 +651,7 @@ const DEFAULT_IMPORT_BUDGET_MS = 3_000;
 const SESSION_PACK_BYTES = 6_000;
 
 function skippedCapture(reason: CaptureSkip): CaptureResult {
-  return { state: "skipped", reason, transcriptId: null, events: 0, complete: true, problem: null };
+  return { state: "skipped", reason, transcriptId: null, workstreamId: null, events: 0, complete: true, problem: null };
 }
 
 interface Bound {
@@ -819,6 +835,30 @@ class LocalMemory implements Memory {
         return unreadableSessionStart(error.code);
       }
     });
+  }
+
+  endTurn(input: EndTurnInput): TurnEnd {
+    const parsed = this.guard(() => parse(EndTurnInput, input));
+    const capture = this.captureTurn({ transcriptPath: parsed.transcriptPath, maxMs: parsed.maxMs });
+    const notice =
+      capture.failure !== null ? `◪ memchor · ⚠ turn not saved (${capture.failure.code}): memchor diag status` : capture.events > 0 ? `◪ memchor · saved turn (${capture.events} events)` : null;
+    const db = this.bound?.db ?? this.unboundDb;
+    const failure = capture.failure;
+    if (parsed.stopHookActive || capture.workstreamId === null || db === undefined) return { nudge: null, notice, failure };
+    const workstreamId = capture.workstreamId;
+    try {
+      const nudge = this.guard(() => {
+        const head = loadHeadCheckpoint(db, workstreamId);
+        const work = workSince(db, workstreamId, head.row?.created_at ?? null, (host, tool) => hostDescriptor(host)?.editTools.includes(tool) ?? false);
+        return checkpointNudge(work, { revision: headRevision(db, workstreamId), covers: head.row !== null });
+      });
+      return { nudge, notice, failure };
+    } catch (error) {
+      // The turn is saved; a nudge that cannot be worked out is skipped, and the failure kept.
+      if (!(error instanceof MemchorError)) throw error;
+      recordHookFailure(this.home, { host: this.host, event: "stop", cwd: this.cwd, code: error.code, message: error.message });
+      return { nudge: null, notice, failure };
+    }
   }
 
   promptHint(input: PromptHintInput): string | null {
