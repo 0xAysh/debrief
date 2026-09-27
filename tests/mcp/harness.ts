@@ -4,7 +4,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { type ElicitRequest, ElicitRequestSchema, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { onCleanup } from "../helpers.js";
 
-export const CLI = resolve(import.meta.dirname, "../../dist/cli.js");
+/** The CLI as the package ships it: one bundled file (scripts/bundle.mjs). */
+export const CLI = resolve(import.meta.dirname, "../../dist/memchor.mjs");
 
 export interface ToolOutcome {
   isError: boolean;
@@ -24,7 +25,7 @@ export interface ServerHandle {
 export const NO_NETWORK = resolve(import.meta.dirname, "no-network.mjs");
 
 /**
- * Spawns `node dist/cli.js mcp` in `cwd` with an isolated MEMCHOR_HOME (and, if given, an
+ * Spawns `node dist/memchor.mjs mcp` in `cwd` with an isolated MEMCHOR_HOME (and, if given, an
  * isolated Claude config dir or Codex home) and connects an SDK client. `networkLog` preloads a guard that
  * records and refuses every network attempt.
  */
