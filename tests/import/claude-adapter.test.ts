@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { claudeCodeAdapter } from "../../src/import/adapters/claude.js";
 import type { NormalizedEvent, TranscriptFile } from "../../src/import/normalized-event.js";
-import { claudeConfigDir, installTranscript } from "./fixtures.js";
+import { OPERATION_SCHEMAS } from "../../src/schemas.js";
+import { claudeConfigDir, claudeToolExchange, installTranscript } from "./fixtures.js";
 
 const CWD = "/work/store";
 
@@ -55,6 +56,19 @@ describe("Claude Code adapter", () => {
     ]);
     expect(chunk.excluded).toEqual({ host_metadata: 5, injected_context: 3, hidden_reasoning: 1, binary: 1 });
     expect(JSON.stringify(chunk.events)).not.toMatch(/SYNTHETIC-(HIDDEN|INJECTED)|SYNTHETICBINARY/);
+  });
+
+  test("every operation Memchor offers is kind memchor, memory_manage included", () => {
+    const config = claudeConfigDir();
+    const sessionId = "5e550000-0000-4000-8000-0000000000f1";
+    const operations = Object.keys(OPERATION_SCHEMAS);
+    const content = operations
+      .map((operation, i) => claudeToolExchange({ cwd: CWD, sessionId, gitBranch: "main", parentUuid: null, id: 900 + 2 * i, tool: `mcp__memchor__${operation}`, input: {}, result: '{"items":[]}' }))
+      .join("");
+    const { path } = installTranscript(config, "", { cwd: CWD, sessionId, content });
+    const chunk = claudeCodeAdapter({ configDir: config }).read(fileOf(path, sessionId), 0, 1 << 20);
+    expect(chunk.events.filter((e) => e.type === "tool_call").map((c) => [c.tool, c.toolKind])).toEqual(operations.map((operation) => [`mcp__memchor__${operation}`, "memchor"]));
+    expect(operations).toContain("memory_manage");
   });
 
   test("every event carries a stable origin: main branch, host uuid, timestamp, cwd, git branch, version and its line's byte range", () => {

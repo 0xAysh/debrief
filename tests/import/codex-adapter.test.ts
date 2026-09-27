@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { codexAdapter } from "../../src/import/adapters/codex.js";
 import type { NormalizedEvent, TranscriptFile } from "../../src/import/normalized-event.js";
-import { codexHome, codexThreadId, installCodexRollout, type CodexVars } from "./fixtures.js";
+import { codexHome, codexThreadId, installCodexRollout, renderCodexFixture, type CodexVars } from "./fixtures.js";
 
 const CWD = "/work/store";
 
@@ -103,6 +103,23 @@ describe("Codex adapter", () => {
     expect(results[1]?.text).toContain("rec_22222222222222222222222222222222");
     // mcp_tool_call_end repeats the result: metadata, so the call has exactly one result event.
     expect(chunk.excluded["host_metadata"]).toBeGreaterThanOrEqual(1);
+  });
+
+  test("memory_manage is kind memchor too, also under the collision-suffixed name", () => {
+    const home = codexHome();
+    const call = (id: string, name: string, extra: object) => JSON.stringify({ timestamp: "2026-01-01T00:00:20.000Z", type: "response_item", payload: { type: "function_call", id: `fc_${id}`, name, arguments: '{"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}', call_id: id, internal_chat_message_metadata_passthrough: { turn_id: "turn-2" }, ...extra } });
+    const threadId = codexThreadId();
+    const { path } = installCodexRollout(home, "", {
+      cwd: CWD,
+      threadId,
+      content: renderCodexFixture("0.142.5/memchor-echo.jsonl", { cwd: CWD, threadId }) + [call("call_0201", "memory_manage", { namespace: "mcp__memchor" }), call("call_0202", "mcp__memchor__memory_manage_0123456789ab", {}), ""].join("\n"),
+    });
+    const chunk = codexAdapter({ codexHome: home }).read(fileOf(path, threadId), 0, 1 << 20);
+    const manage = chunk.events.filter((e) => e.type === "tool_call" && e.callId.startsWith("call_02"));
+    expect(manage.map((c) => (c.type === "tool_call" ? [c.toolKind, c.summary] : null))).toEqual([
+      ["memchor", 'memory_manage {"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}'],
+      ["memchor", 'memory_manage {"action":"inspect","recordId":"rec_0123456789abcdef0123456789abcdef"}'],
+    ]);
   });
 
   test("context Codex injects into user turns is excluded; only what the user typed is imported", () => {

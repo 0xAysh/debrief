@@ -44,6 +44,21 @@ export function installTranscript(configDir: string, fixture: string, options: {
 }
 
 /**
+ * Two 2.1.281 transcript lines (newline-terminated): an assistant `tool_use` and the user
+ * `tool_result` carrying `result`. Uuids are `…0000000000<id>` and `…0000000000<id + 1>`.
+ */
+export function claudeToolExchange(options: { cwd: string; sessionId: string; gitBranch: string; parentUuid: string | null; id: number; tool: string; input: object; result: string }): string {
+  const uuid = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
+  const common = { isSidechain: false, userType: "external", entrypoint: "cli", cwd: options.cwd, sessionId: options.sessionId, version: "2.1.281", gitBranch: options.gitBranch };
+  const call = uuid(options.id);
+  const toolUseId = `toolu_${options.id}`;
+  return [
+    { ...common, parentUuid: options.parentUuid, type: "assistant", uuid: call, timestamp: "2026-09-23T09:01:00.000Z", message: { model: "claude-opus-5-5", id: `msg_${options.id}`, type: "message", role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: options.tool, input: options.input }], stop_reason: "tool_use", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } },
+    { ...common, parentUuid: call, type: "user", uuid: uuid(options.id + 1), timestamp: "2026-09-23T09:01:00.200Z", message: { role: "user", content: [{ tool_use_id: toolUseId, type: "tool_result", content: [{ type: "text", text: options.result }] }] } },
+  ].map((line) => `${JSON.stringify(line)}\n`).join("");
+}
+
+/**
  * A synthetic history for load and interruption tests: `transcripts` sessions, each the
  * `basic.jsonl` conversation repeated `turns` times with unique event and tool ids (7 records
  * per turn).
