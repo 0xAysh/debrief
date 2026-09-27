@@ -304,13 +304,15 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} comman
     );
   }, 120_000);
 
+  const ASYNC_SLEEP_MS = 6_000;
   test('"async": true on a Stop hook in -p: claude returns without waiting, and the hook is killed before it finishes', async () => {
     const s = session();
     const sync = await drive(s, { events: { Stop: {} }, outputs: { Stop: { sleepMs: 1500 } } });
     const debugFile = join(tempDir(), "debug.log");
-    const asyncRun = await drive(s, { events: { Stop: { async: true, markSpawn: true } }, outputs: { Stop: { sleepMs: 1500 } }, format: ["--debug-file", debugFile] });
+    // Long enough that a slow teardown under load cannot outlast it, so "never finished" means killed.
+    const asyncRun = await drive(s, { events: { Stop: { async: true, markSpawn: true } }, outputs: { Stop: { sleepMs: ASYNC_SLEEP_MS } }, format: ["--debug-file", debugFile] });
     const atExit = { spawned: asyncRun.rig.spawned().length, started: asyncRun.rig.starts().length, finished: asyncRun.rig.records().length };
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await new Promise((resolve) => setTimeout(resolve, ASYNC_SLEEP_MS + 1000));
     const after = { spawned: asyncRun.rig.spawned().length, started: asyncRun.rig.starts().length, finished: asyncRun.rig.records().length };
     const debug = readFileSync(debugFile, "utf8").split("\n");
 
@@ -320,15 +322,15 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} comman
     // Async: claude backgrounds the hook and exits without waiting for it...
     expect(debug.some((line) => line.includes("Hooks: Config-based async hook, backgrounding process"))).toBe(true);
     expect(debug.some((line) => /Hooks: Registering async hook async_hook_\d+ \(Stop\)/.test(line))).toBe(true);
-    expect(asyncRun.elapsedMs).toBeLessThan(sync.elapsedMs - 1000);
-    // ...and the hook never completes, even 3 s after exit. Whether it got as far as the shell or Node before
+    expect(asyncRun.elapsedMs).toBeLessThan(ASYNC_SLEEP_MS);
+    // ...and the hook never completes, even after its whole sleep has passed. Whether it got as far as the shell or Node before
     // the teardown kill is a race (both observed), so only completion is asserted.
     expect(after.finished).toBe(0);
 
     evidence["async"] = sanitize(
       {
         sync: { claudeMs: sync.elapsedMs, hookRanMs: (sync.rig.records()[0]?.finished ?? 0) - (sync.rig.records()[0]?.started ?? 0) },
-        async: { claudeMs: asyncRun.elapsedMs, atExit, after3s: after, verdict: "backgrounded, then killed at -p teardown before finishing; claude -p does not wait" },
+        async: { claudeMs: asyncRun.elapsedMs, atExit, afterSleep: after, verdict: "backgrounded, then killed at -p teardown before finishing; claude -p does not wait" },
         debugLines: debug.filter((line) => /async hook|killProcessTree|Shutting down/.test(line)).map((line) => line.replace(/^\S+ /, "")),
       },
       asyncRun.placeholders,
