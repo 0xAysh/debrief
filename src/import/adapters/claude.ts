@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
   CompatibilityRow,
@@ -12,6 +11,7 @@ import type {
   TranscriptFile,
   TranscriptHead,
 } from "../normalized-event.js";
+import { claudeConfigDir } from "../../host-plugins.js";
 import { asObject, type JsonObject, listDir, parseObject, readLines } from "../jsonl.js";
 import { shellCall } from "../shell-reads.js";
 import { OPERATION_SCHEMAS } from "../../schemas.js";
@@ -89,9 +89,7 @@ const INJECTED = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 const HEAD_BYTES = 64 * 1024;
 
 export function claudeCodeAdapter(options: { configDir?: string } = {}): TranscriptAdapter {
-  // An empty CLAUDE_CONFIG_DIR means unset (Claude Code's own default), never "the cwd".
-  const fromEnv = process.env["CLAUDE_CONFIG_DIR"];
-  const configDir = options.configDir ?? (fromEnv !== undefined && fromEnv !== "" ? fromEnv : join(homedir(), ".claude"));
+  const configDir = options.configDir ?? claudeConfigDir();
   const root = join(configDir, "projects");
   return {
     host: "claude-code",

@@ -5,14 +5,16 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { resolveHome } from "./bootstrap/workspace-resolution.js";
 import { MemchorError } from "./errors.js";
-import { HOOK_HOSTS, HOST_IDS, hostDescriptor, TRANSCRIPT_HOSTS } from "./hosts.js";
+import { HOOK_HOSTS, HOST_IDS, HOSTS, hostDescriptor, TRANSCRIPT_HOSTS } from "./hosts.js";
 import { type ImportStatus, openMemory, type Memory } from "./memory.js";
 import { IMPORT_CHOICES, type ImportChoice, LIMITS } from "./schemas.js";
 import { assertEmbeddedRuntime } from "./storage/database.js";
 import { runHook } from "./transports/hook.js";
 import { runStdioServer } from "./transports/mcp.js";
+import { hostStatus } from "./transports/status.js";
 
 const USAGE = `Usage:
+  memchor status                                      Is Memchor installed and working here? (exit 1 when not)
   memchor mcp [--host ${HOST_IDS.join("|")}]
                                                       Serve MCP over stdio (started by the agent host)
   memchor hook stop --host ${HOOK_HOSTS.join("|")}
@@ -60,6 +62,10 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(outcome.stdout);
     process.stderr.write(outcome.stderr);
     return 0;
+  }
+  if (command === "status") {
+    if (argv.length > 1) return usage(`unknown status argument ${argv.slice(1).join(" ")}`);
+    return status();
   }
   if (command === "diag" && subcommand !== undefined) {
     const { values } = parseArgs({
@@ -147,6 +153,25 @@ function diag(memory: Memory, subcommand: string, values: { query?: string | und
     default:
       return usage(`unknown diag command ${subcommand}`);
   }
+}
+
+/** Each host Memchor installs into as a plugin, checked from this directory; exit 1 when any has a problem. */
+async function status(): Promise<number> {
+  let problems = 0;
+  for (const host of HOST_IDS) {
+    const facts = HOSTS[host].plugin;
+    const transcripts = HOSTS[host].transcripts;
+    if (facts === null || transcripts === null) continue;
+    const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined) });
+    try {
+      const report = await hostStatus({ displayName: transcripts({}).displayName, host, facts, paths: {}, status: memory.status(), cwd: process.cwd(), env: process.env });
+      process.stdout.write(report.text);
+      problems += report.problems;
+    } finally {
+      memory.close();
+    }
+  }
+  return problems === 0 ? 0 : 1;
 }
 
 /** The tracer-bullet flow through the public interface; returns the recalled pack. */

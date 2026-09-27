@@ -506,6 +506,10 @@ export interface StatusResult {
   hookFailures: HookFailure[];
   /** Each host hook's last run on this machine (any repository), by host then event; a hook that never ran has none. */
   hookRuns: HookRun[];
+  /** When this host's transcripts last added anything to this repository's memory; null when never (or unresolved). */
+  lastCaptureAt: string | null;
+  /** Preference proposals in this repository still waiting for the user's answer. */
+  preferenceQuestions: number;
 }
 
 /**
@@ -1103,6 +1107,8 @@ class LocalMemory implements Memory {
         import: null,
         hookFailures: recentHookFailures(this.home),
         hookRuns: lastHookRuns(this.home),
+        lastCaptureAt: null,
+        preferenceQuestions: 0,
       };
       let db: Db | null = null;
       try {
@@ -1169,6 +1175,8 @@ class LocalMemory implements Memory {
         }
         const count = (table: string): number => (db?.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
         result.counts = { records: count("records"), checkpoints: count("checkpoints"), workstreams: count("workstreams"), sessions: count("sessions") };
+        result.lastCaptureAt = (db.prepare("SELECT max(created_at) AS at FROM import_events WHERE host = ?").get(this.host) as { at: string | null }).at;
+        result.preferenceQuestions = count("preference_candidates");
       } catch (error) {
         const mapped = toStorageError(error);
         if (!(mapped instanceof MemchorError)) throw mapped;
