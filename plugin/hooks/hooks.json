@@ -1,0 +1,20 @@
+{
+  "description": "Memchor's Claude Code hooks. Each runs the memchor command on PATH; without it, session start says how to install it and the others do nothing.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || { printf '%s\\n' '{\"systemMessage\":\"◪ memchor · not running: the memchor command is not on PATH (npm install -g memchor)\"}'; exit 0; }; exec memchor hook session-start --host claude-code" }] }
+    ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || exit 0; exec memchor hook subagent-start --host claude-code" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || exit 0; exec memchor hook user-prompt-submit --host claude-code" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "mcp__(plugin_memchor_)?memchor__.*", "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || exit 0; exec memchor hook pre-tool-use --host claude-code" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "command -v memchor >/dev/null 2>&1 || exit 0; exec memchor hook stop --host claude-code" }] }
+    ]
+  }
+}

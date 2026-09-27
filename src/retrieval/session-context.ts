@@ -25,11 +25,15 @@ const FAILURE_WINDOW_MS = 24 * 3_600_000;
 export interface SessionStart {
   context: string;
   notice: string;
+  /** The error code when memory could not be loaded (the context then says so; also on record as a hook failure). */
+  failure: string | null;
 }
 
 /** A sub-agent's start: context for its model only (the user sees the parent's session start). */
 export interface SubagentStart {
   context: string;
+  /** The error code when memory could not be loaded (the context then says so; also on record as a hook failure). */
+  failure: string | null;
 }
 
 /**
@@ -48,6 +52,8 @@ export interface TurnEnd {
   notice: string | null;
   /** Why the turn was not saved (also on record as a hook failure). */
   failure: { code: string; message: string } | null;
+  /** Why the saved turn's nudge could not be worked out, so none was given (also on record as a hook failure). */
+  nudgeFailure: { code: string; message: string } | null;
 }
 
 /** A one-line notice for the user (a hook's `systemMessage`), never shown to the model. */
@@ -83,7 +89,7 @@ export function renderSessionStart(boot: BootstrapResult, input: { protocol: str
   // Preferences are listed above; the pack carries them too.
   const listed = new Set([...preferences.items.map((p) => p.recordId), ...(digest?.recordIds ?? [])]);
   const { text, shown } = withItems(fixed.join("\n\n"), pack, listed, SESSION_CONTEXT_CHARS, CUT, input.now);
-  return { context: text, notice: notice(boot, shown, empty, input) };
+  return { context: text, notice: notice(boot, shown, empty, input), failure: null };
 }
 
 /**
@@ -99,7 +105,7 @@ export function renderSubagentStart(input: { scope: BootstrapResult["scope"]; pa
   if (preferences.items.length > 0) fixed.push(preferencesSection(preferences));
   if (pack.empty && preferences.items.length === 0) fixed.push(input.newWorkspace ? "No memory for this repository yet." : "No memory for this workstream yet.");
   const listed = new Set(preferences.items.map((p) => p.recordId));
-  return { context: withItems(fixed.join("\n\n"), pack, listed, SUBAGENT_CONTEXT_CHARS, SUBAGENT_CUT, input.now).text };
+  return { context: withItems(fixed.join("\n\n"), pack, listed, SUBAGENT_CONTEXT_CHARS, SUBAGENT_CUT, input.now).text, failure: null };
 }
 
 function checkpointSection(checkpoint: NonNullable<ContextPack["checkpoint"]>, maxChars: number, now: Date): string {
@@ -159,13 +165,14 @@ const SUBAGENT_CUT = "\n[cut by Memchor to fit sub-agent context: use memory_rec
 
 /** A sub-agent cannot tell the user; its parent's session start already did, and its report can. */
 export function unreadableSubagentStart(code: string): SubagentStart {
-  return { context: `Memory could not be loaded (${code}). Do not assume this project has none; say so in your report.` };
+  return { context: `Memory could not be loaded (${code}). Do not assume this project has none; say so in your report.`, failure: code };
 }
 
 export function unreadableSessionStart(code: string): SessionStart {
   return {
     context: `Memory could not be loaded (${code}). Do not assume this project has none. Tell the user, and do not rely on memory tools this session unless memory_status reports storage healthy.`,
     notice: userNotice(`memory could not be loaded (${code})`),
+    failure: code,
   };
 }
 

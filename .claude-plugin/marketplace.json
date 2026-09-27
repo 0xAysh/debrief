@@ -1,0 +1,12 @@
+{
+  "name": "memchor",
+  "owner": { "name": "0xAysh" },
+  "metadata": { "description": "Memchor: local working memory shared by the coding agents in a repository." },
+  "plugins": [
+    {
+      "name": "memchor",
+      "source": "./plugin",
+      "description": "Local working memory for Claude Code: the session's checkpoint at start, every turn saved at stop, sub-agents included. Needs the memchor command on PATH (npm install -g memchor)."
+    }
+  ]
+}

@@ -54,6 +54,7 @@ import { PROTOCOL } from "./protocol.js";
 import { sessionDigest, workSince } from "./retrieval/digest.js";
 import { oneLine, renderSessionStart, renderSubagentStart, type SessionStart, type SubagentStart, type TurnEnd, unreadableSessionStart, unreadableSubagentStart, userNotice } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
+import { type HookRun, lastHookRuns } from "./import/hook-runs.js";
 import { removePrivateEverywhere } from "./import/privacy.js";
 import { type CaptureResult, type CaptureSkip, type ImportStatus, readToolResultTitle, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
 import { type Citation, citationsFor, importedFrom, type ImportedSource, independentRoots, linksOf } from "./integrity/provenance.js";
@@ -101,6 +102,7 @@ import {
   SubagentStartInput,
   effectiveBudget,
   type Freshness,
+  type ImportChoice,
   LIMITS,
   type LinkRelation,
   ManageInput,
@@ -128,6 +130,7 @@ import { appendRecord, recordFields } from "./storage/records.js";
 export type { ImportedSource, Citation } from "./integrity/provenance.js";
 export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
 export type { HookFailure } from "./import/hook-failures.js";
+export type { HookRun } from "./import/hook-runs.js";
 export type { SessionStart, SubagentStart, TurnEnd } from "./retrieval/session-context.js";
 export type { CaptureResult, CaptureSkip, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
@@ -502,6 +505,12 @@ export interface StatusResult {
   import: ImportStatus | null;
   /** The newest host hooks that failed on this machine (any host, any repository), oldest first. */
   hookFailures: HookFailure[];
+  /** Each host hook's last run on this machine (any repository), by host then event; a hook that never ran has none. */
+  hookRuns: HookRun[];
+  /** When this host's transcripts last added anything to this repository's memory; null when never (or unresolved). */
+  lastCaptureAt: string | null;
+  /** Preference proposals in this repository still waiting for the user's answer. */
+  preferenceQuestions: number;
 }
 
 /**
@@ -541,6 +550,12 @@ export interface Memory {
    * alive; `done` is true once nothing approved remains. Each batch is one transaction.
    */
   continueImport(input?: ContinueImportInput): ImportStatus & { done: boolean };
+  /**
+   * Records the user's transcript choice when given (as bootstrap's `importChoice`), then imports
+   * approved history to completion: `continueImport` until it is done or reports a problem.
+   * `onStep` sees the status after bootstrap and after each step.
+   */
+  importHistory(input?: { importChoice?: ImportChoice; onStep?: (status: ImportStatus) => void }): ImportStatus;
   /**
    * Imports the transcript a host hook named, after this turn (the Stop hook). Binds no
    * session, so a hook running every turn adds no session rows; a repository without consent
@@ -794,6 +809,18 @@ class LocalMemory implements Memory {
     });
   }
 
+  importHistory(input: { importChoice?: ImportChoice; onStep?: (status: ImportStatus) => void } = {}): ImportStatus {
+    let status: ImportStatus = this.bootstrap(input.importChoice === undefined ? {} : { importChoice: input.importChoice }).import;
+    input.onStep?.(status);
+    while (status.state === "in_progress" && status.problem === null) {
+      const step = this.continueImport({ maxMs: 1_000 });
+      input.onStep?.(step);
+      status = step;
+      if (step.done) break;
+    }
+    return status;
+  }
+
   captureTurn(input: CaptureTurnInput): TurnCapture {
     return this.capture(this.guard(() => parse(CaptureTurnInput, input)));
   }
@@ -871,7 +898,7 @@ class LocalMemory implements Memory {
       capture.failure !== null ? userNotice(`⚠ turn not saved (${capture.failure.code}): memchor diag status`) : capture.events > 0 ? userNotice(`saved turn (${capture.events} events)`) : null;
     const db = this.bound?.db ?? this.unboundDb;
     const failure = capture.failure;
-    if (parsed.stopHookActive || capture.workstreamId === null || db === undefined) return { nudge: null, notice, failure };
+    if (parsed.stopHookActive || capture.workstreamId === null || db === undefined) return { nudge: null, notice, failure, nudgeFailure: null };
     const workstreamId = capture.workstreamId;
     try {
       const nudge = this.guard(() => {
@@ -879,12 +906,12 @@ class LocalMemory implements Memory {
         const work = workSince(db, workstreamId, head.row?.created_at ?? null, before, (host, tool) => hostDescriptor(host)?.editTools.includes(tool) ?? false);
         return checkpointNudge(work, { revision: headRevision(db, workstreamId), covers: head.row !== null });
       });
-      return { nudge, notice, failure };
+      return { nudge, notice, failure, nudgeFailure: null };
     } catch (error) {
       // The turn is saved; a nudge that cannot be worked out is skipped, and the failure kept.
       if (!(error instanceof MemchorError)) throw error;
       recordHookFailure(this.home, { host: this.host, event: "stop", cwd: this.cwd, code: error.code, message: error.message });
-      return { nudge: null, notice, failure };
+      return { nudge: null, notice, failure, nudgeFailure: { code: error.code, message: error.message } };
     }
   }
 
@@ -1098,6 +1125,9 @@ class LocalMemory implements Memory {
         capabilities: { operations: OPERATIONS, freshnessValidation: true, transcriptImport: this.importer !== null },
         import: null,
         hookFailures: recentHookFailures(this.home),
+        hookRuns: lastHookRuns(this.home),
+        lastCaptureAt: null,
+        preferenceQuestions: 0,
       };
       let db: Db | null = null;
       try {
@@ -1164,6 +1194,8 @@ class LocalMemory implements Memory {
         }
         const count = (table: string): number => (db?.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
         result.counts = { records: count("records"), checkpoints: count("checkpoints"), workstreams: count("workstreams"), sessions: count("sessions") };
+        result.lastCaptureAt = (db.prepare("SELECT max(created_at) AS at FROM import_events WHERE host = ?").get(this.host) as { at: string | null }).at;
+        result.preferenceQuestions = count("preference_candidates");
       } catch (error) {
         const mapped = toStorageError(error);
         if (!(mapped instanceof MemchorError)) throw mapped;

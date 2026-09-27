@@ -195,11 +195,16 @@ export interface StubToolUse {
 
 /**
  * A localhost Messages API: while calls remain queued, each request that offers the next one's
- * tool is answered with it as a `tool_use` (Claude Code names Memchor's `mcp__memchor__<tool>`);
+ * tool is answered with it as a `tool_use` (Claude Code names Memchor's `mcp__memchor__<tool>`, or `mcpPrefix`);
  * once the queue is empty, and for any request that does not offer it, with a
  * plain assistant message (`reply`, or what it returns for that request) that ends the turn. `requests` keeps every Messages request body, in order.
  */
-export async function startStubMessages(script: { calls: StubToolUse[]; reply: string | ((request: Record<string, unknown>) => string) }): Promise<{ port: number; offeredTools: string[][]; requests: Record<string, unknown>[] }> {
+export async function startStubMessages(script: {
+  calls: StubToolUse[];
+  reply: string | ((request: Record<string, unknown>) => string);
+  /** How Claude Code names Memchor's tools: `mcp__memchor__` (user scope, the default) or the plugin's `mcp__plugin_memchor_memchor__`. */
+  mcpPrefix?: string;
+}): Promise<{ port: number; offeredTools: string[][]; requests: Record<string, unknown>[] }> {
   const state = { port: 0, offeredTools: [] as string[][], requests: [] as Record<string, unknown>[] };
   const queue = [...script.calls];
   let n = 0;
@@ -217,7 +222,7 @@ export async function startStubMessages(script: { calls: StubToolUse[]; reply: s
       const tools = (json.tools ?? []).map((t) => t.name);
       state.offeredTools.push(tools);
       const head = queue[0];
-      const name = (call: StubToolUse): string => (call.builtin === true ? call.tool : `mcp__memchor__${call.tool}`);
+      const name = (call: StubToolUse): string => (call.builtin === true ? call.tool : `${script.mcpPrefix ?? "mcp__memchor__"}${call.tool}`);
       const next = head !== undefined && tools.includes(name(head)) && (head.when === undefined || (typeof head.when === "string" ? body.includes(head.when) : head.when(json))) ? queue.shift() : undefined;
       const usage = { input_tokens: 1, output_tokens: 1 };
       const reply = typeof script.reply === "string" ? script.reply : script.reply(json);

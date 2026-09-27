@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import Database from "better-sqlite3";
@@ -299,4 +299,88 @@ describe("memchor hook pre-tool-use (Claude Code payload on stdin)", () => {
       later.close();
     }
   }, 120_000);
+});
+
+describe("each hook's last run (for memchor status)", () => {
+  test("every hook records when it last ran, where, and how it ended; a hook that never ran has no entry", () => {
+    const env = approvedRepo();
+    const session = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
+    const before = Date.now();
+    expect(stopHook(env, payload(env, session.path, session.sessionId)).code).toBe(0);
+    expect(hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: "Fix the retry loop." }).code).toBe(0);
+    expect(hook(env, ["subagent-start"], { hook_event_name: "SubagentStart", session_id: "" }).code).toBe(0);
+    const runs = open(env).status().hookRuns;
+    expect(runs.map((r) => [r.host, r.event, r.cwd, r.outcome, r.code])).toEqual([
+      ["claude-code", "stop", env.repo, "ok", null],
+      ["claude-code", "subagent-start", env.repo, "failed", "invalid_input"],
+      ["claude-code", "user-prompt-submit", env.repo, "ok", null],
+    ]);
+    for (const run of runs) expect(Date.parse(run.at)).toBeGreaterThanOrEqual(before - 1_000);
+  });
+
+  test("status reports when a turn was last saved and how many preference questions wait for the user", () => {
+    const env = approvedRepo();
+    expect(open(env).status()).toMatchObject({ lastCaptureAt: null, preferenceQuestions: 0 });
+    const session = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
+    const before = Date.now();
+    expect(stopHook(env, payload(env, session.path, session.sessionId)).code).toBe(0);
+    const memory = open(env);
+    memory.record({ kind: "preference", body: "Use pnpm, not npm.", attribution: "user_direction" });
+    const status = memory.status();
+    expect(Date.parse(status.lastCaptureAt ?? "")).toBeGreaterThanOrEqual(before - 1_000);
+    expect(status.preferenceQuestions).toBe(1);
+  });
+
+  test("the latest run wins, and a capture that failed is a failed run", () => {
+    const env = approvedRepo();
+    const session = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
+    expect(stopHook(env, payload(env, session.path, session.sessionId)).code).toBe(0);
+    const dbPath = open(env).status().storage.dbPath ?? "";
+    for (const suffix of ["-wal", "-shm"]) rmSync(dbPath + suffix, { force: true });
+    writeFileSync(dbPath, "this is not a SQLite database, and it is long enough to have a header".repeat(20));
+    expect(stopHook(env, payload(env, session.path, session.sessionId)).code).toBe(0);
+    expect(open(env).status().hookRuns.map((r) => [r.event, r.outcome, r.code])).toEqual([["stop", "failed", expect.stringMatching(/^storage_/)]]);
+  });
+
+  test("a start hook that could not load memory is a failed run, though it still told the agent so", () => {
+    const env = approvedRepo();
+    const dbPath = open(env).status().storage.dbPath ?? "";
+    expect(hook(env, ["session-start"], { hook_event_name: "SessionStart", source: "startup" }).code).toBe(0);
+    for (const suffix of ["-wal", "-shm"]) rmSync(dbPath + suffix, { force: true });
+    writeFileSync(dbPath, "this is not a SQLite database, and it is long enough to have a header".repeat(20));
+    const started = hook(env, ["session-start"], { hook_event_name: "SessionStart", source: "startup" });
+    expect(started.stdout).toContain("Memory could not be loaded");
+    const sub = hook(env, ["subagent-start"], { hook_event_name: "SubagentStart", agent_id: "a0123456789abcdef", agent_type: "general-purpose" });
+    expect(sub.stdout).toContain("Memory could not be loaded");
+    expect(open(env).status().hookRuns.map((r) => [r.event, r.outcome, r.code])).toEqual([
+      ["session-start", "failed", expect.stringMatching(/^storage_/)],
+      ["subagent-start", "failed", expect.stringMatching(/^storage_/)],
+    ]);
+  });
+});
+
+describe("memchor status (Claude Code)", () => {
+  function statusCli(env: Env) {
+    const run = spawnSync(process.execPath, [CLI, "status"], {
+      cwd: env.repo,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+    });
+    return { code: run.status, stdout: run.stdout, stderr: run.stderr };
+  }
+
+  test("without the plugin it says how to install it; transcripts from a version Memchor does not import are a problem", () => {
+    const env = approvedRepo();
+    const transcript = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
+    writeFileSync(transcript.path, readFileSync(transcript.path, "utf8").replaceAll('"version":"2.1.281"', '"version":"3.0.0"'));
+    const run = statusCli(env);
+    expect(run.code, run.stderr).toBe(1);
+    expect(run.stdout).toMatch(/^memchor status · Claude Code$/m);
+    expect(run.stdout).toMatch(/^ {2}plugin {9}✘ not installed: in Claude Code run \/plugin marketplace add 0xAysh\/memchor, then \/plugin install memchor@memchor$/m);
+    expect(run.stdout).toMatch(/^ {2}transcripts {4}✘ 1 from a Claude Code version Memchor does not import \(it imports 2\.1\.183 up to 2\.2\.0\)$/m);
+    expect(run.stdout).toMatch(/^ {2}import {9}current_project$/m);
+    expect(run.stdout).toMatch(new RegExp(`^ {2}storage {8}${(open(env).status().storage.dbPath ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+    expect(run.stdout).toMatch(/^✘ 2 problems$/m);
+  });
 });

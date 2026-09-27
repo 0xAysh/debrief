@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "memchor": { "command": "memchor", "args": ["mcp", "--host", "claude-code"] }
+  }
+}

@@ -1,3 +1,4 @@
+import { claudeCodePluginInstall, claudeConfigDir, type PluginInstall } from "./host-plugins.js";
 import { claudeCodeAdapter } from "./import/adapters/claude.js";
 import { codexAdapter } from "./import/adapters/codex.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
@@ -57,6 +58,31 @@ export interface HostDescriptor {
    * background sub-agent's report); null where none are pinned.
    */
   hostPrompt: RegExp | null;
+  /** How Memchor is installed into the host as a plugin, for `memchor status`; null where there is none. */
+  plugin: PluginFacts | null;
+}
+
+export interface PluginFacts {
+  /** The host's name for people, e.g. "Claude Code". */
+  hostName: string;
+  /** The plugin's id in the host (`<plugin>@<marketplace>`). */
+  id: string;
+  /** What the user does to install it. */
+  install: string;
+  /** What the user does to enable it once installed. */
+  enable: string;
+  /** The MCP server's name in the plugin. */
+  server: string;
+  /** How the user gets the `memchor` command the plugin runs. */
+  runtimeInstall: string;
+  /** The host's record of the installed plugin; null when it is not installed. Throws when that record cannot be read. */
+  find(): PluginInstall | null;
+  /**
+   * Memchor's hooks as the plugin registers them, in the order they fire: the host's event name,
+   * the `memchor hook` it runs, and when it runs, where that is not every session (then never
+   * having run is expected, not a problem).
+   */
+  hooks: readonly { hostEvent: string; event: string; runsOnlyWhen: string | null }[];
 }
 
 export interface HookOutput {
@@ -85,6 +111,9 @@ const CLAUDE_CODE_HOOKS: HookOutput = {
   allowTool: (notice) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" }, ...(notice === null ? {} : { systemMessage: notice }) }),
 };
 
+/** plugin/ in this repository, listed by its marketplace (.claude-plugin/marketplace.json). */
+const CLAUDE_CODE_PLUGIN = "memchor@memchor";
+
 export const HOSTS = {
   "claude-code": {
     transcripts: (paths) => claudeCodeAdapter(paths.claudeConfigDir === undefined ? {} : { configDir: paths.claudeConfigDir }),
@@ -100,6 +129,23 @@ export const HOSTS = {
     memchorTool: /^mcp__(?:plugin_memchor_)?memchor__(memory_[a-z_]+)$/,
     // A background sub-agent's report arrives as a UserPromptSubmit prompt (tests/hooks/claude-subagents.test.ts).
     hostPrompt: /^<task-notification>\n/,
+    // Pinned by tests/hooks/claude-plugin.test.ts.
+    plugin: {
+      hostName: "Claude Code",
+      id: CLAUDE_CODE_PLUGIN,
+      install: `in Claude Code run /plugin marketplace add 0xAysh/memchor, then /plugin install ${CLAUDE_CODE_PLUGIN}`,
+      enable: `in Claude Code run /plugin enable ${CLAUDE_CODE_PLUGIN}`,
+      server: "memchor",
+      runtimeInstall: "npm install -g memchor",
+      find: () => claudeCodePluginInstall(claudeConfigDir(), CLAUDE_CODE_PLUGIN),
+      hooks: [
+        { hostEvent: "SessionStart", event: "session-start", runsOnlyWhen: null },
+        { hostEvent: "SubagentStart", event: "subagent-start", runsOnlyWhen: "a sub-agent starts" },
+        { hostEvent: "UserPromptSubmit", event: "user-prompt-submit", runsOnlyWhen: null },
+        { hostEvent: "PreToolUse", event: "pre-tool-use", runsOnlyWhen: "the agent calls a Memchor tool" },
+        { hostEvent: "Stop", event: "stop", runsOnlyWhen: null },
+      ],
+    },
   },
   codex: {
     transcripts: (paths) => codexAdapter(paths.codexHome === undefined ? {} : { codexHome: paths.codexHome }),
@@ -114,9 +160,10 @@ export const HOSTS = {
     editTools: ["apply_patch"],
     memchorTool: null,
     hostPrompt: null,
+    plugin: null,
   },
-  pi: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null, hostPrompt: null },
-  unknown: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null, hostPrompt: null },
+  pi: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null, hostPrompt: null, plugin: null },
+  unknown: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null, hostPrompt: null, plugin: null },
 } as const satisfies Record<string, HostDescriptor>;
 
 export type HostId = keyof typeof HOSTS;

@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
 import { initRepo, tempDir } from "../helpers.js";
-import { codexHome, installCodexRollout } from "../import/fixtures.js";
+import { openMemory } from "../../src/memory.js";
+import { claudeConfigDir, codexHome, installCodexRollout, installTranscript } from "../import/fixtures.js";
 import { CLI, spawnServer } from "./harness.js";
 
 function memchor(cwd: string, home: string, ...args: string[]) {
@@ -126,5 +127,65 @@ describe("memchor CLI", () => {
     const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
     child.kill("SIGTERM");
     expect(await exited).toBe(0);
+  });
+});
+
+describe("memchor import (Claude Code history)", () => {
+  function claudeHistory() {
+    const repo = initRepo();
+    const home = tempDir();
+    const config = claudeConfigDir();
+    installTranscript(config, "2.1.281/basic.jsonl", { cwd: repo });
+    const run = (...args: string[]) => memchorWith({ CLAUDE_CONFIG_DIR: config }, repo, home, "import", ...args);
+    const recalled = () => {
+      const memory = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config });
+      try {
+        return memory.recall({ maxTokens: 8_000 }).items.length;
+      } finally {
+        memory.close();
+      }
+    };
+    return { run, recalled };
+  }
+
+  test("before the user has chosen, it puts the question and imports nothing", () => {
+    const { run, recalled } = claudeHistory();
+    const asked = run();
+    expect(asked.code).toBe(1);
+    expect(asked.stdout).toMatch(/^memchor import · Claude Code$/m);
+    expect(asked.stdout).toMatch(/^Memchor found 1 local Claude Code session/m);
+    expect(asked.stdout).not.toMatch(/memory_bootstrap|^1\. All projects/m);
+    expect(asked.stdout).toMatch(/^Answer with memchor import --set all\|current_project\|none$/m);
+    expect(recalled()).toBe(0);
+  });
+
+  test("--set records the choice and imports what it approves, to completion; running it again adds nothing", () => {
+    const { run, recalled } = claudeHistory();
+    const first = run("--set", "current_project");
+    expect(first.code, first.stderr).toBe(0);
+    expect(first.stdout).toMatch(/^ {2}choice {7}current_project$/m);
+    expect(first.stdout).toMatch(/^ {2}this project 1 of 1 transcripts imported, \d+ records$/m);
+    const records = recalled();
+    expect(records).toBeGreaterThan(0);
+    const again = run();
+    expect(again.code, again.stderr).toBe(0);
+    expect(again.stdout).toMatch(/^ {2}choice {7}current_project$/m);
+    expect(recalled()).toBe(records);
+  });
+
+  test("--set none declines: nothing is imported, and the choice is kept", () => {
+    const { run, recalled } = claudeHistory();
+    expect(run("--set", "none").code).toBe(0);
+    const later = run();
+    expect(later.code).toBe(0);
+    expect(later.stdout).toMatch(/^ {2}choice {7}none: no transcripts are imported$/m);
+    expect(recalled()).toBe(0);
+  });
+
+  test("an unknown choice is a usage error", () => {
+    const { run } = claudeHistory();
+    const bad = run("--set", "everything");
+    expect(bad.code).toBe(64);
+    expect(bad.stderr).toMatch(/--set must be one of all, current_project, none/);
   });
 });
