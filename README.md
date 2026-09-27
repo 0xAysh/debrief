@@ -29,6 +29,16 @@ debrief status     # plugin, MCP handshake, each hook's last run, last capture, 
 
 Codex is not packaged yet (its hooks are deferred with the cross-agent work); connect it by hand. [docs/hosts.md](docs/hosts.md) has the verified manual steps for Codex and Claude Code and each host's caveats.
 
+## Supported versions
+
+| | Supported | Tested with |
+|---|---|---|
+| Node.js | `>=24` | 25.9.0 |
+| better-sqlite3 | `13.0.3` (installed with the package) | 13.0.3 |
+| Claude Code | `2.1.283` | 2.1.283 |
+
+Tested on macOS (arm64). Other platforms and other Claude Code versions are untested: `debrief status` is the first check there.
+
 ## Development
 
 Requires Node `>=24` (`.node-version` pins 25.9.0) and Git.

@@ -104,7 +104,7 @@ export interface McpServerOptions {
 export function createMcpServer(options: McpServerOptions): { server: Server; close: () => void } {
   const log = options.log ?? ((message: string) => process.stderr.write(`debrief: ${message}\n`));
   const home = resolveHome(options.home);
-  const server = new Server({ name: "debrief", version: "0.0.0" }, { capabilities: { tools: {} }, instructions: PROTOCOL });
+  const server = new Server({ name: "debrief", version: "0.1.0" }, { capabilities: { tools: {} }, instructions: PROTOCOL });
   let memory: Memory | undefined;
   let memorySession: string | undefined;
   // The Memory opens on the first call, so a session the call names is known before bootstrap

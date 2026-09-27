@@ -2,7 +2,9 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
-import { CLI } from "../mcp/harness.js";
+import { initRepo, tempDir } from "../helpers.js";
+import { CLAUDE_PINNED_VERSION } from "../mcp/claude.js";
+import { CLI, spawnServer } from "../mcp/harness.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
 
@@ -43,5 +45,32 @@ describe("the published package", () => {
     }
     // better-sqlite3 is installed as its own package with its own license, never inlined.
     expect(bundled).not.toContain("better-sqlite3");
+  });
+
+  test("is ready to publish: public, one version in the package, the plugin and the MCP server, and a support matrix that matches what the tests pin", async () => {
+    const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as Record<string, unknown> & { version: string; dependencies: Record<string, string>; engines: { node: string } };
+    expect(manifest["private"]).toBeUndefined();
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(manifest.version).not.toBe("0.0.0");
+    expect(manifest).toMatchObject({
+      name: "debrief-cli",
+      repository: { type: "git", url: "git+https://github.com/0xAysh/debrief.git" },
+      homepage: "https://github.com/0xAysh/debrief#readme",
+      bugs: { url: "https://github.com/0xAysh/debrief/issues" },
+    });
+    expect(manifest["keywords"]).toEqual(expect.arrayContaining(["claude-code", "mcp", "memory"]));
+
+    const plugin = JSON.parse(readFileSync(join(ROOT, "plugin/.claude-plugin/plugin.json"), "utf8")) as { version: string };
+    expect(plugin.version).toBe(manifest.version);
+    const server = await spawnServer({ cwd: initRepo(), home: tempDir() });
+    expect(server.client.getServerVersion()).toMatchObject({ name: "debrief", version: manifest.version });
+    await server.close();
+
+    // The README's support matrix names exactly the versions the package and the driven tests pin.
+    const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+    const nodePin = readFileSync(join(ROOT, ".node-version"), "utf8").trim();
+    expect(readme).toContain(`| Node.js | \`${manifest.engines.node}\` | ${nodePin} |`);
+    expect(readme).toContain(`| better-sqlite3 | \`${manifest.dependencies["better-sqlite3"]}\` (installed with the package) | ${manifest.dependencies["better-sqlite3"]} |`);
+    expect(readme).toContain(`| Claude Code | \`${CLAUDE_PINNED_VERSION}\` | ${CLAUDE_PINNED_VERSION} |`);
   });
 });
