@@ -2,6 +2,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { resolveHome } from "./bootstrap/workspace-resolution.js";
 import { DebriefError } from "./errors.js";
@@ -10,6 +11,7 @@ import { consentFacts } from "./import/reconcile.js";
 import { openMemory, type Memory } from "./memory.js";
 import { IMPORT_CHOICES, type ImportChoice, LIMITS } from "./schemas.js";
 import { assertEmbeddedRuntime } from "./storage/database.js";
+import { deleteHome, describeHome } from "./storage/home.js";
 import { runHook } from "./transports/hook.js";
 import { runStdioServer } from "./transports/mcp.js";
 import { hostStatus } from "./transports/status.js";
@@ -18,6 +20,7 @@ const USAGE = `Usage:
   debrief status                                      Is Debrief installed and working here? (exit 1 when not)
   debrief import [--set ${IMPORT_CHOICES.join("|")}]
                                                       Import past sessions' transcripts, as the user chose (--set records the choice)
+  debrief delete-data [--yes]                         Delete all of Debrief's stored memory, after typing delete (--yes: without asking)
   debrief mcp [--host ${HOST_IDS.join("|")}]
                                                       Serve MCP over stdio (started by the agent host)
   debrief hook stop --host ${HOOK_HOSTS.join("|")}
@@ -70,6 +73,10 @@ async function main(argv: string[]): Promise<number> {
     const { values } = parseArgs({ args: argv.slice(1), options: { set: { type: "string" } }, strict: true });
     if (values.set !== undefined && !IMPORT_CHOICES.includes(values.set as ImportChoice)) return usage(`--set must be one of ${IMPORT_CHOICES.join(", ")}`);
     return importHistory(values.set as ImportChoice | undefined);
+  }
+  if (command === "delete-data") {
+    const { values } = parseArgs({ args: argv.slice(1), options: { yes: { type: "boolean" } }, strict: true });
+    return deleteData(values.yes === true);
   }
   if (command === "status") {
     if (argv.length > 1) return usage(`unknown status argument ${argv.slice(1).join(" ")}`);
@@ -204,6 +211,60 @@ function importHistory(choice: ImportChoice | undefined): number {
     }
   }
   return unsettled ? 1 : 0;
+}
+
+/**
+ * Shows what `debrief delete-data` deletes and, once confirmed, deletes it. On a terminal the
+ * user types `delete`; without one only `--yes` confirms, so a script never deletes by accident.
+ */
+async function deleteData(yes: boolean): Promise<number> {
+  const home = describeHome(resolveHome(undefined));
+  if (home.owned.length === 0) {
+    process.stdout.write(`No Debrief data at ${home.path}.\n`);
+    return 0;
+  }
+  const size = home.bytes < 1024 * 1024 ? `${(home.bytes / 1024).toFixed(1)} KB` : `${(home.bytes / 1024 / 1024).toFixed(1)} MB`;
+  process.stdout.write(
+    [
+      "debrief delete-data",
+      `  path          ${home.path}`,
+      `  size          ${size}`,
+      `  workspaces    ${home.workspaces}`,
+      "",
+      "This deletes every repository's memory, the transcript-import choice and the hooks' logs. It cannot be undone.",
+      "Close Claude Code sessions first: a running session writes new data as it goes.",
+      "This does not uninstall Debrief: run /plugin uninstall debrief@debrief in Claude Code, then npm uninstall -g debrief-cli.",
+      "",
+    ].join("\n"),
+  );
+  if (!yes) {
+    if (!process.stdin.isTTY) {
+      process.stderr.write("debrief: delete-data asks for confirmation on a terminal; pass --yes to delete without asking\n");
+      return 64;
+    }
+    const prompt = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+    process.stdout.write("Type delete to confirm: ");
+    // Ctrl-D closes the input without an answer, and the question would never settle.
+    const answer = await new Promise<string | null>((resolve) => {
+      prompt.once("close", () => {
+        resolve(null);
+      });
+      prompt.question("").then(resolve, () => {
+        resolve(null);
+      });
+    });
+    prompt.close();
+    if (answer?.trim() !== "delete") {
+      process.stdout.write("Nothing was deleted.\n");
+      return 1;
+    }
+  }
+  const { kept, rewritten } = deleteHome(home.path);
+  process.stdout.write(`Deleted Debrief's data from ${home.path}.\n`);
+  if (kept.length > 0) process.stdout.write(`Kept ${kept.length} entries Debrief did not create: ${kept.join(", ")}\n`);
+  if (rewritten.length === 0) return 0;
+  process.stdout.write(`A running session wrote ${rewritten.join(", ")} again while deleting: close Claude Code sessions and run debrief delete-data again.\n`);
+  return 1;
 }
 
 /** Each host Debrief installs into as a plugin, checked from this directory; exit 1 when any has a problem. */

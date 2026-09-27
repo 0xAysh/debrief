@@ -119,7 +119,11 @@ export function claudeAsync(env: NodeJS.ProcessEnv, cwd: string, ...args: string
  * stream-json, so one Claude Code session can go on across them. `send` resolves when the
  * prompt's result arrives; `end` closes stdin and resolves when Claude exits.
  */
-export function claudeStream(env: NodeJS.ProcessEnv, cwd: string, ...args: string[]): { send: (text: string) => Promise<Record<string, unknown>>; end: () => Promise<Run> } {
+export function claudeStream(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  ...args: string[]
+): { send: (text: string) => Promise<Record<string, unknown>>; end: () => Promise<Run>; kill: (signal: NodeJS.Signals) => Promise<Run>; post: (text: string) => void } {
   const [bin, argv] = command(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...args]);
   const child = spawn(bin, argv, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
   onCleanup(() => {
@@ -138,7 +142,12 @@ export function claudeStream(env: NodeJS.ProcessEnv, cwd: string, ...args: strin
   });
   child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
   const closed = new Promise<Run>((resolve) => child.on("close", (code) => { resolve({ code, stdout, stderr }); }));
+  const write = (text: string): void => {
+    child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`);
+  };
   return {
+    /** Sends a prompt without waiting for its result (it may never come: see `kill`). */
+    post: write,
     send: (text) =>
       new Promise((resolve, reject) => {
         const timer = setTimeout(() => { reject(new Error(`no result for ${JSON.stringify(text)}; stderr: ${stderr}`)); }, 60_000);
@@ -146,10 +155,15 @@ export function claudeStream(env: NodeJS.ProcessEnv, cwd: string, ...args: strin
           clearTimeout(timer);
           resolve(result);
         });
-        child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`);
+        write(text);
       }),
     end: () => {
       child.stdin.end();
+      return closed;
+    },
+    /** Kills Claude Code itself (sandbox-exec execs it in place): no hook runs after this. */
+    kill: (signal) => {
+      child.kill(signal);
       return closed;
     },
   };
@@ -204,8 +218,12 @@ export async function startStubMessages(script: {
   reply: string | ((request: Record<string, unknown>) => string);
   /** How Claude Code names Debrief's tools: `mcp__debrief__` (user scope, the default) or the plugin's `mcp__plugin_debrief_debrief__`. */
   mcpPrefix?: string;
-}): Promise<{ port: number; offeredTools: string[][]; requests: Record<string, unknown>[] }> {
-  const state = { port: 0, offeredTools: [] as string[][], requests: [] as Record<string, unknown>[] };
+  /** Requests never answered: Claude Code waits on them mid-turn (to be killed there). `held` resolves at the first. */
+  hold?: (request: Record<string, unknown>) => boolean;
+}): Promise<{ port: number; offeredTools: string[][]; requests: Record<string, unknown>[]; held: Promise<Record<string, unknown>> }> {
+  let onHeld: (request: Record<string, unknown>) => void = () => undefined;
+  const held = new Promise<Record<string, unknown>>((resolve) => (onHeld = resolve));
+  const state = { port: 0, offeredTools: [] as string[][], requests: [] as Record<string, unknown>[], held };
   const queue = [...script.calls];
   let n = 0;
   const server: Server = createServer((req, res) => {
@@ -219,6 +237,10 @@ export async function startStubMessages(script: {
       }
       const json = JSON.parse(body) as { model?: string; stream?: boolean; tools?: { name: string }[] } & Record<string, unknown>;
       state.requests.push(json);
+      if (script.hold?.(json) === true) {
+        onHeld(json);
+        return;
+      }
       const tools = (json.tools ?? []).map((t) => t.name);
       state.offeredTools.push(tools);
       const head = queue[0];
@@ -256,6 +278,7 @@ export async function startStubMessages(script: {
   const address = server.address();
   state.port = typeof address === "object" && address !== null ? address.port : 0;
   onCleanup(() => {
+    server.closeAllConnections();
     server.close();
   });
   return state;

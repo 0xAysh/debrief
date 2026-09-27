@@ -142,6 +142,19 @@ describe("sessionStart: the digest of turns no checkpoint covers", () => {
     expect(start.context).toMatch(/## Since checkpoint r1 \(claude-code, ended 2099-01-01T10:00:\d\d(\.\d+)?Z\)/);
     expect(start.context).toContain("- Use a server-side idempotency key per order; do not add client retries.");
     expect(start.context.indexOf("## Checkpoint")).toBeLessThan(start.context.indexOf("## Since checkpoint r1"));
+    expect(start.notice).toContain("checkpoint r1 loaded");
+    expect(start.notice).toContain("turns after r1 included");
+  });
+
+  test("before the user answers the import question, the notice says it is waiting", () => {
+    const { repo, home, config } = workspace();
+    installTranscript(config, "2.1.281/basic.jsonl", { cwd: repo });
+    const start = started(open(repo, home, config));
+    expect(start.notice).toContain("transcript import needs your answer");
+    const answered = open(repo, home, config);
+    answered.bootstrap({ importChoice: "none" });
+    answered.close();
+    expect(started(open(repo, home, config)).notice).not.toContain("transcript import needs your answer");
   });
 });
 

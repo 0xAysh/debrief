@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
 import { CLI } from "../mcp/harness.js";
-import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, startStubMessages, type ClaudeSandbox } from "../mcp/claude.js";
+import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, startStubMessages } from "../mcp/claude.js";
+import { installPackedDebrief, installPlugin, pathWith, PLUGIN_TOOL, ROOT, streamEvents, STUB_KEY } from "./plugin-install.js";
 
 /**
  * Seam ② for #32: the Claude Code plugin in this repository, installed by the real Claude Code
@@ -16,52 +17,7 @@ import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, c
 const SKIP = claudeSkipReason();
 if (SKIP !== null) process.stderr.write(`claude code plugin tests skipped: ${SKIP}\n`);
 
-const ROOT = resolve(import.meta.dirname, "../..");
-const PLUGIN_TOOL = "mcp__plugin_debrief_debrief__";
-const STUB_KEY = "sk-ant-stub-000";
 const IMPORT_QUESTION = "Transcript import needs the user's answer";
-
-/** `npm pack` of this checkout, installed with `npm install --global --prefix` from npm's cache; returns the prefix's bin directory. */
-function installPackedDebrief(): string {
-  const dir = tempDir("debrief-pack-");
-  const packed = spawnSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: ROOT, encoding: "utf8" });
-  expect(packed.status, packed.stderr).toBe(0);
-  const tarball = join(dir, packed.stdout.trim().split("\n").at(-1) ?? "");
-  const installed = spawnSync("npm", ["install", "--global", "--prefix", join(dir, "prefix"), "--offline", "--no-audit", "--no-fund", tarball], { encoding: "utf8", timeout: 120_000 });
-  expect(installed.status, `offline install from npm's cache failed (run npm ci once): ${installed.stderr}`).toBe(0);
-  return join(dir, "prefix", "bin");
-}
-
-/** PATH with `bin` first (null: with no debrief at all), and the node that runs these tests. */
-function pathWith(bin: string | null): string {
-  const rest = (process.env["PATH"] ?? "").split(delimiter).filter((d) => d !== "" && !existsSync(join(d, "debrief")));
-  return [...(bin === null ? [] : [bin]), dirname(process.execPath), ...rest].join(delimiter);
-}
-
-function installPlugin(sandbox: ClaudeSandbox, path: string): void {
-  const env = claudeEnv(sandbox, { PATH: path });
-  const added = claude(env, ROOT, "plugin", "marketplace", "add", ROOT);
-  expect(added.code, added.stdout + added.stderr).toBe(0);
-  const installed = claude(env, ROOT, "plugin", "install", "debrief@debrief");
-  expect(installed.code, installed.stdout + installed.stderr).toBe(0);
-}
-
-interface StreamEvent {
-  type: string;
-  subtype?: string;
-  content?: string;
-  hook_event?: string;
-  output?: string;
-  exit_code?: number;
-}
-
-function streamEvents(stdout: string): StreamEvent[] {
-  return stdout
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as StreamEvent);
-}
 
 describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLAUDE_PINNED_VERSION}`, () => {
   test("installed from this repository's marketplace, it gives a first session the MCP server and every hook, and the import question is asked once", async () => {
@@ -82,7 +38,7 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     // Installed, but no session yet: the hooks that run every session have never run.
     const fresh = debriefStatus();
     expect(fresh.code, fresh.stderr).toBe(1);
-    expect(fresh.stdout).toMatch(/^ {2}plugin {9}✔ debrief@debrief 0\.0\.0, enabled$/m);
+    expect(fresh.stdout).toMatch(/^ {2}plugin {9}✔ debrief@debrief 0\.1\.0, enabled$/m);
     expect(fresh.stdout).toMatch(/^ {2}MCP server {5}✔ answering with \d+ tools \(debrief mcp --host claude-code\)$/m);
     for (const event of ["session-start", "user-prompt-submit", "stop"]) expect(fresh.stdout).toMatch(new RegExp(`^ {2}(?:hooks {10}| {15})✘ ${event} +never ran: start a new Claude Code session; if it still has not run, the hook is not firing$`, "m"));
     expect(fresh.stdout).toMatch(/^ {2}hooks {10}✘ session-start/m);

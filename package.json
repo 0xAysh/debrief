@@ -1,8 +1,24 @@
 {
   "name": "debrief-cli",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Local, agent-facing working memory for coding agents.",
+  "keywords": [
+    "claude-code",
+    "mcp",
+    "memory",
+    "coding-agents",
+    "agent-memory",
+    "sqlite",
+    "local-first"
+  ],
+  "homepage": "https://github.com/0xAysh/debrief#readme",
+  "bugs": {
+    "url": "https://github.com/0xAysh/debrief/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xAysh/debrief.git"
+  },
   "license": "MIT",
   "type": "module",
   "bin": {
