@@ -1,11 +1,11 @@
-import { rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, rmSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
 import { PROTOCOL } from "../../src/protocol.js";
 import { SESSION_CONTEXT_CHARS } from "../../src/retrieval/session-context.js";
 import { recordCaptureFailure } from "../../src/import/capture-failures.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
-import { claudeConfigDir, installTranscript } from "../import/fixtures.js";
+import { claudeConfigDir, installTranscript, renderFixture } from "../import/fixtures.js";
 
 function open(repo: string, home: string, config: string, hostSessionId?: string): Memory {
   const memory = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config, ...(hostSessionId === undefined ? {} : { hostSessionId }) });
@@ -97,5 +97,43 @@ describe("sessionStart: what a session-start hook injects", () => {
     recordCaptureFailure(home, { host: "claude-code", event: "stop", code: "storage_busy", message: "database is locked" });
     const start = open(repo, home, config).sessionStart({ source: "resume" });
     expect(start.notice).toMatch(/ · ⚠ 1 capture failure \(storage_busy\): memchor diag status$/);
+  });
+});
+
+describe("sessionStart: the digest of turns no checkpoint covers", () => {
+  test("a session that ended without a checkpoint is digested: prompts, last reply, commands, files, end time", () => {
+    const { repo, home, config } = workspace();
+    installTranscript(config, "2.1.281/basic.jsonl", { cwd: repo });
+    open(repo, home, config).bootstrap({ importChoice: "current_project" });
+    const start = open(repo, home, config).sessionStart({ source: "startup" });
+    const digest = start.context.slice(start.context.indexOf("## Last session"));
+    expect(digest).toMatch(/^## Last session \(claude-code, ended 2026-09-20T10:00:\d\d(\.\d+)?Z, without a checkpoint\)/);
+    expect(digest).toContain("- Checkout double-charges when the payment gateway times out.");
+    expect(digest).toContain("- Use a server-side idempotency key per order; do not add client retries.");
+    expect(digest).toMatch(/Last reply: Root cause: charge\(\) retries a 504/);
+    expect(digest).toMatch(/Commands: ✗ npm test -- gateway/);
+    expect(digest).toContain("Files: docs/screenshot.png, src/gateway.ts");
+    // What the digest shows is not listed again under recent memory.
+    expect(start.context.split("Root cause: charge() retries a 504")).toHaveLength(2);
+    expect(start.notice).toContain("last session ended without a checkpoint");
+  });
+
+  test("turns after the checkpoint are digested under it; a checkpoint after every turn needs no digest", () => {
+    const { repo, home, config } = workspace();
+    const sessionId = "5e550000-0000-4000-8000-0000000000f5";
+    const transcript = installTranscript(config, "2.1.281/redis-claim.jsonl", { cwd: repo, sessionId });
+    const setup = open(repo, home, config);
+    setup.bootstrap({ importChoice: "current_project" });
+    setup.checkpoint({ expectedRevision: 0, goal: "Queue work", status: "Covers every turn so far" });
+    setup.close();
+    expect(open(repo, home, config).sessionStart({ source: "startup" }).context).not.toContain("## Since checkpoint");
+
+    // The session goes on after the checkpoint (timestamps later than it), then crashes.
+    const later = renderFixture("2.1.281/basic.jsonl", { cwd: repo, sessionId }).replaceAll("2026-09-20T", "2099-01-01T");
+    appendFileSync(transcript.path, later);
+    const start = open(repo, home, config).sessionStart({ source: "resume" });
+    expect(start.context).toMatch(/## Since checkpoint r1 \(claude-code, ended 2099-01-01T10:00:\d\d(\.\d+)?Z\)/);
+    expect(start.context).toContain("- Use a server-side idempotency key per order; do not add client retries.");
+    expect(start.context.indexOf("## Checkpoint")).toBeLessThan(start.context.indexOf("## Since checkpoint r1"));
   });
 });

@@ -30,7 +30,7 @@ function hooksSettings(memchorHome: string): string {
 }
 
 describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE_PINNED_VERSION}`, () => {
-  test("the model starts with the checkpoint in context without any tool call, and the turn is captured when it stops", async () => {
+  test("the model starts with the checkpoint in context without any tool call, the turn is captured when it stops, and the next session starts with it digested", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
     const memchorHome = tempDir();
@@ -70,5 +70,23 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     const texts = after.recall({ query: "SYNTHETIC-PROMPT double-charge", maxTokens: 8_000 }).items.map((i) => i.excerpt);
     expect(texts.some((t) => t.includes("SYNTHETIC-PROMPT where did we leave the double-charge fix?"))).toBe(true);
     expect(after.status().captureFailures).toEqual([]);
+    after.close();
+
+    // The next session starts with that turn digested under the checkpoint, still without a tool call.
+    const next = await startStubMessages({ calls: [], reply: "Continuing." });
+    const second = await claudeAsync(
+      claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${next.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" }),
+      repo,
+      "-p",
+      "Continue.",
+      "--output-format",
+      "json",
+      "--settings",
+      hooksSettings(memchorHome),
+    );
+    expect(second.code, second.stderr).toBe(0);
+    const context = JSON.stringify(next.requests[0] ?? {});
+    expect(context).toContain("## Since checkpoint r1 (claude-code, ended ");
+    expect(context).toContain("- SYNTHETIC-PROMPT where did we leave the double-charge fix?");
   });
 });

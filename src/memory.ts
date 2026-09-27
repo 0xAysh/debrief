@@ -48,6 +48,7 @@ import {
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
+import { sessionDigest } from "./retrieval/digest.js";
 import { renderSessionStart, type SessionStart, unreadableSessionStart } from "./retrieval/session-context.js";
 import { type CaptureFailure, recordCaptureFailure, recentCaptureFailures } from "./import/capture-failures.js";
 import { type CaptureResult, type ImportStatus, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
@@ -758,7 +759,9 @@ class LocalMemory implements Memory {
   sessionStart(input: { source?: string; hostSessionId?: string }): SessionStart {
     try {
       const boot = this.bootstrap({ maxBytes: SESSION_PACK_BYTES, ...(input.hostSessionId === undefined ? {} : { hostSessionId: input.hostSessionId }) });
-      return renderSessionStart(boot, { protocol: PROTOCOL, failures: recentCaptureFailures(this.home), now: new Date() });
+      const workstreamId = boot.scope.workstreamId;
+      const digest = workstreamId === null || this.bound === undefined ? null : sessionDigest(this.bound.db, workstreamId, boot.context.checkpoint?.createdAt ?? null);
+      return renderSessionStart(boot, { protocol: PROTOCOL, failures: recentCaptureFailures(this.home), now: new Date(), digest });
     } catch (error) {
       if (!(error instanceof MemchorError) || !error.code.startsWith("storage_")) throw error;
       recordCaptureFailure(this.home, { host: this.host, event: "session-start", code: error.code, message: error.message });
