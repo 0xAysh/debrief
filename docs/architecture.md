@@ -1,20 +1,74 @@
 # Architecture
 
+How Debrief works inside. For using it, see the [README](../README.md); for connecting hosts by hand, [hosts.md](hosts.md); for building and testing, [development.md](development.md).
+
+## At a glance
+
+```mermaid
+flowchart LR
+    hooks["Claude Code hooks"]
+    client["host's MCP client"]
+    you(["you, in a terminal"])
+    hook["debrief hook EVENT<br/>transports/hook.ts"]
+    mcp["debrief mcp<br/>transports/mcp.ts"]
+    cli["debrief status · import<br/>delete-data · diag<br/>cli.ts"]
+    memory["<b>memory.ts</b>: all policy<br/>scope · idempotency · CAS<br/>eligibility · budgets · citations"]
+    importer["import/reconcile.ts<br/>discover · order · batch<br/>cursor · dedupe"]
+    adapters["adapters/claude.ts · codex.ts<br/>the only code that<br/>knows a host's JSON"]
+    store[("DEBRIEF_HOME<br/>memory.sqlite per repository<br/>(WAL, FTS5) · global.sqlite<br/>registry.json · consent.json")]
+    transcripts[("the host's transcripts<br/>~/.claude/projects<br/>~/.codex/sessions")]
+
+    hooks --> hook
+    client --> mcp
+    you --> cli
+    hook --> memory
+    mcp --> memory
+    cli --> memory
+    memory --> store
+    memory --> importer --> adapters
+    adapters -. "read-only" .-> transcripts
 ```
-debrief mcp (src/transports/mcp.ts)   debrief diag (src/cli.ts)
-            └──────────────┬──────────────┘
-                 src/memory.ts  ← all policy
-   scope · idempotency · CAS · eligibility · budgets · citations
-            │                              │
-            │               src/import/reconcile.ts  ← discover · order · batch · cursor · dedupe
-            │                              │ NormalizedEvent only (one TranscriptAdapter, chosen by host)
-            │                 ┌────────────┴─────────────┐
-            │     adapters/claude.ts            adapters/codex.ts     ← the only code that knows each host's JSON
-            │                 │ (read-only)              │ (read-only)
-            │   $CLAUDE_CONFIG_DIR/projects/*/*.jsonl    $CODEX_HOME/{sessions/YYYY/MM/DD,archived_sessions}/rollout-*.jsonl
-            │
-  one SQLite file per workspace (WAL, FTS5)
+
+Transports parse and print; the memory module decides. Processes never talk to each other: they meet only in `$DEBRIEF_HOME`, in the SQLite files (through WAL) and a few small JSON files (hook runs and failures, which session made a tool call).
+
+One Claude Code session, as the hooks and the MCP server see it:
+
+```mermaid
+sequenceDiagram
+    participant CC as Claude Code
+    participant Hook as debrief hook
+    participant Srv as debrief mcp
+    participant Mem as memory.ts
+
+    CC->>Hook: SessionStart {session_id}
+    Hook->>Mem: sessionStart(): bootstrap, catch-up import, bind the session
+    Hook-->>CC: context (≤ 9,000 chars) + a notice for the user
+    CC->>Hook: UserPromptSubmit
+    Hook->>Mem: promptHint(): a lasting preference?
+    CC->>Hook: PreToolUse (Debrief's tools only)
+    Hook->>Mem: approveTool(): allow read-only calls, note the call's session
+    CC->>Srv: tools/call memory_*
+    Srv->>Mem: bootstrap · recall · read · record · checkpoint · manage · status
+    CC->>Hook: SubagentStart {session_id}
+    Hook->>Mem: subagentStart(): checkpoint + items (≤ 4,000 chars)
+    CC->>Hook: Stop {transcript_path}
+    Hook->>Mem: endTurn(): capture the turn, maybe nudge for a checkpoint, notice
 ```
+
+| Section | Covers |
+|---|---|
+| [Memory module interface](#memory-module-interface) | every method and its contract |
+| [Scope](#scope) | repository → workspace, worktree → workstream, ambiguity |
+| [Storage and invariants](#storage-and-invariants) | tables, eligibility, what reads what |
+| [Transaction ordering](#transaction-ordering) | writes, reads, budgets, continuations, durability |
+| [Recall applicability](#recall-applicability) | freshness, test results, independent roots |
+| [Transcript import](#transcript-import) | consent, adapters, Claude Code and Codex formats, privacy, batches, scope |
+| [Memory lifecycle](#memory-lifecycle) | correct, supersede, retract, restore, forget; taints; the ledger |
+| [Preferences](#preferences) | questions, answers, where a preference applies |
+| [Private sessions](#private-sessions) | "don't remember this session" |
+| [Handoff](#handoff) | Claude → Codex → Claude through one database |
+| [Host hooks](#host-hooks) | the hook transport, the plugin, `debrief status`, `delete-data` |
+| [Runtime gate](#runtime-gate) · [Error codes](#error-codes) · [Migrations](#migrations) | |
 
 The adapters contain no memory policy. Host differences outside the transcript format live in one descriptor table, `src/hosts.ts`: `openMemory` picks the transcript adapter from it (`claude-code` → Claude Code, `codex` → Codex, anything else → none), the MCP server the `_meta` key that names a live session (Codex: `threadId`; an id longer than 200 characters is ignored, never cut), and the CLI its `--host` choices. The MCP server forwards raw tool arguments to the module. The module parses them with the zod schemas in `src/schemas.ts`, which are also the source of the tools' JSON Schemas. Each `DebriefError` becomes `isError: true` with `{ error: { code, message, retryable, details } }`.
 
@@ -360,7 +414,7 @@ The proof is `tests/handoff/`:
 
 Each run writes the packs and the matrix, with temporary paths replaced by placeholders, to the git-ignored `tests/mcp/__artifacts__/handoff/`.
 
-The host connections are pinned to the releases they were tested with: Claude Code `2.1.283` (`tests/mcp/claude-connection.test.ts`: `claude mcp add -s user`, the `list`/`get` health checks, and a `claude -p` session against a localhost stub model) and `codex-cli 0.148.0-alpha.21` (`tests/mcp/codex-connection.test.ts`). Each host starts one `debrief mcp` per session in the session's working directory, which is how Debrief finds the repository. Claude Code passes its own environment to the server; Codex clears it, so `CODEX_HOME` and `DEBRIEF_HOME` must be given explicitly. The README has the exact commands.
+The host connections are pinned to the releases they were tested with: Claude Code `2.1.283` (`tests/mcp/claude-connection.test.ts`: `claude mcp add -s user`, the `list`/`get` health checks, and a `claude -p` session against a localhost stub model) and `codex-cli 0.148.0-alpha.21` (`tests/mcp/codex-connection.test.ts`). Each host starts one `debrief mcp` per session in the session's working directory, which is how Debrief finds the repository. Claude Code passes its own environment to the server; Codex clears it, so `CODEX_HOME` and `DEBRIEF_HOME` must be given explicitly. [hosts.md](hosts.md) has the exact commands.
 
 ## Host hooks
 
@@ -395,7 +449,20 @@ Stop              debrief hook stop               → endTurn(transcript_path,  
 - **The digest** is built without a model from imported events: the newest session after the head checkpoint (from its first later prompt), or the last session when there is none, with its last three prompts, last reply, last commands (✓/✗ from the tool-error flag, not an exit code), files its tool calls named, and end time.
 - **Items are labelled** `kind · age · host · freshness` (the checkpoint `checkpoint rN · …`) by `src/retrieval/label.ts`, from fields the JSON pack also carries.
 - **One Claude Code session, one host session id.** Each process (a hook, the MCP server, the importer) opens its own `sessions` row, and the rows of one Claude Code session share `host_session_id` = Claude's `session_id`, which is also its transcript's file name. Workstream resolution (step 1), private sessions and the importer join on that id, and the digest reads only imported events (one Debrief session per transcript), so the extra rows are not a second session anywhere it matters. The MCP server learns the id from `CLAUDE_CODE_SESSION_ID`, which Claude Code sets when it starts the server. Claude Code does not restart the server on `/clear`, which starts a new `session_id`, so the environment goes stale; the PreToolUse hook (registered for Debrief's tools) notes each call's `tool_use_id` with the current `session_id` in `$DEBRIEF_HOME/tool-sessions.jsonl` (`src/bootstrap/host-sessions.ts`; both logs share `src/storage/home-log.ts`), and the server looks up the `_meta["claudecode/toolUseId"]` of each call there. A call from a new session closes the server's Memory and opens one for that session. The environment names only the server's first session: a call whose note is missing keeps the current session rather than falling back to the stale id.
-- **Pinned host behaviour** (Claude Code 2.1.283): context arrives as a system message prefixed `SessionStart hook additional context:`, `systemMessage` never reaches the model, a transcript may lack a tool turn's last lines when Stop runs (the next capture or session start picks them up), `claude -p` kills `async` hooks still running at exit, a PreToolUse `"allow"` runs an MCP tool in `-p` without `--allowedTools`, and a Stop block reaches the model as a user message `Stop hook feedback:\n<reason>` (the next Stop has `stop_hook_active: true`). `/compact` and `/clear` work in `claude -p --input-format stream-json`: `/compact` fires SessionStart `compact` with the same `session_id`, `/clear` fires SessionStart `clear` with a new one, and `--resume` fires `resume` with the same one; each time the model's next request carries the context again (`tests/hooks/debrief-hooks-claude.test.ts`). The MCP server is started once per process and keeps its environment across `/clear`; every `tools/call` carries `_meta["claudecode/toolUseId"]`, the `tool_use_id` the PreToolUse hook saw. The transcript does not reliably contain a tool call's `tool_use` when the hook runs. Claude Code writes the transcript after it sends the model request (80–90 ms later in two hand-run probes, not a test), so a process killed inside that window loses those lines, and no capture can recover them. Killed later, while it waits on the model, the next session start imports the unfinished turn and digests it (`tests/release/acceptance-claude.test.ts`, which kills only once the tool result is on disk). Around a sub-agent (`tests/hooks/claude-subagents.test.ts`): `SubagentStart` `additionalContext` reaches every request of the sub-agent as a system message prefixed `SubagentStart hook additional context:`, while its plain stdout, its `systemMessage` and the parent's SessionStart context do not; Agent calls run in the background by default, so the parent's `Stop` fires while the sub-agent works (its transcript may not exist yet) and its report returns as a `<task-notification>` prompt that fires `UserPromptSubmit` and a second `Stop`; without a PreToolUse `allow`, a sub-agent's Debrief call is not run in `-p`. Research notes: `docs/research/hooks-2026-09-26.md`.
+**Pinned Claude Code 2.1.283 behaviour** that the hooks rely on. Each row is driven by the test named (`tests/hooks/<name>.test.ts`, `tests/release/acceptance-claude.test.ts`); research notes are in `docs/research/hooks-2026-09-26.md`.
+
+| Behaviour | Consequence for Debrief | Test |
+|---|---|---|
+| SessionStart context arrives as a system message prefixed `SessionStart hook additional context:`; `systemMessage` never reaches the model | the context is for the model, the notice for the user | `claude-hooks`, `debrief-hooks-claude` |
+| `/compact` fires SessionStart `compact` with the same `session_id`, `/clear` fires `clear` with a new one, `--resume` fires `resume` with the same one; each time the model's next request carries the context again | the checkpoint is re-delivered as it is at that moment | `debrief-hooks-claude`, `acceptance-claude` |
+| A Stop block reaches the model as a user message `Stop hook feedback:\n<reason>`; the next Stop has `stop_hook_active: true` | the checkpoint nudge fires once per stop | `claude-hooks`, `debrief-hooks-claude` |
+| `claude -p` kills `async` hooks still running at exit | the Stop hook is synchronous | `claude-hooks` |
+| A PreToolUse `"allow"` runs an MCP tool in `-p` without `--allowedTools`; without it, a sub-agent's Debrief call is not run | read-only calls are auto-allowed, also inside sub-agents | `claude-hooks`, `claude-subagents` |
+| The MCP server starts once per process and keeps its environment across `/clear`; every `tools/call` carries `_meta["claudecode/toolUseId"]`, the id the PreToolUse hook saw | the server finds the current session through the hook's note | `debrief-hooks-claude` ("don't remember this session" after `/clear`) |
+| When Stop runs, the transcript may lack a tool turn's last lines, or a tool call's `tool_use` | the next capture or session start picks them up | `claude-hooks` |
+| The transcript is written after the model request is sent (80–90 ms later in two hand-run probes, not a test) | a process killed inside that window loses those lines, and no capture can recover them; killed later, while it waits on the model, the next session start imports the unfinished turn and digests it | `acceptance-claude` (kills only once the tool result is on disk) |
+| `SubagentStart` `additionalContext` reaches every request of the sub-agent (prefixed `SubagentStart hook additional context:`); its plain stdout, its `systemMessage` and the parent's SessionStart context do not | the sub-agent gets its own, smaller context | `claude-subagents` |
+| Agent calls run in the background by default: the parent's `Stop` fires while the sub-agent works (its transcript may not exist yet), and the report returns as a `<task-notification>` prompt that fires `UserPromptSubmit` and a second `Stop` | the sub-agent's transcript is imported by a later parent Stop; the notification is not the user's wording | `claude-subagents` |
 
 ### Installing and checking (Claude Code plugin, `debrief status`)
 
