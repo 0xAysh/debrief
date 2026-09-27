@@ -149,7 +149,77 @@ describe("MCP protocol surface", () => {
     expect(messages.find((m) => m.id === 4)?.error).toBeDefined();
     expect(stderr).toMatch(/debrief: MCP server ready/);
   });
+
+  test("malformed and oversized requests get error replies, store nothing, and the server keeps answering", async () => {
+    const child = spawn(process.execPath, [CLI, "mcp", "--host", "claude-code"], {
+      cwd: initRepo(),
+      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: tempDir() },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const replies = new Map<number | null, Reply>();
+    let buffered = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      buffered += chunk.toString();
+      const lines = buffered.split("\n");
+      buffered = lines.pop() ?? "";
+      for (const line of lines.filter(Boolean)) {
+        const reply = JSON.parse(line) as Reply;
+        replies.set(reply.id ?? null, reply);
+      }
+    });
+    const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+    const reply = async (id: number): Promise<Reply> => {
+      for (let i = 0; i < 400 && !replies.has(id); i++) await new Promise((r) => setTimeout(r, 25));
+      const found = replies.get(id);
+      if (found === undefined) throw new Error(`no reply to request ${id}`);
+      return found;
+    };
+    const send = (message: object | string): void => {
+      child.stdin.write((typeof message === "string" ? message : JSON.stringify(message)) + "\n");
+    };
+    const call = (id: number, name: string, args: unknown): void => send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+    const record = (body: unknown) => ({ kind: "note", body, attribution: "agent_inference" });
+
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "raw", version: "0" } } });
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    await reply(1);
+    call(2, "memory_bootstrap", {});
+    await reply(2);
+
+    send("this is not JSON {");
+    send({ not: "json-rpc" });
+    send({ jsonrpc: "2.0", id: 3, method: "no/such/method" });
+    call(4, "memory_record", "arguments that are not an object");
+    call(5, "memory_record", record(42));
+    call(6, "memory_record", { ...record("typed wrong"), kind: "anything", attribution: ["user_direction"] });
+    call(7, "memory_record", record("x".repeat(16 * 1024 + 1)));
+    call(8, "memory_record", record("y".repeat(4 * 1024 * 1024)));
+    call(9, "memory_record", record("the server still records after all of that"));
+    call(10, "memory_recall", { maxTokens: 8_000 });
+
+    // Lines that are not JSON-RPC requests get no reply (the SDK drops them); what matters is what follows.
+    expect((await reply(3)).error?.code).toBe(-32601);
+    // Arguments that are not an object never reach Debrief: the SDK rejects the request itself.
+    expect((await reply(4)).error?.message).toMatch(/arguments/);
+    for (const id of [5, 6, 7, 8]) {
+      const rejected = await reply(id);
+      expect(rejected.result?.isError, `request ${id}`).toBe(true);
+      expect(rejected.result?.structuredContent?.error?.code, `request ${id}`).toBe("invalid_input");
+    }
+    expect((await reply(9)).result?.isError).toBeUndefined();
+    const recalled = (await reply(10)).result?.structuredContent as { items: { excerpt: string }[] };
+    expect(recalled.items.map((item) => item.excerpt)).toEqual(["the server still records after all of that"]);
+
+    child.stdin.end();
+    expect(await exited).toBe(0);
+  });
 });
+
+interface Reply {
+  id?: number | null;
+  error?: { code: number; message: string };
+  result?: { isError?: boolean; structuredContent?: { error?: { code: string } } & Record<string, unknown> };
+}
 
 /** Every rule of the protocol, checked on both paths it is delivered by. */
 const RULES = [
