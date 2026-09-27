@@ -59,6 +59,8 @@ describe("the published package", () => {
       bugs: { url: "https://github.com/0xAysh/debrief/issues" },
     });
     expect(manifest["keywords"]).toEqual(expect.arrayContaining(["claude-code", "mcp", "memory"]));
+    // npm publish ships whatever dist/ holds: it must be rebuilt from this checkout first.
+    expect((manifest["scripts"] as Record<string, string>)["prepublishOnly"]).toBe("npm run build");
 
     const plugin = JSON.parse(readFileSync(join(ROOT, "plugin/.claude-plugin/plugin.json"), "utf8")) as { version: string };
     expect(plugin.version).toBe(manifest.version);

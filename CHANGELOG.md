@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## [0.1.0](https://github.com/0xAysh/debrief/releases/tag/v0.1.0) - 2026-09-27
 
 The first release: Debrief for Claude Code.
 

@@ -33,6 +33,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/bundle.mjs",
+    "prepublishOnly": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

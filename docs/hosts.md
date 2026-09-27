@@ -1,6 +1,20 @@
 # Hosts: manual connection and caveats
 
-The one-command path is the Claude Code plugin (see the [README](../README.md#install-for-claude-code)). This page keeps the verified manual steps, for a host without a Debrief plugin (Codex) or a setup that registers Debrief by hand, and the host behaviour behind them.
+The one-command path is the Claude Code plugin (see the [README](../README.md#install)). This page keeps the verified manual steps, for a host without a Debrief plugin (Codex) or a setup that registers Debrief by hand, and the host behaviour behind them.
+
+| Host | Connect with | Session-start context, turn capture, sub-agents | Transcript import | Tested with |
+|---|---|---|---|---|
+| Claude Code | the plugin: `/plugin install debrief@debrief` | ✔ (hooks) | ✔ | 2.1.283 |
+| Claude Code, by hand | `claude mcp add` ([below](#connect-claude-code-by-hand-verified-with-claude-code-21283)) | ✘ MCP tools only | ✔ at bootstrap | 2.1.283 |
+| Codex | `codex mcp add` ([below](#connect-codex-verified-with-codex-cli-01480-alpha21)) | ✘ MCP tools only; hooks later ([#45](https://github.com/0xAysh/debrief/issues/45)) | ✔ legacy rollouts (paginated: [#27](https://github.com/0xAysh/debrief/issues/27)) | `codex-cli 0.148.0-alpha.21` |
+| Pi | not yet | – | – | – |
+
+```text
+Claude Code ──plugin──▶ .mcp.json ─────▶ debrief mcp --host claude-code
+                     └▶ hooks.json ────▶ debrief hook <event> --host claude-code
+Codex ───codex mcp add─────────────────▶ debrief mcp --host codex
+         all of them run debrief (on PATH, or node …/dist/debrief.mjs) ──▶ $DEBRIEF_HOME
+```
 
 ## Claude Code plugin
 

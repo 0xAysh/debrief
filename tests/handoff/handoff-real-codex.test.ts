@@ -56,7 +56,7 @@ describe.skipIf(SKIP !== null)(`handoff through the real Codex ${CODEX_PINNED_VE
     await claude.close();
     writeFileSync(join(repo, "src/retry.ts"), "export function backoff(status) {\n  return status >= 500 && status !== 504;\n}\n");
 
-    // Codex, registered exactly as the README says, in a new thread in the same worktree.
+    // Codex, registered exactly as docs/hosts.md says, in a new thread in the same worktree.
     const codexHome = tempDir("debrief-codex-home-");
     const env = codexEnv(codexHome, tempDir("debrief-codex-user-"));
     const added = codex(env, tempDir(), ...debriefAddArgs({ codexHome, debriefHome: home, networkLog: codexLog }));
