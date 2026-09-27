@@ -52,6 +52,11 @@ export interface HostDescriptor {
    * is group 1); null where that is not pinned. Another server's tool of the same name never matches.
    */
   memchorTool: RegExp | null;
+  /**
+   * Prompts the host submits itself through its prompt hook, which are not the user's words (a
+   * background sub-agent's report); null where none are pinned.
+   */
+  hostPrompt: RegExp | null;
 }
 
 export interface HookOutput {
@@ -93,6 +98,8 @@ export const HOSTS = {
     editTools: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
     // User-scope `mcp__memchor__…`, or the plugin-bundled server's `mcp__plugin_memchor_memchor__…`.
     memchorTool: /^mcp__(?:plugin_memchor_)?memchor__(memory_[a-z_]+)$/,
+    // A background sub-agent's report arrives as a UserPromptSubmit prompt (tests/hooks/claude-subagents.test.ts).
+    hostPrompt: /^<task-notification>\n/,
   },
   codex: {
     transcripts: (paths) => codexAdapter(paths.codexHome === undefined ? {} : { codexHome: paths.codexHome }),
@@ -106,9 +113,10 @@ export const HOSTS = {
     hooks: null,
     editTools: ["apply_patch"],
     memchorTool: null,
+    hostPrompt: null,
   },
-  pi: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null },
-  unknown: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null },
+  pi: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null, hostPrompt: null },
+  unknown: { transcripts: null, sessionMetaKey: null, sessionEnv: null, toolUseMetaKey: null, hooks: null, editTools: [], memchorTool: null, hostPrompt: null },
 } as const satisfies Record<string, HostDescriptor>;
 
 export type HostId = keyof typeof HOSTS;

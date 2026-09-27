@@ -571,7 +571,8 @@ export interface Memory {
   endTurn(input: EndTurnInput): TurnEnd;
   /**
    * One line for the agent when the prompt the user just submitted states a lasting preference
-   * (a prompt-submit hook), else null; null outside a Git worktree. No model, no network, no
+   * (a prompt-submit hook), else null; null outside a Git worktree and for a prompt the host
+   * submitted itself (`hostPrompt` in src/hosts.ts). No model, no network, no
    * database: the agent decides whether to propose it.
    */
   promptHint(input: PromptHintInput): string | null;
@@ -890,6 +891,8 @@ class LocalMemory implements Memory {
   promptHint(input: PromptHintInput): string | null {
     return this.guard(() => {
       const parsed = parse(PromptHintInput, input);
+      // The host's own prompts (a sub-agent's report) are not the user's wording.
+      if (hostDescriptor(this.host)?.hostPrompt?.test(parsed.prompt) === true) return null;
       if (!statesLastingPreference(parsed.prompt)) return null;
       try {
         locateWorkspace(this.cwd, this.home);

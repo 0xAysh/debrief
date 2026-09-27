@@ -227,6 +227,12 @@ describe("memchor hook user-prompt-submit (Claude Code payload on stdin)", () =>
     expect(hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: "Fix the retry loop." })).toMatchObject({ code: 0, stdout: "", stderr: "" });
     expect(open(env).status().hookFailures).toEqual([]);
   });
+
+  test("a background sub-agent's report, which Claude Code submits as a task-notification prompt, is not the user's wording", () => {
+    const env = approvedRepo();
+    const notification = "<task-notification>\n<task-id>a0123456789abcdef</task-id>\n<status>completed</status>\n<result>From now on, always run the gateway tests first.</result>\n</task-notification>";
+    expect(hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: notification })).toMatchObject({ code: 0, stdout: "", stderr: "" });
+  });
 });
 
 describe("memchor hook pre-tool-use (Claude Code payload on stdin)", () => {
