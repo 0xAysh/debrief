@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
-import { claudeConfigDir, codexHome, codexThreadId, installCodexRollout, installTranscript, renderCodexFixture, renderFixture } from "./fixtures.js";
+import { claudeConfigDir, claudeToolExchange, codexHome, codexThreadId, installCodexRollout, installTranscript, renderCodexFixture, renderFixture } from "./fixtures.js";
 
 // One token, so the FTS index (which stores tokens lowercased) is searched too.
 const MARKER = "ZQXVPRIVATEMARKER7731";
@@ -95,6 +95,29 @@ describe("<private>…</private> is replaced before anything is stored", () => {
     expect(checkpoint).toContain("Stop double charges [private]");
     expect(checkpoint).toContain("Add the gateway test [private] and why");
     const bytes = storedBytes(memory);
+    expect(bytes).not.toContain(MARKER);
+    expect(bytes).not.toContain(MARKER.toLowerCase());
+  });
+
+  test("a span inside a tool call (a shell command, a Memchor call) never reaches import metadata", () => {
+    const repo = initRepo();
+    const home = tempDir();
+    const config = claudeConfigDir();
+    const sessionId = "70000000-0000-4000-8000-000000000003";
+    const span = `<private>${MARKER}</private>`;
+    const base = renderFixture("2.1.281/basic.jsonl", { cwd: repo, sessionId });
+    const content =
+      base +
+      claudeToolExchange({ cwd: repo, sessionId, gitBranch: "main", parentUuid: null, id: 9_000, tool: "Bash", input: { command: `echo ${span}` }, result: "ok" }) +
+      claudeToolExchange({ cwd: repo, sessionId, gitBranch: "main", parentUuid: null, id: 9_010, tool: "mcp__memchor__memory_recall", input: { query: `retry ${span}` }, result: '{"items":[]}' });
+    installTranscript(config, "", { cwd: repo, sessionId, content });
+    const memory = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config });
+    onCleanup(() => {
+      memory.close();
+    });
+    memory.bootstrap({ importChoice: "current_project" });
+    const bytes = storedBytes(memory);
+    expect(bytes).toContain("echo [private]");
     expect(bytes).not.toContain(MARKER);
     expect(bytes).not.toContain(MARKER.toLowerCase());
   });

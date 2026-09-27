@@ -1026,7 +1026,7 @@ function retentionFor(toolKind: ToolKind): OutputRetention {
 /** Redacts and bounds every descriptive field before canonical bookkeeping sees it. */
 function safeCallMeta(batch: Batch, event: Extract<NormalizedEvent, { type: "tool_call" }>): CallMeta {
   const sensitivePath = touchesSensitivePath([event.summary, ...event.paths]);
-  const redactedSummary = redactSecrets(event.summary);
+  const redactedSummary = redactSecrets(removePrivate(event.summary));
   batch.counters.redactions += redactedSummary.redactions;
   // Once any argument is sensitive, retaining the command's "safe" remainder still reveals
   // user input. Replace the whole description; only sensitive paths also withhold the output.
