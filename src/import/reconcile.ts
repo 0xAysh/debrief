@@ -310,7 +310,8 @@ export class TranscriptImporter {
         events += Math.max((stored.get(this.host, entry.file.transcriptId) as { n: number }).n - before, 0);
       };
       importOne({ file, cwd: head.cwd, supported: head.supported, target });
-      // The session's sub-agents worked in this turn too; by the parent's Stop their transcripts are whole.
+      // The session's sub-agents worked in this turn too; by the parent's Stop their transcripts are whole
+      // (at SubagentStop they are not reliably so). A line still being written is left for the next capture.
       for (const sub of this.options.adapter.subagentsOf?.(file) ?? []) {
         const subHead = this.options.adapter.inspect(sub);
         const subTarget = subHead.cwd === null ? null : this.locate(subHead.cwd);

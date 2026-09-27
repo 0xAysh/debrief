@@ -99,7 +99,7 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} around
     writeFileSync(ARTIFACT, `${JSON.stringify(evidence, null, 2)}\n`);
   });
 
-  test("foreground: SubagentStart and SubagentStop payloads, the hooks that fire inside the sub-agent, and its transcript: where, and how complete at each hook", async () => {
+  test("foreground: SubagentStart and SubagentStop payloads, the hooks that fire inside the sub-agent, and its transcript: where, and whether it is whole at each hook", async () => {
     const { rig, sessionId, project, placeholders } = await spawnSubagent({ background: false, outputs: { PreToolUse: { stdout: ALLOW } } });
     const records = rig.records();
     const seen = records.map((r) => `${r.event}${typeof r.payload?.["tool_name"] === "string" ? ` ${r.payload["tool_name"]}` : ""}${r.payload?.["agent_id"] === undefined ? "" : " (sub-agent)"}`);
@@ -156,9 +156,10 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} around
     expect(entries.find((l) => l.type === "user")?.origin).toBeUndefined();
     const meta = JSON.parse(readFileSync(join(project, sessionId, "subagents", `agent-${agentId}.meta.json`), "utf8")) as Record<string, unknown>;
     expect(meta).toEqual({ agentType: "general-purpose", description: "retry budget", toolUseId: expect.stringMatching(/^toolu_stub_/) as unknown, spawnDepth: 1, requestShape: "foreground", requestNonInteractive: true });
-    // At SubagentStop the transcript still lacks the last tool result and the report; by the parent's Stop it is whole.
+    // At SubagentStop the transcript is written up to some point (in isolated runs it lacked the last
+    // tool result and the report; under load it was whole): not reliably complete. By the parent's Stop it is.
     const atSubagentStop = records.find((r) => r.event === "SubagentStop")?.agentTranscript?.lines as Line[];
-    expect(conversation(atSubagentStop)).toEqual(conversation(entries).slice(0, 4));
+    expect(conversation(entries).slice(0, conversation(atSubagentStop).length)).toEqual(conversation(atSubagentStop));
     expect(records.find((r) => r.event === "Stop")?.subagents).toEqual({ [`agent-${agentId}.jsonl`]: entries.length });
 
     // The parent's transcript: the Agent result carries the report, and names the sub-agent in toolUseResult.
