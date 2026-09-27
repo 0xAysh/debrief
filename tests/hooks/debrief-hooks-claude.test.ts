@@ -1,7 +1,7 @@
-import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { locateWorkspace } from "../../src/bootstrap/workspace-resolution.js";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
@@ -17,8 +17,23 @@ import { CLI, NO_NETWORK } from "../mcp/harness.js";
 
 const SKIP = claudeSkipReason();
 
+/** Every network log a Debrief process (hook or MCP server) in this file writes to. */
+const networkLogs: string[] = [];
+
+function networkLog(): string {
+  const path = join(tempDir(), "network.log");
+  networkLogs.push(path);
+  return path;
+}
+
+// Hooks fail open, so a blocked network call would not fail a test by itself: every log must stay empty.
+afterEach(() => {
+  for (const log of networkLogs.splice(0)) expect(existsSync(log) ? readFileSync(log, "utf8") : "", log).toBe("");
+});
+
 function hooksSettings(debriefHome: string): string {
-  const debrief = (args: string) => `DEBRIEF_HOME='${debriefHome}' '${process.execPath}' --import '${NO_NETWORK}' '${CLI}' hook ${args} --host claude-code`;
+  const log = networkLog();
+  const debrief = (args: string) => `DEBRIEF_HOME='${debriefHome}' DEBRIEF_NETWORK_LOG='${log}' '${process.execPath}' --import '${NO_NETWORK}' '${CLI}' hook ${args} --host claude-code`;
   const path = join(tempDir(), "settings.json");
   writeFileSync(
     path,
@@ -100,7 +115,7 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
     const debriefHome = tempDir();
-    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: networkLog() }));
     expect(added.code, added.stderr).toBe(0);
     const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
@@ -190,7 +205,7 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
     const debriefHome = tempDir();
-    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: networkLog() }));
     expect(added.code, added.stderr).toBe(0);
     const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
@@ -301,7 +316,7 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
     const debriefHome = tempDir();
-    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: networkLog() }));
     expect(added.code, added.stderr).toBe(0);
     const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
@@ -335,7 +350,7 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
     const debriefHome = tempDir();
-    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: networkLog() }));
     expect(added.code, added.stderr).toBe(0);
     const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
