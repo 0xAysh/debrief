@@ -331,13 +331,19 @@ function normalizeEntry(entry: Entry, line: { start: number; end: number }, out:
 }
 
 /**
- * Whether a tool result is a sub-agent's hand-back (the Agent tool's result names the agent in
- * `toolUseResult.agentId`: its report in the foreground, a launch receipt in the background) whose
- * own transcript is on disk. That transcript, imported with this one, carries the report.
+ * Whether a tool result is a sub-agent's hand-back that its own transcript, imported with this
+ * one, carries instead. The Agent tool's result names the agent in `toolUseResult.agentId`. In the
+ * background it is only a launch receipt (`status: "async_launched"`), always left out: the
+ * sub-agent's transcript may not be written yet when the parent stops, and the report returns as
+ * a task-notification. In the foreground it is the report, left out while the sub-agent's
+ * transcript is on disk (it is by then), kept otherwise.
  */
 function subagentReported(entry: Entry, context: ReadContext): boolean {
-  const agentId = asObject(entry["toolUseResult"])["agentId"];
-  return typeof agentId === "string" && SUBAGENT_FILE.test(`agent-${agentId}.jsonl`) && existsSync(join(context.subagents, `agent-${agentId}.jsonl`));
+  const result = asObject(entry["toolUseResult"]);
+  const agentId = result["agentId"];
+  if (typeof agentId !== "string") return false;
+  if (result["status"] === "async_launched") return true;
+  return SUBAGENT_FILE.test(`agent-${agentId}.jsonl`) && existsSync(join(context.subagents, `agent-${agentId}.jsonl`));
 }
 
 /** One-line description, touched paths and semantic kind of a tool call, from its input. */

@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
@@ -6,12 +6,12 @@ import { locateWorkspace } from "../../src/bootstrap/workspace-resolution.js";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
 import { claudeTurn, installTranscript } from "../import/fixtures.js";
-import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, claudeStream, memchorAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
+import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, claudeStream, firstUserText, memchorAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
 import { CLI, NO_NETWORK } from "../mcp/harness.js";
 
 /**
- * Seam ② for #29 with Memchor's own hooks: the real Claude Code runs `memchor hook
- * session-start`, `stop`, `user-prompt-submit` and `pre-tool-use`, registered with `--settings`,
+ * Seam ② for #29 and #40 with Memchor's own hooks: the real Claude Code runs `memchor hook
+ * session-start`, `subagent-start`, `stop`, `user-prompt-submit` and `pre-tool-use`, registered with `--settings`,
  * against a localhost stub model. What the model received is read from the stub's request bodies.
  */
 
@@ -25,6 +25,7 @@ function hooksSettings(memchorHome: string): string {
     JSON.stringify({
       hooks: {
         SessionStart: [{ hooks: [{ type: "command", command: memchor("session-start") }] }],
+        SubagentStart: [{ hooks: [{ type: "command", command: memchor("subagent-start") }] }],
         Stop: [{ hooks: [{ type: "command", command: memchor("stop") }] }],
         UserPromptSubmit: [{ hooks: [{ type: "command", command: memchor("user-prompt-submit") }] }],
         PreToolUse: [{ matcher: "mcp__(plugin_memchor_)?memchor__.*", hooks: [{ type: "command", command: memchor("pre-tool-use") }] }],
@@ -330,4 +331,71 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(excerpts.some((e) => e.includes("SYNTHETIC-KEEP the retry budget is three"))).toBe(true);
     expect(after.status().hookFailures).toEqual([]);
   }, 180_000);
+  test("a sub-agent starts with the checkpoint without a tool call, its Memchor recall runs without a prompt, and what only its commands found is recalled in a new session", async () => {
+    const sandbox = claudeSandbox();
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const memchorHome = tempDir();
+    const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+    expect(added.code, added.stderr).toBe(0);
+    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      setup.close();
+    });
+    setup.bootstrap({ importChoice: "current_project" });
+    setup.checkpoint({ expectedRevision: 0, goal: "Stop double charges", status: "Key drafted", nextSteps: ["SYNTHETIC-NEXT find where the retry budget is set"] });
+    setup.close();
+
+    const delegated = "SYNTHETIC-DELEGATED find where the retry budget is set";
+    const fromSubagent = (request: Record<string, unknown>): boolean => firstUserText(request).includes(delegated);
+    const stub = await startStubMessages({
+      calls: [
+        // Background, Claude Code's default: the parent's Stop runs while the sub-agent works.
+        { tool: "Agent", builtin: true, input: { description: "retry budget", prompt: delegated, subagent_type: "general-purpose" }, when: "SYNTHETIC-PROMPT" },
+        { tool: "Bash", builtin: true, input: { command: "echo SYNTHETIC-FINDING retry budget lives in src/retry.ts", description: "look" }, when: fromSubagent },
+        { tool: "memory_recall", input: { query: "retry budget" }, when: fromSubagent },
+      ],
+      reply: (request) => (fromSubagent(request) ? "SYNTHETIC-REPORT the budget is set in src/retry.ts." : "SYNTHETIC-PARENT-REPLY on it."),
+    });
+    const run = await claudeAsync(
+      claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" }),
+      repo,
+      "-p",
+      "SYNTHETIC-PROMPT where is the retry budget set? Use a helper.",
+      "--output-format",
+      "json",
+      "--allowedTools",
+      "Bash",
+      "--settings",
+      hooksSettings(memchorHome),
+    );
+    expect(run.code, run.stderr).toBe(0);
+
+    // Memory in: the sub-agent's first request carries the checkpoint, and not the session's protocol.
+    const first = stub.requests.find(fromSubagent);
+    expect(JSON.stringify(first)).toContain("SubagentStart hook additional context: ");
+    expect(JSON.stringify(first)).toContain("SYNTHETIC-NEXT find where the retry budget is set");
+    expect(JSON.stringify(first)).not.toContain("Memchor is local working memory shared by the coding agents in this repository.");
+    // Its read-only Memchor call ran without --allowedTools: the PreToolUse auto-allow applies inside the sub-agent.
+    const parentSession = (JSON.parse(run.stdout) as { session_id: string }).session_id;
+    const subagents = join(sandbox.configDir, "projects", repo.replaceAll("/", "-"), parentSession, "subagents");
+    const [transcript] = readdirSync(subagents).filter((f) => f.endsWith(".jsonl"));
+    expect(readFileSync(join(subagents, transcript ?? ""), "utf8")).toContain('\\"items\\"');
+
+    // Work out: a new session recalls what only the sub-agent's command printed, as the sub-agent's.
+    const after = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      after.close();
+    });
+    expect(after.status().hookFailures).toEqual([]);
+    const found = after.recall({ query: "SYNTHETIC-FINDING retry budget", maxTokens: 8_000 }).items.filter((i) => i.excerpt.includes("SYNTHETIC-FINDING"));
+    expect(found.map((i) => [i.attribution, i.source?.agentType])).toEqual([["direct_observation", "general-purpose"]]);
+    // The report is one observation, the sub-agent's: not also the parent's Agent result, a launch receipt, or the task-notification.
+    const reports = after.recall({ query: "SYNTHETIC-REPORT budget", maxTokens: 8_000 }).items.filter((i) => i.excerpt.includes("SYNTHETIC-REPORT"));
+    expect(reports.map((i) => [i.source?.agentType, i.corroboration])).toEqual([["general-purpose", { independentRoots: 1, records: 1 }]]);
+    expect(after.recall({ query: "Async agent launched", maxTokens: 8_000 }).items.filter((i) => i.excerpt.includes("Async agent launched"))).toEqual([]);
+    const context = after.sessionStart()?.context ?? "";
+    const digest = context.split("User prompts:\n")[1]?.split("\n") ?? [];
+    expect(digest.slice(0, digest.findIndex((line) => !line.startsWith("- ")))).toEqual(["- SYNTHETIC-PROMPT where is the retry budget set? Use a helper."]);
+    expect(context).toMatch(/Commands: .*✓ echo SYNTHETIC-FINDING retry budget lives in src\/retry\.ts/);
+  }, 120_000);
 });

@@ -126,8 +126,11 @@ describe("a sub-agent's work is kept under the session that started it", () => {
     expect(kept.map((r) => [r.source?.transcriptId, r.attribution])).toEqual([[PARENT, "direct_observation"]]);
   });
 
-  test("in the background, neither the launch receipt nor the host's task-notification is stored; the report comes from the sub-agent's transcript", () => {
-    const s = delegated({ background: true });
+  test("in the background, neither the launch receipt nor the host's task-notification is stored, even when the parent stops before the sub-agent's transcript is written; the report comes from that transcript", () => {
+    const s = delegated({ background: true, subagent: false });
+    // Pinned: at the parent's first Stop a background sub-agent's transcript is not on disk yet.
+    s.open().endTurn({ transcriptPath: s.parent });
+    installSubagent(s.config, { cwd: s.repo, sessionId: PARENT, agentId: AGENT, toolUseId: "toolu_agent_1", at: new Date(), prompt: SUBAGENT_PROMPT, command: "grep -rn budget src", output: FINDING, report: REPORT });
     s.open().endTurn({ transcriptPath: s.parent });
     const memory = s.open();
     expect(recalled(memory, "Async agent launched successfully", "Async agent launched")).toEqual([]);
