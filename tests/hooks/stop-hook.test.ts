@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
@@ -89,5 +90,50 @@ describe("memchor hook stop --import (Claude Code payload on stdin)", () => {
     expect(run.stderr).toMatch(/^memchor hook stop: storage_/);
     expect(run.ms).toBeLessThan(5_000);
     expect(open(env).status().captureFailures.map((f) => f.code)).toEqual([expect.stringMatching(/^storage_/)]);
+  });
+});
+
+describe("memchor hook session-start (Claude Code payload on stdin)", () => {
+  function sessionStartHook(env: Env, stdin: string) {
+    const run = spawnSync(process.execPath, [CLI, "hook", "session-start", "--host", "claude-code"], {
+      cwd: env.repo,
+      input: stdin,
+      encoding: "utf8",
+      timeout: 20_000,
+      env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+    });
+    return { code: run.status, stdout: run.stdout, stderr: run.stderr };
+  }
+  const start = (env: Env, sessionId: string) => JSON.stringify({ session_id: sessionId, transcript_path: join(env.config, "projects", "x", `${sessionId}.jsonl`), cwd: env.repo, hook_event_name: "SessionStart", source: "startup" });
+
+  test("prints Claude Code's SessionStart JSON: context for the model, a notice for the user", () => {
+    const env = approvedRepo();
+    const memory = open(env);
+    memory.checkpoint({ expectedRevision: 0, goal: "Stop double charges", status: "Key drafted", nextSteps: ["Wire the key into charge()"] });
+    memory.close();
+    const run = sessionStartHook(env, start(env, "5e550000-0000-4000-8000-0000000000e1"));
+    expect(run).toMatchObject({ code: 0, stderr: "" });
+    const output = JSON.parse(run.stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string }; systemMessage: string };
+    expect(Object.keys(output).sort()).toEqual(["hookSpecificOutput", "systemMessage"]);
+    expect(output.hookSpecificOutput.hookEventName).toBe("SessionStart");
+    expect(output.hookSpecificOutput.additionalContext).toContain("Wire the key into charge()");
+    expect(output.systemMessage).toMatch(/^◪ memchor · checkpoint r1 loaded/);
+  });
+
+  test("the session it binds carries Claude Code's session id", () => {
+    const env = approvedRepo();
+    sessionStartHook(env, start(env, "5e550000-0000-4000-8000-0000000000e2"));
+    const db = new Database(open(env).status().storage.dbPath ?? "", { readonly: true });
+    try {
+      expect(db.prepare("SELECT host, host_session_id FROM sessions WHERE host_session_id IS NOT NULL").all()).toEqual([{ host: "claude-code", host_session_id: "5e550000-0000-4000-8000-0000000000e2" }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a payload it cannot use prints nothing and records the failure", () => {
+    const env = approvedRepo();
+    expect(sessionStartHook(env, "{}")).toMatchObject({ code: 0, stdout: "" });
+    expect(open(env).status().captureFailures.map((f) => [f.event, f.code])).toEqual([["session-start", "invalid_input"]]);
   });
 });

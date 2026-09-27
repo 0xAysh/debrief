@@ -47,7 +47,9 @@ import {
 } from "./integrity/preferences.js";
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
-import { type CaptureFailure, recentCaptureFailures } from "./import/capture-failures.js";
+import { PROTOCOL } from "./protocol.js";
+import { renderSessionStart, type SessionStart, unreadableSessionStart } from "./retrieval/session-context.js";
+import { type CaptureFailure, recordCaptureFailure, recentCaptureFailures } from "./import/capture-failures.js";
 import { type CaptureResult, type ImportStatus, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
 import { type Citation, citationsFor, importedFrom, type ImportedSource, independentRoots, linksOf } from "./integrity/provenance.js";
 import {
@@ -116,6 +118,7 @@ import { appendRecord, recordFields } from "./storage/records.js";
 export type { ImportedSource, Citation } from "./integrity/provenance.js";
 export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
 export type { CaptureFailure } from "./import/capture-failures.js";
+export type { SessionStart } from "./retrieval/session-context.js";
 export type { CaptureResult, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
 export type { CandidateSignal, ResolutionBasis, ScopeAmbiguity, WorkstreamCandidate } from "./bootstrap/workstream-resolution.js";
@@ -532,6 +535,13 @@ export interface Memory {
    */
   captureTurn(input: CaptureTurnInput): CaptureResult;
   /**
+   * What a session-start hook injects: bootstrap (binding this session, with the host's session
+   * id when given, and catching up on this repository's transcripts), rendered as text for the
+   * model plus one line for the user. Never throws for storage: memory that cannot be read
+   * becomes context saying so, and a capture failure on record.
+   */
+  sessionStart(input: { source?: string; hostSessionId?: string }): SessionStart;
+  /**
    * Appends one attributed record with provenance links and external references. A
    * `preference` is not stored: it becomes a question for the user (see `settlePreference`).
    */
@@ -580,6 +590,9 @@ export interface Memory {
  * repository still gets a working `status` and a clear `scope_unresolved` elsewhere.
  * `status` and `checkIntegrity` only read; every other operation binds scope first.
  */
+/** The pack's share of session-start context; the protocol and preferences take the rest. */
+const SESSION_PACK_BYTES = 6_000;
+
 export function openMemory(options: OpenMemoryOptions): Memory {
   return new LocalMemory(options);
 }
@@ -740,6 +753,17 @@ class LocalMemory implements Memory {
       const location = this.bound?.location ?? locateWorkspace(this.cwd, this.home);
       return this.importer.capture(location, () => this.workspaceDb(location), parsed.transcriptPath, parsed.maxMs);
     });
+  }
+
+  sessionStart(input: { source?: string; hostSessionId?: string }): SessionStart {
+    try {
+      const boot = this.bootstrap({ maxBytes: SESSION_PACK_BYTES, ...(input.hostSessionId === undefined ? {} : { hostSessionId: input.hostSessionId }) });
+      return renderSessionStart(boot, { protocol: PROTOCOL, failures: recentCaptureFailures(this.home), now: new Date() });
+    } catch (error) {
+      if (!(error instanceof MemchorError) || !error.code.startsWith("storage_")) throw error;
+      recordCaptureFailure(this.home, { host: this.host, event: "session-start", code: error.code, message: error.message });
+      return unreadableSessionStart(error.code);
+    }
   }
 
   recall(input: RecallInput = {}): ContextPack {

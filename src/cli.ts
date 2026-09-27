@@ -17,6 +17,7 @@ const USAGE = `Usage:
                                                       Serve MCP over stdio (started by the agent host)
   memchor hook stop --import --host ${TRANSCRIPT_HOSTS.join("|")}
                                                       Capture the session's latest turn (run by the host's Stop hook; payload on stdin)
+  memchor hook session-start --host claude-code        Print session-start context (run by the host's SessionStart hook; payload on stdin)
   memchor diag status                                 Runtime, storage and scope health
   memchor diag records [--query <text>] [--kind <k>]  List eligible records for this worktree
   memchor diag reindex                                Rebuild the search index from canonical records

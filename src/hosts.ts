@@ -1,6 +1,7 @@
 import { claudeCodeAdapter } from "./import/adapters/claude.js";
 import { codexAdapter } from "./import/adapters/codex.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
+import type { SessionStart } from "./retrieval/session-context.js";
 
 /**
  * Everything Memchor knows about each agent host, in one place: the memory module picks the
@@ -27,12 +28,29 @@ export interface HostDescriptor {
    * worktree).
    */
   sessionMetaKey: string | null;
+  /**
+   * How the host's hooks take Memchor's output, or null where Memchor has no driven evidence
+   * for them yet (then `memory_bootstrap` is the path). Each host validates this differently
+   * (Codex rejects unknown keys), so the shape lives here, per host.
+   */
+  hooks: HookOutput | null;
 }
+
+export interface HookOutput {
+  /** Stdout for a session-start hook: context for the model, and the one-line notice for the user. */
+  sessionStart(start: SessionStart): string;
+}
+
+/** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts). */
+const CLAUDE_CODE_HOOKS: HookOutput = {
+  sessionStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: start.context }, systemMessage: start.notice }),
+};
 
 export const HOSTS = {
   "claude-code": {
     transcripts: (paths) => claudeCodeAdapter(paths.claudeConfigDir === undefined ? {} : { configDir: paths.claudeConfigDir }),
     sessionMetaKey: null,
+    hooks: CLAUDE_CODE_HOOKS,
   },
   codex: {
     transcripts: (paths) => codexAdapter(paths.codexHome === undefined ? {} : { codexHome: paths.codexHome }),
@@ -41,9 +59,10 @@ export const HOSTS = {
     // live session and the thread's imported rollout the same session for workstream
     // resolution (step 1). `initialize` carries no such id.
     sessionMetaKey: "threadId",
+    hooks: null,
   },
-  pi: { transcripts: null, sessionMetaKey: null },
-  unknown: { transcripts: null, sessionMetaKey: null },
+  pi: { transcripts: null, sessionMetaKey: null, hooks: null },
+  unknown: { transcripts: null, sessionMetaKey: null, hooks: null },
 } as const satisfies Record<string, HostDescriptor>;
 
 export type HostId = keyof typeof HOSTS;
