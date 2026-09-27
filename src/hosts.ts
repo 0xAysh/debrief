@@ -1,7 +1,7 @@
 import { claudeCodeAdapter } from "./import/adapters/claude.js";
 import { codexAdapter } from "./import/adapters/codex.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
-import type { SessionStart, TurnEnd } from "./retrieval/session-context.js";
+import type { SessionStart, SubagentStart, TurnEnd } from "./retrieval/session-context.js";
 
 /**
  * Everything Memchor knows about each agent host, in one place: the memory module picks the
@@ -57,6 +57,8 @@ export interface HostDescriptor {
 export interface HookOutput {
   /** Stdout for a session-start hook: context for the model, and the one-line notice for the user. */
   sessionStart(start: SessionStart): string;
+  /** Stdout for a sub-agent-start hook: context for the sub-agent's model. */
+  subagentStart(start: SubagentStart): string;
   /** Stdout for a Stop hook: a request that the agent continue (the nudge), and the user's line; empty for neither. */
   stop(end: TurnEnd): string;
   /** Stdout for a prompt-submit hook: one line of context for the agent. */
@@ -65,9 +67,11 @@ export interface HookOutput {
   allowTool(notice: string | null): string;
 }
 
-/** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts). */
+/** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts, tests/hooks/claude-subagents.test.ts). */
 const CLAUDE_CODE_HOOKS: HookOutput = {
   sessionStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: start.context }, systemMessage: start.notice }),
+  // Only additionalContext reaches the sub-agent; plain stdout does not (tests/hooks/claude-subagents.test.ts).
+  subagentStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: start.context } }),
   stop: (end) =>
     end.nudge === null && end.notice === null
       ? ""

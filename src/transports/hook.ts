@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { MemchorError } from "../errors.js";
-import { HOOK_HOSTS, type HookOutput, hostDescriptor } from "../hosts.js";
+import { HOOK_HOSTS, hostDescriptor } from "../hosts.js";
 import { recordHookFailure } from "../import/hook-failures.js";
 import { type Memory, openMemory } from "../memory.js";
 import { unreadableSessionStart } from "../retrieval/session-context.js";
@@ -40,6 +40,11 @@ const SessionStartPayload = z.looseObject({
   session_id: z.string().min(1).max(LIMITS.hostSessionIdChars),
   hook_event_name: z.literal("SessionStart"),
 });
+const SubagentStartPayload = z.looseObject({
+  // The parent's session: a sub-agent runs inside it.
+  session_id: z.string().min(1).max(LIMITS.hostSessionIdChars),
+  hook_event_name: z.literal("SubagentStart"),
+});
 const UserPromptSubmitPayload = z.looseObject({
   prompt: z.string(),
   hook_event_name: z.literal("UserPromptSubmit"),
@@ -63,7 +68,8 @@ export function runHook(run: HookRun): HookOutcome {
     recordHookFailure(run.home, { host, event, cwd: run.cwd, code, message });
     return { stdout, stderr: `memchor hook ${event}: ${code}: ${message}\n` };
   };
-  let output: HookOutput | null = null;
+  // What a start hook prints when it fails unexpectedly: that memory was not loaded, never that there is none.
+  let unreadable: ((code: string) => string) | null = null;
   try {
     const { values, positionals } = parseArgs({ args: run.args, options: { host: { type: "string" } }, allowPositionals: true, strict: true });
     event = positionals[0] ?? "unknown";
@@ -86,11 +92,18 @@ export function runHook(run: HookRun): HookOutcome {
       return { stdout: hooks.stop(ended), stderr: ended.failure === null ? "" : `memchor hook stop: ${ended.failure.code}: ${ended.failure.message}\n` };
     }
     if (event === "session-start") {
-      output = hooks;
+      unreadable = (code) => hooks.sessionStart(unreadableSessionStart(code));
       const start = payload(SessionStartPayload);
       if (start === null) return fail("invalid_input", "the hook payload is not a SessionStart payload with session_id");
       const rendered = withMemory(run, host, (memory) => memory.sessionStart({ hostSessionId: start.session_id }));
       return rendered === null ? QUIET : { stdout: hooks.sessionStart(rendered), stderr: "" };
+    }
+    if (event === "subagent-start") {
+      unreadable = (code) => hooks.subagentStart({ context: unreadableSessionStart(code).context });
+      const start = payload(SubagentStartPayload);
+      if (start === null) return fail("invalid_input", "the hook payload is not a SubagentStart payload with session_id");
+      const rendered = withMemory(run, host, (memory) => memory.subagentStart({ hostSessionId: start.session_id }));
+      return rendered === null ? QUIET : { stdout: hooks.subagentStart(rendered), stderr: "" };
     }
     if (event === "user-prompt-submit") {
       const submitted = payload(UserPromptSubmitPayload);
@@ -112,8 +125,7 @@ export function runHook(run: HookRun): HookOutcome {
   } catch (error) {
     const code = error instanceof MemchorError ? error.code : "internal";
     const message = error instanceof Error ? error.message : String(error);
-    // A session start that failed still tells the model memory was not loaded, never that there is none.
-    return fail(code, message, output === null ? "" : output.sessionStart(unreadableSessionStart(code)));
+    return fail(code, message, unreadable === null ? "" : unreadable(code));
   }
 }
 
