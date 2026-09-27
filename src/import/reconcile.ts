@@ -201,6 +201,9 @@ interface CallMeta {
 
 class Contended extends Error {}
 
+/** Thrown out of a batch (rolling it back) when the transcript was made private after the import began. */
+class MadePrivate extends Error {}
+
 /** Thrown out of a transcript's first batch (rolling it back) when its workstream is ambiguous. */
 class Held extends Error {
   constructor(readonly ambiguity: ScopeAmbiguity) {
@@ -465,6 +468,9 @@ export class TranscriptImporter {
       let next: { offset: number; state: CursorRow["state"]; finished: boolean };
       try {
         next = writeTransaction(db, () => {
+          // Checked again under the write lock: "don't remember this session" in another process
+          // may have committed between two batches, and nothing may be imported after it.
+          if (isPrivateTranscript(db, this.host, file.transcriptId)) throw new MadePrivate();
           const now = new Date().toISOString();
           const live = readCursor(db, this.host, file.transcriptId);
           const liveKey = live === undefined ? null : { offset: live.byte_offset, epoch: live.epoch };
@@ -554,6 +560,7 @@ export class TranscriptImporter {
         });
       } catch (error) {
         if (error instanceof Contended) return "contended";
+        if (error instanceof MadePrivate) return "done";
         if (error instanceof Held) {
           const candidates = error.ambiguity.candidates.map((c) => c.workstreamId).join(", ");
           this.held.set(file.transcriptId, {
