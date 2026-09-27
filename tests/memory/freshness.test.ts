@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory, type PackItem } from "../../src/memory.js";
@@ -139,6 +139,73 @@ describe("local code freshness", () => {
     expect(item.freshness).toBe("unknown");
     expect(item.externalRefs.map((ref) => ref.reason)).toEqual(["outside_worktree", "outside_worktree"]);
     expect(item.warning).toMatch(/read the current file/i);
+  });
+
+  test("a reference through a symlink that leaves the worktree is never read", () => {
+    const repo = repoWithGateway();
+    const outside = tempDir();
+    writeFileSync(join(outside, "notes.txt"), "outside the repository\n");
+    symlinkSync(outside, join(repo, "linked-dir"));
+    symlinkSync(join(outside, "notes.txt"), join(repo, "linked-file.txt"));
+    const memory = open(repo, tempDir());
+    const { recordId } = memory.record({
+      kind: "note",
+      body: "the vendored notes describe the retry budget",
+      attribution: "agent_inference",
+      externalRefs: [
+        { kind: "code", locator: "linked-dir/notes.txt" },
+        { kind: "document", locator: "linked-file.txt" },
+      ],
+    });
+    const item = recallItem(memory, recordId);
+    expect(item.externalRefs.map((ref) => [ref.freshness, ref.reason])).toEqual([
+      ["unknown", "outside_worktree"],
+      ["unknown", "outside_worktree"],
+    ]);
+    // Never fingerprinted at record time either.
+    for (const ref of item.externalRefs) expect(ref).not.toHaveProperty("observedAt");
+  });
+
+  test("a reference into Git's own directory is never read", () => {
+    const repo = repoWithGateway();
+    const memory = open(repo, tempDir());
+    const { recordId } = memory.record({
+      kind: "note",
+      body: "the remote is configured in git config",
+      attribution: "agent_inference",
+      externalRefs: [
+        { kind: "code", locator: ".git/config" },
+        { kind: "code", locator: "src/../.git/HEAD" },
+      ],
+    });
+    const item = recallItem(memory, recordId);
+    expect(item.externalRefs.map((ref) => [ref.freshness, ref.reason])).toEqual([
+      ["unknown", "outside_worktree"],
+      ["unknown", "outside_worktree"],
+    ]);
+    for (const ref of item.externalRefs) expect(ref).not.toHaveProperty("observedAt");
+  });
+
+  test("a sensitive file inside the worktree is never fingerprinted, so it is never reported current", () => {
+    const repo = repoWithGateway();
+    writeFile(repo, ".env", "STRIPE_KEY=sk_live_not_a_real_key\n");
+    writeFile(repo, "deploy/id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----\n");
+    const memory = open(repo, tempDir());
+    const { recordId } = memory.record({
+      kind: "note",
+      body: "the gateway key comes from the environment",
+      attribution: "agent_inference",
+      externalRefs: [
+        { kind: "code", locator: ".env" },
+        { kind: "code", locator: "deploy/id_ed25519" },
+      ],
+    });
+    const item = recallItem(memory, recordId);
+    for (const ref of item.externalRefs) {
+      expect(ref).not.toHaveProperty("observedAt");
+      expect(ref).not.toHaveProperty("observedHash");
+      expect(ref.freshness).not.toBe("current");
+    }
   });
 
   test("a caller-pinned commit this repository does not have is unknown", () => {
