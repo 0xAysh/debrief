@@ -39,6 +39,10 @@ const SessionStartPayload = z.looseObject({
   session_id: z.string().min(1).max(LIMITS.hostSessionIdChars),
   hook_event_name: z.literal("SessionStart"),
 });
+const UserPromptSubmitPayload = z.looseObject({
+  prompt: z.string(),
+  hook_event_name: z.literal("UserPromptSubmit"),
+});
 
 const QUIET: HookOutcome = { stdout: "", stderr: "" };
 
@@ -78,6 +82,12 @@ export function runHook(run: HookRun): HookOutcome {
       if (start === null) return fail("invalid_input", "the hook payload is not a SessionStart payload with session_id");
       const rendered = withMemory(run, host, (memory) => memory.sessionStart({ hostSessionId: start.session_id }));
       return rendered === null ? QUIET : { stdout: hooks.sessionStart(rendered), stderr: "" };
+    }
+    if (event === "user-prompt-submit" && values.import !== true) {
+      const submitted = payload(UserPromptSubmitPayload);
+      if (submitted === null) return fail("invalid_input", "the hook payload is not a UserPromptSubmit payload with prompt");
+      const hint = withMemory(run, host, (memory) => memory.promptHint({ prompt: submitted.prompt }));
+      return hint === null ? QUIET : { stdout: hooks.promptHint(hint), stderr: "" };
     }
     return fail("invalid_input", `unknown hook: ${run.args.join(" ")}`);
   } catch (error) {

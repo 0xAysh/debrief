@@ -39,11 +39,14 @@ export interface HostDescriptor {
 export interface HookOutput {
   /** Stdout for a session-start hook: context for the model, and the one-line notice for the user. */
   sessionStart(start: SessionStart): string;
+  /** Stdout for a prompt-submit hook: one line of context for the agent. */
+  promptHint(line: string): string;
 }
 
 /** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts). */
 const CLAUDE_CODE_HOOKS: HookOutput = {
   sessionStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: start.context }, systemMessage: start.notice }),
+  promptHint: (line) => JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: line } }),
 };
 
 export const HOSTS = {

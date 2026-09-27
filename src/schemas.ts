@@ -327,6 +327,12 @@ export const CaptureTurnInput = z.strictObject({
 });
 export type CaptureTurnInput = z.input<typeof CaptureTurnInput>;
 
+/** A prompt the user just submitted, from a host hook (not an agent tool). */
+export const PromptHintInput = z.strictObject({
+  prompt: z.string().max(1_000_000),
+});
+export type PromptHintInput = z.input<typeof PromptHintInput>;
+
 /** A session start from a host hook (not an agent tool). */
 export const SessionStartInput = z.strictObject({
   /** The host's id for the session starting (Claude Code's `session_id`), recorded on the bound session. */

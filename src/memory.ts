@@ -44,6 +44,8 @@ import {
   reaskAtSessionStart,
   type PreferenceScope,
   settleCandidate,
+  PREFERENCE_HINT,
+  statesLastingPreference,
 } from "./integrity/preferences.js";
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
@@ -90,6 +92,7 @@ import {
   BootstrapInput,
   CheckpointInput,
   CaptureTurnInput,
+  PromptHintInput,
   ContinueImportInput,
   SessionStartInput,
   effectiveBudget,
@@ -549,6 +552,12 @@ export interface Memory {
    */
   sessionStart(input?: SessionStartInput): SessionStart | null;
   /**
+   * One line for the agent when the prompt the user just submitted states a lasting preference
+   * (a prompt-submit hook), else null; null outside a Git worktree. No model, no network, no
+   * database: the agent decides whether to propose it.
+   */
+  promptHint(input: PromptHintInput): string | null;
+  /**
    * Appends one attributed record with provenance links and external references. A
    * `preference` is not stored: it becomes a question for the user (see `settlePreference`).
    */
@@ -799,6 +808,20 @@ class LocalMemory implements Memory {
         recordHookFailure(this.home, { host: this.host, event: "session-start", cwd: this.cwd, code: error.code, message: error.message });
         return unreadableSessionStart(error.code);
       }
+    });
+  }
+
+  promptHint(input: PromptHintInput): string | null {
+    return this.guard(() => {
+      const parsed = parse(PromptHintInput, input);
+      if (!statesLastingPreference(parsed.prompt)) return null;
+      try {
+        locateWorkspace(this.cwd, this.home);
+      } catch (error) {
+        if (error instanceof MemchorError && error.code === "scope_unresolved") return null;
+        throw error;
+      }
+      return PREFERENCE_HINT;
     });
   }
 

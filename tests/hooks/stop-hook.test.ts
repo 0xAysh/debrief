@@ -151,3 +151,28 @@ describe("memchor hook session-start (Claude Code payload on stdin)", () => {
     expect(open(env).status().hookFailures.map((f) => [f.event, f.code])).toEqual([["session-start", "invalid_input"]]);
   });
 });
+
+/** Runs `memchor hook <event> --host claude-code` with a payload on stdin, as Claude Code would. */
+function hook(env: Env, args: string[], payload: object) {
+  const run = spawnSync(process.execPath, [CLI, "hook", ...args, "--host", "claude-code"], {
+    cwd: env.repo,
+    input: JSON.stringify({ session_id: "5e550000-0000-4000-8000-0000000000f1", transcript_path: join(env.config, "projects", "x", "5e550000-0000-4000-8000-0000000000f1.jsonl"), cwd: env.repo, permission_mode: "default", ...payload }),
+    encoding: "utf8",
+    timeout: 20_000,
+    env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+  });
+  return { code: run.status, stdout: run.stdout, stderr: run.stderr };
+}
+
+describe("memchor hook user-prompt-submit (Claude Code payload on stdin)", () => {
+  test("lasting-preference wording adds one line of context for the agent; anything else prints nothing", () => {
+    const env = approvedRepo();
+    const hinted = hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: "From now on, use pnpm." });
+    expect(hinted).toMatchObject({ code: 0, stderr: "" });
+    expect(JSON.parse(hinted.stdout)).toEqual({
+      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: expect.stringMatching(/^Memchor: the user's wording may state a lasting preference\. [^\n]+$/) as unknown },
+    });
+    expect(hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: "Fix the retry loop." })).toMatchObject({ code: 0, stdout: "", stderr: "" });
+    expect(open(env).status().hookFailures).toEqual([]);
+  });
+});
