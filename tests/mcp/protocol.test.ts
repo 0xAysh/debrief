@@ -153,10 +153,12 @@ describe("MCP protocol surface", () => {
   test("malformed and oversized requests get error replies, store nothing, and the server keeps answering", async () => {
     const child = spawn(process.execPath, [CLI, "mcp", "--host", "claude-code"], {
       cwd: initRepo(),
-      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: tempDir() },
+      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: tempDir(), CLAUDE_CONFIG_DIR: tempDir(), CODEX_HOME: tempDir() },
       stdio: ["pipe", "pipe", "pipe"],
     });
     const replies = new Map<number | null, Reply>();
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
     let buffered = "";
     child.stdout.on("data", (chunk: Buffer) => {
       buffered += chunk.toString();
@@ -211,6 +213,9 @@ describe("MCP protocol surface", () => {
     expect((await reply(9)).result?.isError).toBeUndefined();
     const recalled = (await reply(10)).result?.structuredContent as { items: { excerpt: string }[] };
     expect(recalled.items.map((item) => item.excerpt)).toEqual(["the server still records after all of that"]);
+
+    // The server's log (stderr) names what was wrong, never the content it was sent.
+    for (const content of ["typed wrong", "x".repeat(64), "y".repeat(64), "not JSON"]) expect(stderr).not.toContain(content);
 
     child.stdin.end();
     expect(await exited).toBe(0);

@@ -4,6 +4,7 @@
 import { appendFileSync } from "node:fs";
 import dns from "node:dns";
 import http from "node:http";
+import http2 from "node:http2";
 import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
@@ -21,5 +22,6 @@ tls.connect = blocked("tls.connect");
 http.request = http.get = blocked("http.request");
 https.request = https.get = blocked("https.request");
 for (const fn of ["lookup", "resolve", "resolve4", "resolve6", "resolveAny"]) dns[fn] = blocked(`dns.${fn}`);
-dns.promises.lookup = blocked("dns.promises.lookup");
+for (const fn of ["lookup", "resolve", "resolve4", "resolve6", "resolveAny"]) dns.promises[fn] = blocked(`dns.promises.${fn}`);
+http2.connect = blocked("http2.connect");
 globalThis.fetch = blocked("fetch");

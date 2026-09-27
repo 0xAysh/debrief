@@ -25,7 +25,7 @@ function diagnostics(home: string): Map<string, string> {
   return files;
 }
 
-describe("hook diagnostics never repeat the payload", () => {
+describe("hook logs never repeat the payload", () => {
   test("payloads a hook cannot use leave no trace of their content in the failure log, run records or stderr", () => {
     const repo = initRepo({ branch: "fix/double-charge" });
     const home = tempDir();

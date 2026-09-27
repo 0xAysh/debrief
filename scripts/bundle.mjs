@@ -41,7 +41,7 @@ const sections = [...packages]
     const file = readdirSync(dir).find((entry) => /^licen[cs]e(\.(md|txt))?$/i.test(entry));
     if (file === undefined) throw new Error(`${name} is bundled into dist/debrief.mjs but has no license file to carry in THIRD_PARTY_NOTICES.md`);
     const text = readFileSync(join(dir, file), "utf8").trim();
-    return `## ${name}@${manifest.version} (${manifest.license})\n\n\`\`\`text\n${text}\n\`\`\`\n`;
+    return `## ${name}@${manifest.version} (${manifest.license ?? "license below"})\n\n\`\`\`text\n${text}\n\`\`\`\n`;
   });
 
 writeFileSync(
