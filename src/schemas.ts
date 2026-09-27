@@ -333,6 +333,13 @@ export const PromptHintInput = z.strictObject({
 });
 export type PromptHintInput = z.input<typeof PromptHintInput>;
 
+/** A tool call the host is about to run, from a host's permission hook (not an agent tool). */
+export const ApproveToolInput = z.strictObject({
+  tool: z.string().min(1).max(256),
+  input: z.unknown(),
+});
+export type ApproveToolInput = z.input<typeof ApproveToolInput>;
+
 /** A session start from a host hook (not an agent tool). */
 export const SessionStartInput = z.strictObject({
   /** The host's id for the session starting (Claude Code's `session_id`), recorded on the bound session. */

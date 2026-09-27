@@ -43,6 +43,11 @@ const UserPromptSubmitPayload = z.looseObject({
   prompt: z.string(),
   hook_event_name: z.literal("UserPromptSubmit"),
 });
+const PreToolUsePayload = z.looseObject({
+  tool_name: z.string().min(1),
+  tool_input: z.unknown(),
+  hook_event_name: z.literal("PreToolUse"),
+});
 
 const QUIET: HookOutcome = { stdout: "", stderr: "" };
 
@@ -88,6 +93,12 @@ export function runHook(run: HookRun): HookOutcome {
       if (submitted === null) return fail("invalid_input", "the hook payload is not a UserPromptSubmit payload with prompt");
       const hint = withMemory(run, host, (memory) => memory.promptHint({ prompt: submitted.prompt }));
       return hint === null ? QUIET : { stdout: hooks.promptHint(hint), stderr: "" };
+    }
+    if (event === "pre-tool-use" && values.import !== true) {
+      const call = payload(PreToolUsePayload);
+      if (call === null) return fail("invalid_input", "the hook payload is not a PreToolUse payload with tool_name");
+      const approval = withMemory(run, host, (memory) => memory.approveTool({ tool: call.tool_name, input: call.tool_input }));
+      return approval === null ? QUIET : { stdout: hooks.allowTool(approval.notice), stderr: "" };
     }
     return fail("invalid_input", `unknown hook: ${run.args.join(" ")}`);
   } catch (error) {

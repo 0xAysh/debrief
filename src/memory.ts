@@ -93,6 +93,7 @@ import {
   CheckpointInput,
   CaptureTurnInput,
   PromptHintInput,
+  ApproveToolInput,
   ContinueImportInput,
   SessionStartInput,
   effectiveBudget,
@@ -558,6 +559,13 @@ export interface Memory {
    */
   promptHint(input: PromptHintInput): string | null;
   /**
+   * Whether a tool call the host is about to run may skip its permission prompt (a pre-tool
+   * hook): Memchor's own read-only calls, by exact server name. A notice for the user comes with
+   * a recall. Null leaves the call to the host's normal approval: every write, a bootstrap
+   * carrying the user's consent answer, and any other tool.
+   */
+  approveTool(input: ApproveToolInput): { notice: string | null } | null;
+  /**
    * Appends one attributed record with provenance links and external references. A
    * `preference` is not stored: it becomes a question for the user (see `settlePreference`).
    */
@@ -613,6 +621,8 @@ export function openMemory(options: OpenMemoryOptions): Memory {
 // ───────────────────────────── Implementation ─────────────────────────────
 
 const OPERATIONS = Object.keys(OPERATION_SCHEMAS);
+/** Memchor's tools as hosts name them: `mcp__memchor__…`, or the plugin's `mcp__plugin_memchor_memchor__…`. */
+const MEMCHOR_TOOL_NAME = /^mcp__(?:plugin_memchor_)?memchor__(memory_[a-z_]+)$/;
 /** A result before `idempotent` adds `replayed` (distributes over union members). */
 type Unreplayed<T> = T extends unknown ? Omit<T, "replayed"> : never;
 const INSPECT_BODY_BYTES = 4_096;
@@ -822,6 +832,18 @@ class LocalMemory implements Memory {
         throw error;
       }
       return PREFERENCE_HINT;
+    });
+  }
+
+  approveTool(input: ApproveToolInput): { notice: string | null } | null {
+    return this.guard(() => {
+      const parsed = parse(ApproveToolInput, input);
+      const operation = MEMCHOR_TOOL_NAME.exec(parsed.tool)?.[1];
+      const args: Record<string, unknown> = typeof parsed.input === "object" && parsed.input !== null ? (parsed.input as Record<string, unknown>) : {};
+      if (operation === undefined || !readOnlyCall(operation, args)) return null;
+      if (operation !== "memory_recall") return { notice: null };
+      const query = typeof args["query"] === "string" ? args["query"].replace(/\s+/g, " ").trim() : "";
+      return { notice: query === "" ? "◪ memchor · recalling recent memory" : `◪ memchor · recalling: ${query.length > 80 ? `${query.slice(0, 79)}…` : query}` };
     });
   }
 
@@ -1574,6 +1596,22 @@ function withHeadCommit(applicability: Applicability, worktree: string): Applica
 function given<T>(value: T | null | undefined): T {
   if (value === undefined || value === null) throw new Error("a field the schema requires is missing after parsing");
   return value;
+}
+
+/** Calls that change nothing the user must approve: reads, and a bootstrap without a consent answer. */
+function readOnlyCall(operation: string, input: Record<string, unknown>): boolean {
+  switch (operation) {
+    case "memory_bootstrap":
+      return !Object.hasOwn(input, "importChoice");
+    case "memory_recall":
+    case "memory_read":
+    case "memory_status":
+      return true;
+    case "memory_manage":
+      return input["action"] === "inspect";
+    default:
+      return false;
+  }
 }
 
 /** Every operation's input, after the user's `<private>` spans are gone: nothing downstream sees them. */

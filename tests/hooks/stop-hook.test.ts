@@ -176,3 +176,20 @@ describe("memchor hook user-prompt-submit (Claude Code payload on stdin)", () =>
     expect(open(env).status().hookFailures).toEqual([]);
   });
 });
+
+describe("memchor hook pre-tool-use (Claude Code payload on stdin)", () => {
+  const call = (tool_name: string, tool_input: object) => ({ hook_event_name: "PreToolUse", tool_name, tool_input, tool_use_id: "toolu_01" });
+
+  test("a read-only Memchor call is allowed, a recall with a notice for the user; a write prints nothing", () => {
+    const env = approvedRepo();
+    expect(JSON.parse(hook(env, ["pre-tool-use"], call("mcp__memchor__memory_read", { recordId: "rec_0123456789abcdef0123456789abcdef" })).stdout)).toEqual({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
+    });
+    expect(JSON.parse(hook(env, ["pre-tool-use"], call("mcp__memchor__memory_recall", { query: "retry policy" })).stdout)).toEqual({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
+      systemMessage: "◪ memchor · recalling: retry policy",
+    });
+    expect(hook(env, ["pre-tool-use"], call("mcp__memchor__memory_record", { kind: "note", body: "x", attribution: "agent_inference" }))).toMatchObject({ code: 0, stdout: "", stderr: "" });
+    expect(open(env).status().hookFailures).toEqual([]);
+  });
+});

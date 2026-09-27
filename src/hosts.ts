@@ -41,12 +41,15 @@ export interface HookOutput {
   sessionStart(start: SessionStart): string;
   /** Stdout for a prompt-submit hook: one line of context for the agent. */
   promptHint(line: string): string;
+  /** Stdout for a pre-tool hook that lets a call skip the permission prompt, with a notice for the user. */
+  allowTool(notice: string | null): string;
 }
 
 /** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts). */
 const CLAUDE_CODE_HOOKS: HookOutput = {
   sessionStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: start.context }, systemMessage: start.notice }),
   promptHint: (line) => JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: line } }),
+  allowTool: (notice) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" }, ...(notice === null ? {} : { systemMessage: notice }) }),
 };
 
 export const HOSTS = {
