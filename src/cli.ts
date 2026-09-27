@@ -15,10 +15,14 @@ import { runStdioServer } from "./transports/mcp.js";
 const USAGE = `Usage:
   memchor mcp [--host ${HOST_IDS.join("|")}]
                                                       Serve MCP over stdio (started by the agent host)
-  memchor hook stop --import --host ${HOOK_HOSTS.join("|")}
-                                                      Capture the session's latest turn (run by the host's Stop hook; payload on stdin)
+  memchor hook stop --host ${HOOK_HOSTS.join("|")}
+                                                      Capture the session's latest turn; ask for a stale checkpoint (the host's Stop hook; payload on stdin)
   memchor hook session-start --host ${HOOK_HOSTS.join("|")}
                                                       Print session-start context (run by the host's SessionStart hook; payload on stdin)
+  memchor hook user-prompt-submit --host ${HOOK_HOSTS.join("|")}
+                                                      Hint the agent when a prompt states a lasting preference (payload on stdin)
+  memchor hook pre-tool-use --host ${HOOK_HOSTS.join("|")}
+                                                      Let Memchor's read-only calls skip the permission prompt (payload on stdin)
   memchor diag status                                 Runtime, storage and scope health
   memchor diag records [--query <text>] [--kind <k>]  List eligible records for this worktree
   memchor diag reindex                                Rebuild the search index from canonical records

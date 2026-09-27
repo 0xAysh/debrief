@@ -59,6 +59,31 @@ export function claudeToolExchange(options: { cwd: string; sessionId: string; gi
 }
 
 /**
+ * One Claude Code 2.1.281 turn at `at` (newline-terminated lines): a typed prompt, optionally a
+ * `Bash` command or an `Edit` with its result, and a closing reply. Uuids derive from `n`, and
+ * `parentUuid` chains to `after` (the previous turn's last uuid, returned as `last`).
+ */
+export function claudeTurn(options: { cwd: string; sessionId: string; n: number; at: Date; prompt: string; command?: string; edit?: string; after?: string | null }): { lines: string; last: string } {
+  const uuid = (k: number) => `00000000-0000-4000-8000-${(options.n * 10 + k).toString().padStart(12, "0")}`;
+  const time = (ms: number) => new Date(options.at.getTime() + ms).toISOString();
+  const common = { isSidechain: false, userType: "external", entrypoint: "cli", cwd: options.cwd, sessionId: options.sessionId, version: "2.1.281", gitBranch: "fix/double-charge" };
+  const assistant = (k: number, content: object[]) => ({ ...common, parentUuid: uuid(k - 1), type: "assistant", uuid: uuid(k), timestamp: time(k * 100), message: { model: "claude-opus-5-5", id: `msg_${options.n}_${k}`, type: "message", role: "assistant", content, stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } });
+  const lines: object[] = [
+    { ...common, parentUuid: options.after ?? null, promptId: `p-${options.n}`, type: "user", message: { role: "user", content: options.prompt }, uuid: uuid(1), timestamp: time(0), permissionMode: "default", origin: { kind: "human" }, promptSource: "typed" },
+  ];
+  const tool = options.command !== undefined ? { name: "Bash", input: { command: options.command } } : options.edit !== undefined ? { name: "Edit", input: { file_path: options.edit, old_string: "a", new_string: "b" } } : null;
+  let k = 2;
+  if (tool !== null) {
+    const id = `toolu_${options.n}`;
+    lines.push(assistant(k, [{ type: "tool_use", id, ...tool }]));
+    lines.push({ ...common, parentUuid: uuid(k), type: "user", uuid: uuid(k + 1), timestamp: time((k + 1) * 100), message: { role: "user", content: [{ tool_use_id: id, type: "tool_result", content: [{ type: "text", text: "ok" }] }] } });
+    k += 2;
+  }
+  lines.push(assistant(k, [{ type: "text", text: `Done with turn ${options.n}.` }]));
+  return { lines: lines.map((line) => `${JSON.stringify(line)}\n`).join(""), last: uuid(k) };
+}
+
+/**
  * A synthetic history for load and interruption tests: `transcripts` sessions, each the
  * `basic.jsonl` conversation repeated `turns` times with unique event and tool ids (7 records
  * per turn).

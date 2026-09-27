@@ -27,6 +27,9 @@ The adapters contain no memory policy. Host differences outside the transcript f
 | `bootstrap({hostSessionId?, importChoice?, task?, workstream?, maxTokens?, maxBytes?})` | Binds scope (or returns `scope.ambiguity`), records an import choice if given, imports the current project's approved transcripts within `importBudgetMs` (default 3 s), and returns scope, `import` status (or the consent question), `recall({ maxTokens, maxBytes })`, and the `preferences` block. `workstream` (`<id>` or `"new"`) answers an ambiguity; `task` names the task explicitly |
 | `captureTurn({transcriptPath, maxMs?})` | Imports the one transcript a host's Stop hook names, after consent and only if the path is one of the host's transcripts (`fileAt`) recorded in this repository. Binds no session; creates no database without consent. Records a hook failure for storage errors and unimportable paths; skips (no consent, another repository, not a repository) are not failures. See [Host hooks](#host-hooks) |
 | `sessionStart({hostSessionId?})` | Bootstrap rendered as session-start text for a host hook, plus a one-line notice for the user; null outside a Git worktree. Memory that cannot be read yields context saying so, never empty memory. See [Host hooks](#host-hooks) |
+| `endTurn({transcriptPath, stopHookActive?, maxMs?})` | The Stop hook: `captureTurn`, then (unless `stopHookActive`) `nudge`, a request to update a checkpoint that fell five turns of work behind, and `notice`, the user's line: `saved turn (N events)`, or why the turn was not saved. See [Host hooks](#host-hooks) |
+| `promptHint({prompt})` | One line for the agent when a prompt states a lasting preference; null otherwise and outside a Git worktree. No database |
+| `approveTool({tool, input})` | `{notice}` when a call may skip the host's permission prompt (Memchor's read-only calls, by exact server name), else null. No database |
 | `continueImport({maxMs?})` | One bounded step of the remaining approved import (current project first, then other projects' own workspaces). The MCP server calls it between requests while alive. Not an agent tool |
 | `record({kind, body, attribution, …})` | Appends one record with its links and search chunks; `operationKey` makes it idempotent. `kind: "preference"` stores nothing: it returns a question for the user (see [Preferences](#preferences)) |
 | `settlePreference({candidateId, outcome})` | What happened when a preference question was put to the user directly: their answer, `cancelled`, or `unavailable`. Transports call it; it is not an agent tool |
@@ -212,6 +215,7 @@ Known Codex limits:
 
 | Content | Handling |
 |---|---|
+| `<private>…</private>` in any passage, and in every string an agent sends to an operation (before validation) | `[private]`, before any other rule; an unclosed tag runs to the end of the text |
 | Thinking, injected context (`isMeta`, non-human origin, `<system-reminder>`; Codex developer messages and contextual user blocks), attachments, metadata entries, images and audio | Excluded and counted |
 | File reads and edits (Read, Write, Edit, NotebookEdit; Codex `apply_patch`, `view_image`), and shell commands that only print files | Reference only: path as a code `externalRef`, no content |
 | Output of a call touching `.env`, keys, credential files | Withheld |
@@ -356,20 +360,28 @@ The host connections are pinned to the releases they were tested with: Claude Co
 Where a host runs lifecycle hooks, `memchor hook <event> --host <h>` is a second transport next to `memchor mcp`: it parses the host's payload from stdin, calls the memory module, and prints what the host should see. Only hosts with a non-null `hooks` entry in `src/hosts.ts` get hooks, and an entry is added only with driven tests against the pinned binary (`tests/hooks/`); today that is Claude Code 2.1.283. Codex hooks come with #29's third PR.
 
 ```text
-Stop          memchor hook stop --import      → captureTurn(transcript_path)      prints nothing
-SessionStart  memchor hook session-start      → sessionStart(session_id)          prints the host's JSON:
-                                                 bootstrap (catch-up import, binds this session with the host's id)
-                                                 → protocol · questions for the user · checkpoint (≤ 2,500 chars)
-                                                   · digest of turns after it · preferences · labelled items
-                                                 ≤ 9,000 characters (Claude Code caps hook context at 10,000)
-                                                 + a one-line notice for the user (never shown to the model)
+SessionStart      memchor hook session-start     → sessionStart(session_id)         prints the host's JSON:
+                                                   bootstrap (catch-up import, binds this session with the host's id)
+                                                   → protocol · questions for the user · checkpoint (≤ 2,500 chars)
+                                                     · digest of turns after it · preferences · labelled items
+                                                   ≤ 9,000 characters (Claude Code caps hook context at 10,000)
+                                                   + a one-line notice for the user (never shown to the model)
+UserPromptSubmit  memchor hook user-prompt-submit → promptHint(prompt)               one line of context, or nothing
+PreToolUse        memchor hook pre-tool-use       → approveTool(tool_name, input)    "allow" (+ a notice for a recall), or nothing
+  matcher mcp__(plugin_memchor_)?memchor__.*
+Stop              memchor hook stop               → endTurn(transcript_path,         {"decision":"block","reason":nudge}
+                                                     stop_hook_active)                + {"systemMessage": notice}, or nothing
 ```
 
 - **Never break the host.** A hook always exits 0. Anything that should have worked and did not goes to `$MEMCHOR_HOME/hook-failures.jsonl` (appended without a lock, rotated by an atomic rename; it lives outside SQLite because the failure may be that no database opens) and to stderr. `status().hookFailures` lists the newest; session start tells the user about the last day's failures in its repository.
 - **Fail open, never silently.** Memory that cannot be read says so ("Do not assume this project has none"); an empty workspace says it is empty. Outside a Git worktree hooks say nothing and record nothing.
+- **One synchronous Stop hook.** Capture, nudge and notice run in one process, so the nudge counts what the capture just imported (a separate async import would race it) and the notice says what this turn saved. Importing a turn adds about 6 ms to a process that runs anyway (115 ms with nothing new vs 121 ms, median of 8, 8,000-line transcript). `claude -p` kills async hooks at exit; a sync one also saves the last headless turn.
+- **The checkpoint nudge** (`checkpointNudge` in `integrity/checkpoints.ts`): the stop is blocked with a reason when this turn's capture carries the user prompts imported after the head checkpoint (or ever, with none) past a multiple of 5, and some tool call since changed a file (each host's `editTools` in `hosts.ts`) or ran a command. Counted before and after the capture, in the same process, so there is no stored state: a count that jumps from 4 to 6 still nudges, and a Stop with no new prompt (a background task waking the agent) never nudges twice. Never when `stop_hook_active`. Claude Code's `Stop hook feedback` transcript line is not a human prompt, so it is not counted. The reason asks for the next concrete step and why.
+- **The preference hint** (`statesLastingPreference` in `integrity/preferences.ts`): "from now on", "going forward", "I prefer", and at the start of a clause "in future", "remember to", or "always"/"never" as an instruction ("never mind" is not). Code blocks and `<private>` spans are not the user's wording. The agent judges; nothing is stored.
+- **Auto-allow** (`approveTool`): bootstrap, recall, read, status and `memory_manage` inspect, by exact server name. A bootstrap carrying `importChoice` (the user's consent answer), every write, and any other server's tool of the same name go to the host's normal approval.
 - **The digest** is built without a model from imported events: the newest session after the head checkpoint (from its first later prompt), or the last session when there is none, with its last three prompts, last reply, last commands (✓/✗ from the tool-error flag, not an exit code), files its tool calls named, and end time.
 - **Items are labelled** `kind · age · host · freshness` (the checkpoint `checkpoint rN · …`) by `src/retrieval/label.ts`, from fields the JSON pack also carries.
-- **Pinned host behaviour** (Claude Code 2.1.283): context arrives as a system message prefixed `SessionStart hook additional context:`, `systemMessage` never reaches the model, a transcript may lack a tool turn's last lines when Stop runs (the next capture or session start picks them up), and `claude -p` kills `async` hooks still running at exit. Research notes: `docs/research/hooks-2026-09-26.md`.
+- **Pinned host behaviour** (Claude Code 2.1.283): context arrives as a system message prefixed `SessionStart hook additional context:`, `systemMessage` never reaches the model, a transcript may lack a tool turn's last lines when Stop runs (the next capture or session start picks them up), `claude -p` kills `async` hooks still running at exit, a PreToolUse `"allow"` runs an MCP tool in `-p` without `--allowedTools`, and a Stop block reaches the model as a user message `Stop hook feedback:\n<reason>` (the next Stop has `stop_hook_active: true`). Research notes: `docs/research/hooks-2026-09-26.md`.
 
 ## Runtime gate
 

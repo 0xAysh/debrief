@@ -14,7 +14,7 @@ import {
 } from "./bootstrap/workstream-resolution.js";
 import { headCommit, locateWorkspace, registerWorkspace, resolveHome, type WorkspaceLocation } from "./bootstrap/workspace-resolution.js";
 import { type ErrorCode, MemchorError } from "./errors.js";
-import { headCheckpointRecordId, headRevision, publishCheckpoint } from "./integrity/checkpoints.js";
+import { checkpointNudge, headCheckpointRecordId, headRevision, publishCheckpoint } from "./integrity/checkpoints.js";
 import {
   type Affected,
   changeClaim,
@@ -44,13 +44,16 @@ import {
   reaskAtSessionStart,
   type PreferenceScope,
   settleCandidate,
+  PREFERENCE_HINT,
+  statesLastingPreference,
 } from "./integrity/preferences.js";
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
-import { sessionDigest } from "./retrieval/digest.js";
-import { renderSessionStart, type SessionStart, unreadableSessionStart } from "./retrieval/session-context.js";
+import { sessionDigest, workSince } from "./retrieval/digest.js";
+import { oneLine, renderSessionStart, type SessionStart, type TurnEnd, unreadableSessionStart, userNotice } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
+import { removePrivateEverywhere } from "./import/privacy.js";
 import { type CaptureResult, type CaptureSkip, type ImportStatus, readToolResultTitle, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
 import { type Citation, citationsFor, importedFrom, type ImportedSource, independentRoots, linksOf } from "./integrity/provenance.js";
 import {
@@ -89,6 +92,9 @@ import {
   BootstrapInput,
   CheckpointInput,
   CaptureTurnInput,
+  EndTurnInput,
+  PromptHintInput,
+  ApproveToolInput,
   ContinueImportInput,
   SessionStartInput,
   effectiveBudget,
@@ -120,7 +126,7 @@ import { appendRecord, recordFields } from "./storage/records.js";
 export type { ImportedSource, Citation } from "./integrity/provenance.js";
 export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
 export type { HookFailure } from "./import/hook-failures.js";
-export type { SessionStart } from "./retrieval/session-context.js";
+export type { SessionStart, TurnEnd } from "./retrieval/session-context.js";
 export type { CaptureResult, CaptureSkip, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
 export type { CandidateSignal, ResolutionBasis, ScopeAmbiguity, WorkstreamCandidate } from "./bootstrap/workstream-resolution.js";
@@ -548,6 +554,26 @@ export interface Memory {
    */
   sessionStart(input?: SessionStartInput): SessionStart | null;
   /**
+   * The end of a turn (the Stop hook): {@link captureTurn}, then, unless the host is already
+   * continuing because of a Stop hook, a request to update the checkpoint when it fell
+   * five turns of work behind (`NUDGE_TURNS`). The user's line says what was saved, or that
+   * nothing could be.
+   */
+  endTurn(input: EndTurnInput): TurnEnd;
+  /**
+   * One line for the agent when the prompt the user just submitted states a lasting preference
+   * (a prompt-submit hook), else null; null outside a Git worktree. No model, no network, no
+   * database: the agent decides whether to propose it.
+   */
+  promptHint(input: PromptHintInput): string | null;
+  /**
+   * Whether a tool call the host is about to run may skip its permission prompt (a pre-tool
+   * hook): Memchor's own read-only calls, by exact server name. A notice for the user comes with
+   * a recall. Null leaves the call to the host's normal approval: every write, a bootstrap
+   * carrying the user's consent answer, and any other tool.
+   */
+  approveTool(input: ApproveToolInput): { notice: string | null } | null;
+  /**
    * Appends one attributed record with provenance links and external references. A
    * `preference` is not stored: it becomes a question for the user (see `settlePreference`).
    */
@@ -615,7 +641,7 @@ const DEFAULT_IMPORT_BUDGET_MS = 3_000;
 const SESSION_PACK_BYTES = 6_000;
 
 function skippedCapture(reason: CaptureSkip): CaptureResult {
-  return { state: "skipped", reason, transcriptId: null, events: 0, complete: true, problem: null };
+  return { state: "skipped", reason, transcriptId: null, workstreamId: null, events: 0, complete: true, problem: null };
 }
 
 interface Bound {
@@ -755,8 +781,11 @@ class LocalMemory implements Memory {
   }
 
   captureTurn(input: CaptureTurnInput): TurnCapture {
+    return this.capture(this.guard(() => parse(CaptureTurnInput, input)));
+  }
+
+  private capture(parsed: { transcriptPath: string; maxMs: number }): TurnCapture {
     const result = this.guard((): CaptureResult => {
-      const parsed = parse(CaptureTurnInput, input);
       if (this.importer === null) return skippedCapture("unsupported_host");
       if (this.closed) throw new MemchorError("storage_unavailable", "This Memory has been closed.");
       let location: WorkspaceLocation;
@@ -776,7 +805,7 @@ class LocalMemory implements Memory {
       result.state === "failed"
         ? (result.problem ?? { code: "internal", message: "capture failed" })
         : result.reason === "not_a_transcript"
-          ? { code: "not_a_transcript", message: `${input.transcriptPath} is not a transcript Memchor imports for ${this.host}` }
+          ? { code: "not_a_transcript", message: `${parsed.transcriptPath} is not a transcript Memchor imports for ${this.host}` }
           : null;
     if (failure !== null) recordHookFailure(this.home, { host: this.host, event: "stop", cwd: this.cwd, ...failure });
     return { ...result, failure };
@@ -798,6 +827,57 @@ class LocalMemory implements Memory {
         recordHookFailure(this.home, { host: this.host, event: "session-start", cwd: this.cwd, code: error.code, message: error.message });
         return unreadableSessionStart(error.code);
       }
+    });
+  }
+
+  endTurn(input: EndTurnInput): TurnEnd {
+    const parsed = this.guard(() => parse(EndTurnInput, input));
+    const before = this.newestRecordSeq();
+    const capture = this.capture(parsed);
+    const notice =
+      capture.failure !== null ? userNotice(`⚠ turn not saved (${capture.failure.code}): memchor diag status`) : capture.events > 0 ? userNotice(`saved turn (${capture.events} events)`) : null;
+    const db = this.bound?.db ?? this.unboundDb;
+    const failure = capture.failure;
+    if (parsed.stopHookActive || capture.workstreamId === null || db === undefined) return { nudge: null, notice, failure };
+    const workstreamId = capture.workstreamId;
+    try {
+      const nudge = this.guard(() => {
+        const head = loadHeadCheckpoint(db, workstreamId);
+        const work = workSince(db, workstreamId, head.row?.created_at ?? null, before, (host, tool) => hostDescriptor(host)?.editTools.includes(tool) ?? false);
+        return checkpointNudge(work, { revision: headRevision(db, workstreamId), covers: head.row !== null });
+      });
+      return { nudge, notice, failure };
+    } catch (error) {
+      // The turn is saved; a nudge that cannot be worked out is skipped, and the failure kept.
+      if (!(error instanceof MemchorError)) throw error;
+      recordHookFailure(this.home, { host: this.host, event: "stop", cwd: this.cwd, code: error.code, message: error.message });
+      return { nudge: null, notice, failure };
+    }
+  }
+
+  promptHint(input: PromptHintInput): string | null {
+    return this.guard(() => {
+      const parsed = parse(PromptHintInput, input);
+      if (!statesLastingPreference(parsed.prompt)) return null;
+      try {
+        locateWorkspace(this.cwd, this.home);
+      } catch (error) {
+        if (error instanceof MemchorError && error.code === "scope_unresolved") return null;
+        throw error;
+      }
+      return PREFERENCE_HINT;
+    });
+  }
+
+  approveTool(input: ApproveToolInput): { notice: string | null } | null {
+    return this.guard(() => {
+      const parsed = parse(ApproveToolInput, input);
+      const operation = hostDescriptor(this.host)?.memchorTool?.exec(parsed.tool)?.[1];
+      const args: Record<string, unknown> = typeof parsed.input === "object" && parsed.input !== null ? (parsed.input as Record<string, unknown>) : {};
+      if (operation === undefined || !readOnlyCall(operation, args)) return null;
+      if (operation !== "memory_recall") return { notice: null };
+      const query = typeof args["query"] === "string" ? oneLine(args["query"], 80) : "";
+      return { notice: query === "" ? userNotice("recalling recent memory") : userNotice(`recalling: ${query}`) };
     });
   }
 
@@ -1112,6 +1192,25 @@ class LocalMemory implements Memory {
   }
 
   /** The workspace database without binding a session (hooks); the bound one when there is one. */
+  /** The newest record's `seq` in this worktree's database; 0 when there is none yet (never creates one) or it cannot be read. */
+  private newestRecordSeq(): number {
+    try {
+      return this.guard(() => {
+        let db = this.bound?.db ?? this.unboundDb;
+        if (db === undefined) {
+          const location = locateWorkspace(this.cwd, this.home);
+          if (!existsSync(location.dbPath)) return 0;
+          db = this.workspaceDb(location);
+        }
+        return (db.prepare("SELECT coalesce(max(seq), 0) AS seq FROM records").get() as { seq: number }).seq;
+      });
+    } catch (error) {
+      // The capture that follows meets the same problem and reports it.
+      if (error instanceof MemchorError) return 0;
+      throw error;
+    }
+  }
+
   private workspaceDb(location: WorkspaceLocation): Db {
     if (this.bound !== undefined) return this.bound.db;
     if (this.unboundDb === undefined) {
@@ -1552,8 +1651,25 @@ function given<T>(value: T | null | undefined): T {
   return value;
 }
 
+/** Calls that change nothing the user must approve: reads, and a bootstrap without a consent answer. */
+function readOnlyCall(operation: string, input: Record<string, unknown>): boolean {
+  switch (operation) {
+    case "memory_bootstrap":
+      return !Object.hasOwn(input, "importChoice");
+    case "memory_recall":
+    case "memory_read":
+    case "memory_status":
+      return true;
+    case "memory_manage":
+      return input["action"] === "inspect";
+    default:
+      return false;
+  }
+}
+
+/** Every operation's input, after the user's `<private>` spans are gone: nothing downstream sees them. */
 function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
-  return schema.parse(input);
+  return schema.parse(removePrivateEverywhere(input));
 }
 
 function invalidInput(error: ZodError): MemchorError {

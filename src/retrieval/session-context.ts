@@ -26,6 +26,19 @@ export interface SessionStart {
   notice: string;
 }
 
+/** What a Stop hook says: a request to the agent to update a stale checkpoint, and a line for the user. */
+export interface TurnEnd {
+  nudge: string | null;
+  notice: string | null;
+  /** Why the turn was not saved (also on record as a hook failure). */
+  failure: { code: string; message: string } | null;
+}
+
+/** A one-line notice for the user (a hook's `systemMessage`), never shown to the model. */
+export function userNotice(...parts: string[]): string {
+  return ["◪ memchor", ...parts].join(" · ");
+}
+
 export function renderSessionStart(boot: BootstrapResult, input: { protocol: string; failures: readonly HookFailure[]; now: Date; digest: SessionDigest | null }): SessionStart {
   const { scope, context: pack, preferences, import: imported } = boot;
   const fixed: string[] = [`# Memchor: ${scope.workspaceLabel} / ${scope.workstreamLabel ?? "(no workstream bound)"}, head r${scope.headRevision}`, input.protocol];
@@ -104,12 +117,12 @@ const CUT = "\n[cut by Memchor to fit session-start context: call memory_bootstr
 export function unreadableSessionStart(code: string): SessionStart {
   return {
     context: `Memory could not be loaded (${code}). Do not assume this project has none. Tell the user, and do not rely on memory tools this session unless memory_status reports storage healthy.`,
-    notice: `◪ memchor · memory could not be loaded (${code})`,
+    notice: userNotice(`memory could not be loaded (${code})`),
   };
 }
 
 function notice(boot: BootstrapResult, shown: number, empty: boolean, input: { failures: readonly HookFailure[]; now: Date; digest: SessionDigest | null }): string {
-  const parts = ["◪ memchor"];
+  const parts: string[] = [];
   if (empty) parts.push("no memory yet");
   else {
     if (boot.context.checkpoint !== null) parts.push(`checkpoint r${boot.context.checkpoint.revision} loaded`);
@@ -124,10 +137,11 @@ function notice(boot: BootstrapResult, shown: number, empty: boolean, input: { f
   const recent = input.failures.filter((f) => input.now.getTime() - Date.parse(f.at) < FAILURE_WINDOW_MS);
   const last = recent.at(-1);
   if (last !== undefined) parts.push(`⚠ ${recent.length} hook failure${recent.length === 1 ? "" : "s"} (${last.code}): memchor diag status`);
-  return parts.join(" · ");
+  return userNotice(...parts);
 }
 
-function oneLine(text: string, max: number): string {
+/** `text` on one line, cut to `max` characters with an ellipsis. */
+export function oneLine(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }

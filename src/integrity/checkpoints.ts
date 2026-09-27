@@ -165,3 +165,20 @@ function renderCheckpoint(content: CheckpointContent): string {
     entries.length === 0 ? "" : `\n\n${heading}:\n${entries.map((entry) => `- ${entry}`).join("\n")}`;
   return `${GOAL}${content.goal}${STATUS}${content.status}` + SECTIONS.map(([field, heading]) => section(heading, content[field])).join("");
 }
+
+/** Turns of work a checkpoint may fall behind before the Stop hook asks for a new one, and again at each multiple. */
+export const NUDGE_TURNS = 5;
+
+/**
+ * What the Stop hook tells the agent when the checkpoint fell behind real work: when the turn's
+ * capture carried the prompts after the head checkpoint (or ever, with none) past a multiple of
+ * {@link NUDGE_TURNS}, and some tool call since changed a file or ran a command. Derived from
+ * imported events alone (before and after this capture), so it needs no stored state: a count
+ * that jumps past five still nudges, and a stop with no new prompt never nudges twice.
+ */
+export function checkpointNudge(work: { turns: number; turnsBefore: number; changed: boolean }, head: { revision: number; covers: boolean }): string | null {
+  if (!work.changed || Math.floor(work.turns / NUDGE_TURNS) <= Math.floor(work.turnsBefore / NUDGE_TURNS)) return null;
+  const which = head.covers ? `r${head.revision}` : "none yet";
+  const act = head.covers ? "update it" : "write one";
+  return `Memchor: ${work.turns} turns since the last checkpoint (${which}), with files changed or commands run. Before you finish, ${act} with memory_checkpoint (expectedRevision ${head.revision}): the next concrete step and why, not a status.`;
+}

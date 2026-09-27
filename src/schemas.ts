@@ -215,11 +215,11 @@ export const CheckpointInput = z.strictObject({
   /** The head revision the caller last read (0 before the first checkpoint). */
   expectedRevision: z.int().min(0).describe("The head revision you last read (scope.headRevision); 0 before the first checkpoint"),
   goal: z.string().min(1).max(LIMITS.checkpointEntryChars),
-  status: z.string().min(1).max(2 * LIMITS.checkpointEntryChars),
+  status: z.string().min(1).max(2 * LIMITS.checkpointEntryChars).describe("What is true now: what works, what fails, what was verified"),
   decisions: CheckpointList,
   failedAttempts: CheckpointList,
   openQuestions: CheckpointList,
-  nextSteps: CheckpointList,
+  nextSteps: CheckpointList.describe('Each entry: the next concrete step and why ("add the Windows branch; its test already fails"), not a status like "in progress"'),
   preferences: CheckpointList,
   externalRefs: z.array(ExternalRef).max(LIMITS.externalRefsPerRecord).default([]),
   supportedBy: z.array(RecordId).max(LIMITS.linksPerRecord).default([]),
@@ -326,6 +326,28 @@ export const CaptureTurnInput = z.strictObject({
   maxMs: z.int().min(0).max(60_000).default(5_000),
 });
 export type CaptureTurnInput = z.input<typeof CaptureTurnInput>;
+
+/** The end of a turn, from a host's Stop hook (not an agent tool). */
+export const EndTurnInput = z.strictObject({
+  transcriptPath: z.string().min(1).max(4_096),
+  /** The host is already continuing this turn because a Stop hook asked it to. */
+  stopHookActive: z.boolean().default(false),
+  maxMs: z.int().min(0).max(60_000).default(5_000),
+});
+export type EndTurnInput = z.input<typeof EndTurnInput>;
+
+/** A prompt the user just submitted, from a host hook (not an agent tool). */
+export const PromptHintInput = z.strictObject({
+  prompt: z.string().max(1_000_000),
+});
+export type PromptHintInput = z.input<typeof PromptHintInput>;
+
+/** A tool call the host is about to run, from a host's permission hook (not an agent tool). */
+export const ApproveToolInput = z.strictObject({
+  tool: z.string().min(1).max(256),
+  input: z.unknown(),
+});
+export type ApproveToolInput = z.input<typeof ApproveToolInput>;
 
 /** A session start from a host hook (not an agent tool). */
 export const SessionStartInput = z.strictObject({

@@ -1,7 +1,7 @@
 import { claudeCodeAdapter } from "./import/adapters/claude.js";
 import { codexAdapter } from "./import/adapters/codex.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
-import type { SessionStart } from "./retrieval/session-context.js";
+import type { SessionStart, TurnEnd } from "./retrieval/session-context.js";
 
 /**
  * Everything Memchor knows about each agent host, in one place: the memory module picks the
@@ -34,16 +34,35 @@ export interface HostDescriptor {
    * per host, because each host validates them differently (Codex rejects unknown keys).
    */
   hooks: HookOutput | null;
+  /** The host's tools that change files (as its transcripts name them): work a checkpoint should cover. */
+  editTools: readonly string[];
+  /**
+   * How the host names Memchor's own tools in hook payloads, by exact server name (the operation
+   * is group 1); null where that is not pinned. Another server's tool of the same name never matches.
+   */
+  memchorTool: RegExp | null;
 }
 
 export interface HookOutput {
   /** Stdout for a session-start hook: context for the model, and the one-line notice for the user. */
   sessionStart(start: SessionStart): string;
+  /** Stdout for a Stop hook: a request that the agent continue (the nudge), and the user's line; empty for neither. */
+  stop(end: TurnEnd): string;
+  /** Stdout for a prompt-submit hook: one line of context for the agent. */
+  promptHint(line: string): string;
+  /** Stdout for a pre-tool hook that lets a call skip the permission prompt, with a notice for the user. */
+  allowTool(notice: string | null): string;
 }
 
 /** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts). */
 const CLAUDE_CODE_HOOKS: HookOutput = {
   sessionStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: start.context }, systemMessage: start.notice }),
+  stop: (end) =>
+    end.nudge === null && end.notice === null
+      ? ""
+      : JSON.stringify({ ...(end.nudge === null ? {} : { decision: "block", reason: end.nudge }), ...(end.notice === null ? {} : { systemMessage: end.notice }) }),
+  promptHint: (line) => JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: line } }),
+  allowTool: (notice) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" }, ...(notice === null ? {} : { systemMessage: notice }) }),
 };
 
 export const HOSTS = {
@@ -51,6 +70,9 @@ export const HOSTS = {
     transcripts: (paths) => claudeCodeAdapter(paths.claudeConfigDir === undefined ? {} : { configDir: paths.claudeConfigDir }),
     sessionMetaKey: null,
     hooks: CLAUDE_CODE_HOOKS,
+    editTools: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
+    // User-scope `mcp__memchor__…`, or the plugin-bundled server's `mcp__plugin_memchor_memchor__…`.
+    memchorTool: /^mcp__(?:plugin_memchor_)?memchor__(memory_[a-z_]+)$/,
   },
   codex: {
     transcripts: (paths) => codexAdapter(paths.codexHome === undefined ? {} : { codexHome: paths.codexHome }),
@@ -60,9 +82,11 @@ export const HOSTS = {
     // resolution (step 1). `initialize` carries no such id.
     sessionMetaKey: "threadId",
     hooks: null,
+    editTools: ["apply_patch"],
+    memchorTool: null,
   },
-  pi: { transcripts: null, sessionMetaKey: null, hooks: null },
-  unknown: { transcripts: null, sessionMetaKey: null, hooks: null },
+  pi: { transcripts: null, sessionMetaKey: null, hooks: null, editTools: [], memchorTool: null },
+  unknown: { transcripts: null, sessionMetaKey: null, hooks: null, editTools: [], memchorTool: null },
 } as const satisfies Record<string, HostDescriptor>;
 
 export type HostId = keyof typeof HOSTS;
