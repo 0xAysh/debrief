@@ -89,15 +89,21 @@ function codePaths(refs: string): string[] {
   }
 }
 
-/** Work imported after `since` (or ever, without a checkpoint): user prompts, and whether any changed a file or ran a command. */
+/** Work imported after `since` (or ever, without a checkpoint): user prompts, and whether any tool call changed a file or ran a command. */
 export interface WorkSince {
   turns: number;
+  /** Of those prompts, the ones already stored at record `seq` `before`. */
+  turnsBefore: number;
   changed: boolean;
 }
 
-export function workSince(db: Db, workstreamId: string, since: string | null, changesFiles: (host: string, tool: string) => boolean): WorkSince {
+export function workSince(db: Db, workstreamId: string, since: string | null, before: number, changesFiles: (host: string, tool: string) => boolean): WorkSince {
   const imported = `${VISIBLE_SQL} AND r.source_id IS NOT NULL AND r.kind = 'evidence' AND ($since IS NULL OR r.created_at > $since)`;
-  const turns = (prepared(db, `SELECT count(*) AS n FROM records r WHERE ${imported} AND r.attribution = 'user_direction'`).get({ workstreamId, since }) as { n: number }).n;
+  const counts = prepared(db, `SELECT count(*) AS turns, count(*) FILTER (WHERE r.seq <= $before) AS turnsBefore FROM records r WHERE ${imported} AND r.attribution = 'user_direction'`).get({
+    workstreamId,
+    since,
+    before,
+  }) as { turns: number; turnsBefore: number };
   let changed = false;
   for (const row of prepared(db, `SELECT r.host, r.title FROM records r WHERE ${imported} AND r.attribution = 'direct_observation'`).iterate({ workstreamId, since }) as Iterable<{ host: string; title: string | null }>) {
     const call = readToolResultTitle(row.title);
@@ -106,5 +112,5 @@ export function workSince(db: Db, workstreamId: string, since: string | null, ch
       break;
     }
   }
-  return { turns, changed };
+  return { ...counts, changed };
 }

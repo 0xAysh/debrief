@@ -127,7 +127,7 @@ describe("memchor hook stop: the stale-checkpoint nudge", () => {
     expect(stops.slice(0, 4).map((stop) => (JSON.parse(stop.stdout) as { decision?: string }).decision)).toEqual([undefined, undefined, undefined, undefined]);
     expect(JSON.parse(stops[4]?.stdout ?? "")).toEqual({
       decision: "block",
-      reason: expect.stringMatching(/^Memchor: 5 turns changed files or ran commands and no checkpoint covers them\./) as unknown,
+      reason: expect.stringMatching(/^Memchor: 5 turns since the last checkpoint \(none yet\), with files changed or commands run\./) as unknown,
       systemMessage: expect.stringMatching(/^◪ memchor · saved turn/) as unknown,
     });
     expect(stopHook(env, payload(env, path, sessionId, true))).toMatchObject({ code: 0, stdout: "", stderr: "" });

@@ -1,4 +1,4 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory } from "../../src/memory.js";
@@ -168,11 +168,18 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(run.code, run.stderr).toBe(0);
     expect(stub.requests).toHaveLength(2);
     expect(JSON.stringify(stub.requests[0])).not.toContain("Stop hook feedback");
-    expect(JSON.stringify(stub.requests[1])).toContain("Stop hook feedback:\\nMemchor: 5 turns changed files or ran commands and no checkpoint covers them.");
+    expect(JSON.stringify(stub.requests[1])).toContain("Stop hook feedback:\\nMemchor: 5 turns since the last checkpoint (none yet), with files changed or commands run.");
+    // The user's "saved turn" line went with the block, but never to the model.
+    expect(JSON.stringify(stub.requests)).not.toContain("◪ memchor");
     const check = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
       check.close();
     });
     expect(check.status().hookFailures).toEqual([]);
+    // Claude Code writes the reason into the transcript; it is the host talking, not the user, so it is never a prompt.
+    const live = (JSON.parse(run.stdout) as { session_id: string }).session_id;
+    expect(readFileSync(join(sandbox.configDir, "projects", repo.replaceAll("/", "-"), `${live}.jsonl`), "utf8")).toContain("turns since the last checkpoint");
+    const stored = check.recall({ query: "Stop hook feedback turns since the last checkpoint", maxTokens: 8_000 }).items.map((i) => i.excerpt);
+    expect(stored.filter((excerpt) => excerpt.includes("turns since the last checkpoint"))).toEqual([]);
   }, 120_000);
 });

@@ -839,6 +839,7 @@ class LocalMemory implements Memory {
 
   endTurn(input: EndTurnInput): TurnEnd {
     const parsed = this.guard(() => parse(EndTurnInput, input));
+    const before = this.newestRecordSeq();
     const capture = this.captureTurn({ transcriptPath: parsed.transcriptPath, maxMs: parsed.maxMs });
     const notice =
       capture.failure !== null ? `◪ memchor · ⚠ turn not saved (${capture.failure.code}): memchor diag status` : capture.events > 0 ? `◪ memchor · saved turn (${capture.events} events)` : null;
@@ -849,7 +850,7 @@ class LocalMemory implements Memory {
     try {
       const nudge = this.guard(() => {
         const head = loadHeadCheckpoint(db, workstreamId);
-        const work = workSince(db, workstreamId, head.row?.created_at ?? null, (host, tool) => hostDescriptor(host)?.editTools.includes(tool) ?? false);
+        const work = workSince(db, workstreamId, head.row?.created_at ?? null, before, (host, tool) => hostDescriptor(host)?.editTools.includes(tool) ?? false);
         return checkpointNudge(work, { revision: headRevision(db, workstreamId), covers: head.row !== null });
       });
       return { nudge, notice, failure };
@@ -1198,6 +1199,25 @@ class LocalMemory implements Memory {
   }
 
   /** The workspace database without binding a session (hooks); the bound one when there is one. */
+  /** The newest record's `seq` in this worktree's database; 0 when there is none yet (never creates one) or it cannot be read. */
+  private newestRecordSeq(): number {
+    try {
+      return this.guard(() => {
+        let db = this.bound?.db ?? this.unboundDb;
+        if (db === undefined) {
+          const location = locateWorkspace(this.cwd, this.home);
+          if (!existsSync(location.dbPath)) return 0;
+          db = this.workspaceDb(location);
+        }
+        return (db.prepare("SELECT coalesce(max(seq), 0) AS seq FROM records").get() as { seq: number }).seq;
+      });
+    } catch (error) {
+      // The capture that follows meets the same problem and reports it.
+      if (error instanceof MemchorError) return 0;
+      throw error;
+    }
+  }
+
   private workspaceDb(location: WorkspaceLocation): Db {
     if (this.bound !== undefined) return this.bound.db;
     if (this.unboundDb === undefined) {
