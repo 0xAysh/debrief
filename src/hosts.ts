@@ -29,6 +29,11 @@ export interface HostDescriptor {
    */
   sessionMetaKey: string | null;
   /**
+   * The environment variable through which the host names its session to the MCP servers it
+   * starts, or null. Read once, when the server opens its memory; `sessionMetaKey` wins when both are set.
+   */
+  sessionEnv: string | null;
+  /**
    * The host's hooks, or null where Memchor has no driven evidence for them yet (then no
    * `memchor hook` runs for it and `memory_bootstrap` is the path). Output shapes live here,
    * per host, because each host validates them differently (Codex rejects unknown keys).
@@ -69,6 +74,10 @@ export const HOSTS = {
   "claude-code": {
     transcripts: (paths) => claudeCodeAdapter(paths.claudeConfigDir === undefined ? {} : { configDir: paths.claudeConfigDir }),
     sessionMetaKey: null,
+    // Claude Code starts its MCP servers with the session's id in the environment, the same
+    // `session_id` its hooks get and its transcript's file name, so the MCP server, the hooks and
+    // the imported transcript are one session: "don't remember this session" covers all three.
+    sessionEnv: "CLAUDE_CODE_SESSION_ID",
     hooks: CLAUDE_CODE_HOOKS,
     editTools: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
     // User-scope `mcp__memchor__…`, or the plugin-bundled server's `mcp__plugin_memchor_memchor__…`.
@@ -81,12 +90,13 @@ export const HOSTS = {
     // live session and the thread's imported rollout the same session for workstream
     // resolution (step 1). `initialize` carries no such id.
     sessionMetaKey: "threadId",
+    sessionEnv: null,
     hooks: null,
     editTools: ["apply_patch"],
     memchorTool: null,
   },
-  pi: { transcripts: null, sessionMetaKey: null, hooks: null, editTools: [], memchorTool: null },
-  unknown: { transcripts: null, sessionMetaKey: null, hooks: null, editTools: [], memchorTool: null },
+  pi: { transcripts: null, sessionMetaKey: null, sessionEnv: null, hooks: null, editTools: [], memchorTool: null },
+  unknown: { transcripts: null, sessionMetaKey: null, sessionEnv: null, hooks: null, editTools: [], memchorTool: null },
 } as const satisfies Record<string, HostDescriptor>;
 
 export type HostId = keyof typeof HOSTS;

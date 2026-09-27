@@ -1,6 +1,8 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
+import { locateWorkspace } from "../../src/bootstrap/workspace-resolution.js";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
 import { claudeTurn, installTranscript } from "../import/fixtures.js";
@@ -181,5 +183,72 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(readFileSync(join(sandbox.configDir, "projects", repo.replaceAll("/", "-"), `${live}.jsonl`), "utf8")).toContain("turns since the last checkpoint");
     const stored = check.recall({ query: "Stop hook feedback turns since the last checkpoint", maxTokens: 8_000 }).items.map((i) => i.excerpt);
     expect(stored.filter((excerpt) => excerpt.includes("turns since the last checkpoint"))).toEqual([]);
+  }, 120_000);
+
+  test("\"don't remember this session\" through MCP also forgets a turn the hooks captured before any Memchor call, and the MCP server is the same session as the hooks", async () => {
+    const sandbox = claudeSandbox();
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const memchorHome = tempDir();
+    const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+    expect(added.code, added.stderr).toBe(0);
+    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      setup.close();
+    });
+    setup.bootstrap({ importChoice: "current_project" });
+    setup.close();
+
+    // Turn 1 makes no Memchor call; the Stop hook captures it.
+    const stub = await startStubMessages({ calls: [], reply: "SYNTHETIC-PRIVATE-REPLY noted." });
+    const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" });
+    const first = await claudeAsync(env, repo, "-p", "SYNTHETIC-PRIVATE-PROMPT the staging password rotation", "--output-format", "json", "--settings", hooksSettings(memchorHome));
+    expect(first.code, first.stderr).toBe(0);
+    const live = (JSON.parse(first.stdout) as { session_id: string }).session_id;
+    const captured = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      captured.close();
+    });
+    expect(captured.recall({ query: "SYNTHETIC-PRIVATE-PROMPT", maxTokens: 8_000 }).items.map((i) => i.excerpt).join("\n")).toContain("SYNTHETIC-PRIVATE-PROMPT");
+    captured.close();
+
+    // Turn 2, resumed: the agent calls memory_manage private_session and nothing else.
+    const manage = await startStubMessages({ calls: [{ tool: "memory_manage", input: { action: "private_session" } }], reply: "SYNTHETIC-PRIVATE-DONE forgotten." });
+    const second = await claudeAsync(
+      claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${manage.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" }),
+      repo,
+      "-p",
+      "--resume",
+      live,
+      "SYNTHETIC-PRIVATE-ASK don't remember this session",
+      "--output-format",
+      "json",
+      "--allowedTools",
+      "mcp__memchor__memory_manage",
+      "--settings",
+      hooksSettings(memchorHome),
+    );
+    expect(second.code, second.stderr).toBe(0);
+    const traffic = sessionToolTraffic(sandbox, (JSON.parse(second.stdout) as { session_id: string }).session_id);
+    expect(traffic.uses).toEqual(["mcp__memchor__memory_manage"]);
+    expect(traffic.results[0]).toContain('"action":"private_session"');
+
+    // The MCP server's session carries Claude's session id, like the hooks' sessions.
+    const db = new Database(locateWorkspace(repo, memchorHome).dbPath, { readonly: true });
+    onCleanup(() => {
+      db.close();
+    });
+    const sessions = db.prepare("SELECT host_session_id AS id, private FROM sessions WHERE host = 'claude-code' ORDER BY started_at").all() as { id: string | null; private: number }[];
+    db.close();
+    expect(sessions.filter((s) => s.private === 1).map((s) => s.id)).toEqual([live]);
+
+    // Nothing from either turn is recalled, and a later import pass does not bring it back.
+    const after = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      after.close();
+    });
+    after.bootstrap({});
+    const left = after.recall({ query: "SYNTHETIC-PRIVATE-PROMPT SYNTHETIC-PRIVATE-REPLY SYNTHETIC-PRIVATE-ASK SYNTHETIC-PRIVATE-DONE", maxTokens: 8_000 }).items.map((i) => i.excerpt);
+    expect(left.filter((excerpt) => excerpt.includes("SYNTHETIC-PRIVATE"))).toEqual([]);
+    expect(after.status().hookFailures).toEqual([]);
   }, 120_000);
 });

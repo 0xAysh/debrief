@@ -74,13 +74,19 @@ const TOOL_LIST = (Object.keys(OPERATION_SCHEMAS) as OperationName[]).map((name)
 const isOperation = (name: string): name is OperationName => Object.hasOwn(OPERATION_SCHEMAS, name);
 
 /**
- * The host's own session id from a `tools/call` `_meta`, under the key its descriptor names
- * (src/hosts.ts). An id longer than a host session id may be is ignored rather than cut: a
- * prefix is a different identity, and two threads sharing one would be bound as one session.
+ * The host's own session id: from a `tools/call` `_meta`, under the key its descriptor names
+ * (src/hosts.ts), else from the environment variable it names. An id longer than a host session
+ * id may be is ignored rather than cut: a prefix is a different identity, and two threads
+ * sharing one would be bound as one session.
  */
-function hostSessionFromMeta(host: string | undefined, meta: Record<string, unknown> | undefined): string | undefined {
-  const key = hostDescriptor(host)?.sessionMetaKey ?? null;
-  const value = key === null ? undefined : meta?.[key];
+function hostSession(host: string | undefined, meta: Record<string, unknown> | undefined, env: NodeJS.ProcessEnv): string | undefined {
+  const descriptor = hostDescriptor(host);
+  const metaKey = descriptor?.sessionMetaKey ?? null;
+  const envKey = descriptor?.sessionEnv ?? null;
+  return validSessionId(metaKey === null ? undefined : meta?.[metaKey]) ?? validSessionId(envKey === null ? undefined : env[envKey]);
+}
+
+function validSessionId(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const id = value.trim();
   return id !== "" && id.length <= LIMITS.hostSessionIdChars ? id : undefined;
@@ -104,6 +110,8 @@ export interface McpServerOptions {
   /** From `--host`; falls back to the MCP client's name, then "unknown". */
   host?: string;
   home?: string;
+  /** Where the host's session id may be read (`sessionEnv` in src/hosts.ts); defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
   log?: (message: string) => void;
 }
 
@@ -221,7 +229,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     if (!isOperation(name)) throw new McpError(ErrorCode.InvalidParams, `Unknown tool ${name}`);
     const spec = TOOLS[name];
     try {
-      const memory = getMemory(hostSessionFromMeta(options.host, request.params._meta));
+      const memory = getMemory(hostSession(options.host, request.params._meta, options.env ?? process.env));
       const result = spec.run(memory, request.params.arguments ?? {}) as Record<string, unknown>;
       if (name === "memory_bootstrap" && (result["import"] as { state?: unknown } | undefined)?.state === "in_progress") {
         failures = 0;
