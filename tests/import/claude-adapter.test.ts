@@ -219,13 +219,16 @@ describe("Claude Code adapter", () => {
     expect(events).toEqual(whole.events);
   });
 
-  test("discovery lists only <config>/projects/<project>/<session>.jsonl and inspect reads the head", () => {
+  test("discovery lists only <config>/projects/<project>/<session>.jsonl and its sub-agents' <session>/subagents/agent-<id>.jsonl, and inspect reads the head", () => {
     const config = claudeConfigDir();
     const a = installTranscript(config, "2.1.281/basic.jsonl", { cwd: CWD });
     const projects = join(config, "projects");
     writeFileSync(join(projects, ".DS_Store"), "junk");
     mkdirSync(join(projects, "-work-store", a.sessionId, "subagents"), { recursive: true });
     writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "agent-1.jsonl"), "{}\n");
+    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "agent-1.meta.json"), JSON.stringify({ agentType: "Explore", toolUseId: "toolu_1" }));
+    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "agent-2.jsonl"), "{}\n");
+    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "notes.jsonl"), "{}\n");
     mkdirSync(join(projects, "-work-store", "memory"), { recursive: true });
     writeFileSync(join(projects, "-work-store", "memory", "notes.jsonl"), "{}\n");
     writeFileSync(join(projects, "-work-store", "notes.txt"), "not a transcript");
@@ -233,7 +236,17 @@ describe("Claude Code adapter", () => {
     const adapter = claudeCodeAdapter({ configDir: config });
     expect(adapter.root).toBe(projects);
     const found = adapter.discover();
-    expect(found.map((f) => [f.transcriptId, f.path])).toEqual([[a.sessionId, a.path]]);
+    const subagents = join(projects, "-work-store", a.sessionId, "subagents");
+    expect(found.map((f) => [f.transcriptId, f.path, f.subagentOf])).toEqual([
+      [a.sessionId, a.path, undefined],
+      [`${a.sessionId}/agent-1`, join(subagents, "agent-1.jsonl"), { transcriptId: a.sessionId, agentType: "Explore" }],
+      // Without its .meta.json the kind of agent is unknown, not guessed.
+      [`${a.sessionId}/agent-2`, join(subagents, "agent-2.jsonl"), { transcriptId: a.sessionId, agentType: null }],
+    ]);
+    expect(adapter.subagentsOf?.(found[0] as TranscriptFile).map((f) => f.transcriptId)).toEqual([`${a.sessionId}/agent-1`, `${a.sessionId}/agent-2`]);
+    expect(adapter.fileAt(join(subagents, "agent-1.jsonl"))?.transcriptId).toBe(`${a.sessionId}/agent-1`);
+    expect(adapter.fileAt(join(subagents, "notes.jsonl"))).toBeNull();
+    expect(adapter.fileAt(join(projects, "-work-store", "memory", "notes.jsonl"))).toBeNull();
     expect(adapter.inspect(found[0] as TranscriptFile)).toEqual({ cwd: CWD, hostVersion: "2.1.281", supported: true });
     expect(claudeCodeAdapter({ configDir: join(config, "missing") }).discover()).toEqual([]);
   });

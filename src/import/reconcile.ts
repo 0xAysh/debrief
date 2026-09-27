@@ -103,6 +103,7 @@ export interface ImportStatus {
   transcriptsRoot: string | null;
   compatibility: readonly CompatibilityRow[];
   /** Everything discovered (metadata only; no content is read before consent). Null when not inventoried (declined). */
+  /** Sessions found; a sub-agent's transcript counts with its session. */
   transcripts: { found: number; currentProject: number; otherProjects: number; unassigned: number; unsupportedVersion: number } | null;
   /** This repository's transcripts (all worktrees). */
   currentProject: { transcripts: number; complete: number; pending: number; stopped: number; quarantined: number; counters: ImportCounters } | null;
@@ -276,8 +277,8 @@ export class TranscriptImporter {
   }
 
   /**
-   * Imports the one transcript a host hook named (its `transcript_path`), without inventorying
-   * the rest: consent first, then the path must be one of this host's transcripts, recorded in
+   * Imports the one transcript a host hook named (its `transcript_path`), and the transcripts of
+   * the sub-agents that session started, without inventorying the rest: consent first, then the path must be one of this host's transcripts, recorded in
    * this repository. `open` binds the database only once all of that holds, so a session in an
    * unapproved repository leaves nothing behind.
    */
@@ -299,12 +300,25 @@ export class TranscriptImporter {
       if (target === null || target.workspaceId !== location.workspaceId || !approvesTarget(consent, target)) return skipped("not_approved", transcriptId);
       const db = open();
       const stored = prepared(db, "SELECT count(*) AS n FROM import_events WHERE host = ? AND transcript_id = ?");
-      const before = (stored.get(this.host, transcriptId) as { n: number }).n;
+      const deadline = Date.now() + maxMs;
       this.batches = 0;
-      const outcome = this.importTranscript(db, { file, cwd: head.cwd, supported: head.supported, target }, Date.now() + maxMs);
-      const events = (stored.get(this.host, transcriptId) as { n: number }).n - before;
+      let events = 0;
+      let complete = true;
+      const importOne = (entry: Discovered & { target: Target }): void => {
+        const before = (stored.get(this.host, entry.file.transcriptId) as { n: number }).n;
+        if (this.importTranscript(db, entry, deadline) !== "done") complete = false;
+        events += Math.max((stored.get(this.host, entry.file.transcriptId) as { n: number }).n - before, 0);
+      };
+      importOne({ file, cwd: head.cwd, supported: head.supported, target });
+      // The session's sub-agents worked in this turn too; by the parent's Stop their transcripts are whole.
+      for (const sub of this.options.adapter.subagentsOf?.(file) ?? []) {
+        const subHead = this.options.adapter.inspect(sub);
+        const subTarget = subHead.cwd === null ? null : this.locate(subHead.cwd);
+        if (subHead.cwd === null || subTarget === null || subTarget.workspaceId !== location.workspaceId || !approvesTarget(consent, subTarget)) continue;
+        importOne({ file: sub, cwd: subHead.cwd, supported: subHead.supported, target: subTarget });
+      }
       const workstreamId = readCursor(db, this.host, transcriptId)?.workstream_id ?? null;
-      return { state: "captured", reason: null, transcriptId, workstreamId, events: Math.max(events, 0), complete: outcome === "done", problem: null };
+      return { state: "captured", reason: null, transcriptId, workstreamId, events, complete, problem: null };
     } catch (error) {
       const mapped = toStorageError(error);
       if (!(mapped instanceof MemchorError)) throw mapped;
@@ -418,8 +432,8 @@ export class TranscriptImporter {
 
   private importTranscript(db: Db, entry: Discovered & { target: Target }, deadline: number): "done" | "deadline" | "contended" {
     const { file } = entry;
-    // A transcript of a session the user asked not to remember is never read again.
-    if (isPrivateTranscript(db, this.host, file.transcriptId)) return "done";
+    // A transcript of a session the user asked not to remember is never read again, nor its sub-agents'.
+    if (this.isPrivate(db, file)) return "done";
     const cursor = readCursor(db, this.host, file.transcriptId);
     if (cursor?.state === "quarantined") return "done";
     const held = this.held.get(file.transcriptId);
@@ -470,7 +484,7 @@ export class TranscriptImporter {
         next = writeTransaction(db, () => {
           // Checked again under the write lock: "don't remember this session" in another process
           // may have committed between two batches, and nothing may be imported after it.
-          if (isPrivateTranscript(db, this.host, file.transcriptId)) throw new MadePrivate();
+          if (this.isPrivate(db, file)) throw new MadePrivate();
           const now = new Date().toISOString();
           const live = readCursor(db, this.host, file.transcriptId);
           const liveKey = live === undefined ? null : { offset: live.byte_offset, epoch: live.epoch };
@@ -588,6 +602,10 @@ export class TranscriptImporter {
     }
   }
 
+  private isPrivate(db: Db, file: TranscriptFile): boolean {
+    return isPrivateTranscript(db, this.host, file.transcriptId) || (file.subagentOf !== undefined && isPrivateTranscript(db, this.host, file.subagentOf.transcriptId));
+  }
+
   /**
    * First batch of a transcript: resolve its workstream exactly as a live bootstrap in its
    * worktree would, then create its session, source and cursor rows. Throws {@link Held}
@@ -596,13 +614,16 @@ export class TranscriptImporter {
   private openTranscript(db: Db, entry: Discovered & { target: Target }, now: string, events: readonly NormalizedEvent[]): CursorRow {
     ensureWorkspace(db, entry.target, now);
     const key = `${this.host}\u0000${entry.file.transcriptId}`;
-    const sessionId = `ses_${digest(`session\u0000${key}`).slice(0, 32)}`;
+    // A sub-agent's transcript is its parent session's: same session row (so the digest, the nudge
+    // and "don't remember this session" see one session) and, through it, the same workstream.
+    const hostSessionId = entry.file.subagentOf?.transcriptId ?? entry.file.transcriptId;
+    const sessionId = `ses_${digest(`session\u0000${this.host}\u0000${hostSessionId}`).slice(0, 32)}`;
     const resolution = resolveWorkstream(
       db,
       {
         worktree: entry.target.worktree,
         branch: entry.target.branch,
-        session: { host: this.host, hostSessionId: entry.file.transcriptId, sessionId },
+        session: { host: this.host, hostSessionId, sessionId },
         namedWorkstreams: workstreamsNamedAtStart(events),
       },
       now,
@@ -612,7 +633,7 @@ export class TranscriptImporter {
     const sourceId = `src_${digest(`source\u0000${key}`).slice(0, 32)}`;
     prepared(db,
       "INSERT OR IGNORE INTO sessions (id, host, host_session_id, workstream_id, capabilities, started_at) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(sessionId, this.host, entry.file.transcriptId, workstream.id, JSON.stringify({ imported: true }), now);
+    ).run(sessionId, this.host, hostSessionId, workstream.id, JSON.stringify({ imported: true }), now);
     prepared(db, "INSERT OR IGNORE INTO sources (id, kind, host, locator, created_at) VALUES (?, 'transcript', ?, ?, ?)").run(
       sourceId,
       this.host,
@@ -632,7 +653,10 @@ export class TranscriptImporter {
     const own = current.location;
     const entries = inventory ?? [];
     const mine = entries.filter((e) => e.target?.workspaceId === own.workspaceId);
-    const others = entries.filter((e) => e.target !== null && e.target.workspaceId !== own.workspaceId);
+    // The inventory counts sessions; a sub-agent's transcript is part of its session.
+    const sessions = entries.filter((e) => e.file.subagentOf === undefined);
+    const ownSessions = sessions.filter((e) => e.target?.workspaceId === own.workspaceId).length;
+    const otherSessions = sessions.filter((e) => e.target !== null && e.target.workspaceId !== own.workspaceId).length;
     const status: ImportStatus = {
       host: this.host,
       state: "complete",
@@ -645,11 +669,11 @@ export class TranscriptImporter {
         inventory === null
           ? null
           : {
-              found: entries.length,
-              currentProject: mine.length,
-              otherProjects: others.length,
-              unassigned: entries.length - mine.length - others.length,
-              unsupportedVersion: entries.filter((e) => !e.supported).length,
+              found: sessions.length,
+              currentProject: ownSessions,
+              otherProjects: otherSessions,
+              unassigned: sessions.length - ownSessions - otherSessions,
+              unsupportedVersion: sessions.filter((e) => !e.supported).length,
             },
       currentProject: null,
       backfill: null,
@@ -857,16 +881,21 @@ function applyEvents(batch: Batch, events: readonly NormalizedEvent[]): { offset
       const written = appendImported(batch, event, previous, toolResultRecord(batch, call, event));
       // Keep the host's call identity with result provenance so future migrations never
       // need to infer this relationship from presentation text.
-      store("record", written, { callId: event.callId, ...(previous === null ? {} : { versionOf: previous }) });
+      store("record", written, { callId: event.callId, ...(previous === null ? {} : { versionOf: previous }), ...agentOf(event) });
       continue;
     }
 
     // What the agent writes (a message or a host summary it wrote) may repeat memory it was shown.
     const derivedFrom = event.type === "message" && event.role === "user" ? [] : restatedEchoes(batch, event.branch, event.text);
     const written = appendImported(batch, event, previous, messageRecord(batch, event), derivedFrom);
-    store("record", written, previous === null ? {} : { versionOf: previous });
+    store("record", written, { ...(previous === null ? {} : { versionOf: previous }), ...agentOf(event) });
   }
   return null;
+}
+
+/** The sub-agent that wrote an event, for its record's provenance (`ImportedSource.agentType`). */
+function agentOf(event: NormalizedEvent): { agentType?: string | null } {
+  return event.agentType === undefined ? {} : { agentType: event.agentType };
 }
 
 /** Null when the event's cwd is in the transcript's worktree; otherwise why the scope conflicts. */
@@ -896,7 +925,8 @@ function messageRecord(batch: Batch, event: Extract<NormalizedEvent, { type: "me
     kind: summary ? "note" : "evidence",
     title: summary ? `${batch.hostName} summary` : null,
     body: passage(batch, event.text, summary ? PASSAGE_LIMITS.summaryBytes : PASSAGE_LIMITS.messageBytes),
-    attribution: summary || event.role === "assistant" ? "agent_inference" : "user_direction",
+    // Only the user's own words are user_direction; a parent agent's prompt to a sub-agent is an agent's.
+    attribution: summary || event.role !== "user" ? "agent_inference" : "user_direction",
     externalRefs: [],
   };
 }

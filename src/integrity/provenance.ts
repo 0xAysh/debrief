@@ -70,6 +70,8 @@ export interface ImportedSource {
   branch: string;
   eventId: string;
   observedAt: string;
+  /** The sub-agent that wrote it: its kind (e.g. "general-purpose"), "subagent" when the host did not record one, or null for the session's own agent and user. */
+  agentType: string | null;
 }
 
 /** Transcript provenance of the given records (records agents wrote directly have none). */
@@ -78,13 +80,14 @@ export function importedFrom(db: Db, recordIds: readonly string[]): Map<string, 
   if (recordIds.length === 0) return result;
   const rows = db
     .prepare(
-      `SELECT e.record_id, e.host, e.transcript_id, e.branch, e.event_id, r.created_at
+      `SELECT e.record_id, e.host, e.transcript_id, e.branch, e.event_id, r.created_at, json_extract(e.meta, '$.agentType') AS agent_type
        FROM import_events e JOIN records r ON r.id = e.record_id
        WHERE e.record_id IN (SELECT value FROM json_each(?))`,
     )
-    .all(JSON.stringify(recordIds)) as { record_id: string; host: string; transcript_id: string; branch: string; event_id: string; created_at: string }[];
+    .all(JSON.stringify(recordIds)) as { record_id: string; host: string; transcript_id: string; branch: string; event_id: string; created_at: string; agent_type: unknown }[];
   for (const row of rows) {
-    result.set(row.record_id, { kind: "transcript", host: row.host, transcriptId: row.transcript_id, branch: row.branch, eventId: row.event_id, observedAt: row.created_at });
+    const agentType = typeof row.agent_type === "string" ? row.agent_type : row.branch === "main" ? null : "subagent";
+    result.set(row.record_id, { kind: "transcript", host: row.host, transcriptId: row.transcript_id, branch: row.branch, eventId: row.event_id, observedAt: row.created_at, agentType });
   }
   return result;
 }

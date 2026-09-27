@@ -53,11 +53,21 @@ export function linkTranscriptSessions(db: Db, host: string, transcriptId: strin
   return { privateSessionId: found };
 }
 
-/** The transcripts that belong to a session: its host session id, and every transcript whose Memchor output named it. */
+/**
+ * The transcripts that belong to a session: its host session id, every transcript whose Memchor
+ * output named it, and the imported transcripts of their sub-agents (the importer gives those the
+ * parent's session). Sub-agent transcripts not imported yet are covered by their parent's marker.
+ */
 export function transcriptsOf(db: Db, session: { sessionId: string; host: string; hostSessionId: string | undefined }): { host: string; transcriptId: string }[] {
   const linked = prepared(db, "SELECT host, transcript_id AS transcriptId FROM transcript_sessions WHERE session_id = ?").all(session.sessionId) as { host: string; transcriptId: string }[];
   const own = session.hostSessionId === undefined ? [] : [{ host: session.host, transcriptId: session.hostSessionId }];
-  return [...new Map([...own, ...linked].map((t) => [`${t.host}\u0000${t.transcriptId}`, t])).values()];
+  const sameSession = prepared(
+    db,
+    `SELECT other.host, other.transcript_id AS transcriptId FROM import_cursors mine JOIN import_cursors other ON other.host = mine.host AND other.session_id = mine.session_id
+     WHERE mine.host = ? AND mine.transcript_id = ?`,
+  );
+  const sessions = [...own, ...linked].flatMap((t) => [t, ...(sameSession.all(t.host, t.transcriptId) as { host: string; transcriptId: string }[])]);
+  return [...new Map(sessions.map((t) => [`${t.host}\u0000${t.transcriptId}`, t])).values()];
 }
 
 /** Marks the session and its transcripts private (live, or replayed from the ledger into a restored copy). */
