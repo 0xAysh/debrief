@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { assertSupportedSchema, migrate, SCHEMA_VERSION } from "./migrations/index.js";
 
 export type Db = Database.Database;
@@ -9,7 +9,7 @@ export type Db = Database.Database;
 /**
  * Minimum embedded SQLite. 3.7.0–3.51.2 carry the WAL-reset bug, which can corrupt a
  * WAL database when several connections write and checkpoint concurrently — exactly
- * Memchor's multi-process model. Fixed in 3.51.3 (backports exist only as 3.44.6 and
+ * Debrief's multi-process model. Fixed in 3.51.3 (backports exist only as 3.44.6 and
  * 3.50.7, which better-sqlite3 does not ship). Source: https://sqlite.org/wal.html#walresetbug
  */
 export const REQUIRED_SQLITE_VERSION = "3.51.3";
@@ -66,13 +66,13 @@ export function openDatabase(path: string, options: { busyTimeoutMs?: number } =
     assertSupportedSchema(db);
     const mode = enableWal(db, busyTimeoutMs);
     if (mode !== "wal") {
-      throw new MemchorError("storage_unavailable", `Could not enable WAL mode on ${path} (got ${String(mode)}).`, {
+      throw new DebriefError("storage_unavailable", `Could not enable WAL mode on ${path} (got ${String(mode)}).`, {
         details: { path },
       });
     }
     db.pragma("synchronous = FULL");
     // Deleted content (a forgotten record's payload, its search chunks) is overwritten with
-    // zeros in the file instead of lingering on free pages. Memchor deletes rarely, so the extra
+    // zeros in the file instead of lingering on free pages. Debrief deletes rarely, so the extra
     // writes cost little. It is not forensic erasure: WAL frames, backups and copies can remain.
     db.pragma("secure_delete = ON");
     migrate(db); // leaves foreign_keys = ON
@@ -118,22 +118,22 @@ export function writeTransaction<T>(db: Db, fn: () => T): T {
   }
 }
 
-/** Maps SQLite/filesystem failures to Memchor error codes; passes MemchorErrors through. */
+/** Maps SQLite/filesystem failures to Debrief error codes; passes DebriefErrors through. */
 export function toStorageError(error: unknown, path?: string): unknown {
-  if (error instanceof MemchorError) return error;
+  if (error instanceof DebriefError) return error;
   const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
   const message = error instanceof Error ? error.message : String(error);
   const details: Record<string, unknown> = { cause: code || message };
   if (path !== undefined) details["path"] = path;
   if (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED")) {
-    return new MemchorError("storage_busy", "The memory database is busy with another writer; retry shortly.", {
+    return new DebriefError("storage_busy", "The memory database is busy with another writer; retry shortly.", {
       retryable: true,
       details,
       cause: error,
     });
   }
   if (code === "SQLITE_FULL" || code === "ENOSPC") {
-    return new MemchorError("storage_full", "The disk or database is full; nothing was stored.", { details, cause: error });
+    return new DebriefError("storage_full", "The disk or database is full; nothing was stored.", { details, cause: error });
   }
   if (
     code.startsWith("SQLITE_CANTOPEN") ||
@@ -145,7 +145,7 @@ export function toStorageError(error: unknown, path?: string): unknown {
     ["EACCES", "EPERM", "ENOTDIR", "EEXIST", "EROFS", "EISDIR", "ENOENT"].includes(code) ||
     (error instanceof TypeError && /directory does not exist/.test(message))
   ) {
-    return new MemchorError("storage_unavailable", `Memchor storage is unavailable: ${message}`, {
+    return new DebriefError("storage_unavailable", `Debrief storage is unavailable: ${message}`, {
       details,
       cause: error,
     });
@@ -258,14 +258,14 @@ export interface RuntimeFacts {
 export function assertSupportedRuntime(facts: RuntimeFacts): void {
   const details = { sqliteVersion: facts.sqliteVersion, requiredSqliteVersion: REQUIRED_SQLITE_VERSION };
   if (compareVersions(facts.sqliteVersion, REQUIRED_SQLITE_VERSION) < 0) {
-    throw new MemchorError(
+    throw new DebriefError(
       "unsupported_runtime",
-      `Embedded SQLite ${facts.sqliteVersion} is too old; Memchor requires ${REQUIRED_SQLITE_VERSION} or newer (fix for the WAL-reset corruption bug, https://sqlite.org/wal.html#walresetbug). Reinstall Memchor so better-sqlite3 bundles a newer SQLite.`,
+      `Embedded SQLite ${facts.sqliteVersion} is too old; Debrief requires ${REQUIRED_SQLITE_VERSION} or newer (fix for the WAL-reset corruption bug, https://sqlite.org/wal.html#walresetbug). Reinstall Debrief so better-sqlite3 bundles a newer SQLite.`,
       { details },
     );
   }
   if (!facts.compileOptions.includes("ENABLE_FTS5") || !facts.fts5Works) {
-    throw new MemchorError("unsupported_runtime", `Embedded SQLite ${facts.sqliteVersion} lacks a working FTS5, which Memchor requires for search.`, {
+    throw new DebriefError("unsupported_runtime", `Embedded SQLite ${facts.sqliteVersion} lacks a working FTS5, which Debrief requires for search.`, {
       details,
     });
   }
@@ -277,7 +277,7 @@ function runtimeFacts(db: Db): RuntimeFacts {
   let fts5Works = false;
   if (compileOptions.includes("ENABLE_FTS5")) {
     try {
-      db.exec("CREATE VIRTUAL TABLE temp.memchor_fts5_probe USING fts5(x); DROP TABLE temp.memchor_fts5_probe;");
+      db.exec("CREATE VIRTUAL TABLE temp.debrief_fts5_probe USING fts5(x); DROP TABLE temp.debrief_fts5_probe;");
       fts5Works = true;
     } catch {
       fts5Works = false;

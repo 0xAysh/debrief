@@ -2,14 +2,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { initRepo, tempDir } from "../helpers.js";
-import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, firstUserText, memchorAddArgs, type StubToolUse, startStubMessages } from "../mcp/claude.js";
+import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, firstUserText, debriefAddArgs, type StubToolUse, startStubMessages } from "../mcp/claude.js";
 import { type HookEvent, type HookOutput, type HookRecord, hookRig, sanitize } from "./hook-rig.js";
 
 /**
- * Seam ② for #40: what the real Claude Code does around a sub-agent, pinned before Memchor
+ * Seam ② for #40: what the real Claude Code does around a sub-agent, pinned before Debrief
  * builds on it. The stub model answers the parent's first request with an `Agent` call and the
  * sub-agent's requests (recognised by their first user message, the prompt the parent gave)
- * with a `Bash` call and a Memchor recall. The rig logs every hook. Sanitized payloads go to the
+ * with a `Bash` call and a Debrief recall. The rig logs every hook. Sanitized payloads go to the
  * git-ignored `__artifacts__/` as evidence.
  */
 
@@ -27,12 +27,12 @@ const ALLOW = JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse"
 /** A request the sub-agent made: its conversation starts with the parent's prompt for it. */
 const fromSubagent = (request: Record<string, unknown>): boolean => firstUserText(request).includes(SUBAGENT_PROMPT);
 
-/** One `claude -p` run in which the parent spawns one general-purpose sub-agent that runs a command and a Memchor recall. */
+/** One `claude -p` run in which the parent spawns one general-purpose sub-agent that runs a command and a Debrief recall. */
 async function spawnSubagent(options: { background: boolean; outputs: Partial<Record<HookEvent, HookOutput>> }) {
   const sandbox = claudeSandbox();
   const repo = initRepo({ branch: "feat/subagents" });
-  const memchorHome = tempDir();
-  const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+  const debriefHome = tempDir();
+  const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
   expect(added.code, added.stderr).toBe(0);
   const rig = hookRig();
   const settings = rig.settings(Object.fromEntries(ALL_EVENTS.map((event) => [event, {}])));
@@ -52,7 +52,7 @@ async function spawnSubagent(options: { background: boolean; outputs: Partial<Re
     "json",
     "--settings",
     settings,
-    // Bash is allowed outright, so only the Memchor call depends on the PreToolUse hook.
+    // Bash is allowed outright, so only the Debrief call depends on the PreToolUse hook.
     "--allowedTools",
     "Bash",
   );
@@ -63,7 +63,7 @@ async function spawnSubagent(options: { background: boolean; outputs: Partial<Re
     [sandbox.configDir, "<claude-config>"],
     [sandbox.home, "<claude-home>"],
     [repo, "<repo>"],
-    [memchorHome, "<memchor-home>"],
+    [debriefHome, "<debrief-home>"],
     [repo.replaceAll("/", "-"), "<repo-slug>"],
     [rig.dir, "<hook-dir>"],
     [sessionId, "<session>"],
@@ -111,8 +111,8 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} around
       "SubagentStart (sub-agent)",
       "PreToolUse Bash (sub-agent)",
       "PostToolUse Bash (sub-agent)",
-      "PreToolUse mcp__memchor__memory_recall (sub-agent)",
-      "PostToolUse mcp__memchor__memory_recall (sub-agent)",
+      "PreToolUse mcp__debrief__memory_recall (sub-agent)",
+      "PostToolUse mcp__debrief__memory_recall (sub-agent)",
       "SubagentStop (sub-agent)",
       "PostToolUse Agent",
       "Stop",
@@ -144,7 +144,7 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} around
       "transcript_path",
     ]);
     expect(stop).toMatchObject({ session_id: sessionId, transcript_path: parentTranscript, agent_id: agentId, agent_type: "general-purpose", agent_transcript_path: agentTranscript, stop_hook_active: false, last_assistant_message: "REPLY-4e0 the budget is three." });
-    // The tool hooks inside the sub-agent carry the parent's session id, so a Memchor call there is the parent session's.
+    // The tool hooks inside the sub-agent carry the parent's session id, so a Debrief call there is the parent session's.
     for (const record of records.filter((r) => r.payload?.["agent_id"] !== undefined && r.event.endsWith("ToolUse"))) {
       expect(record.payload).toMatchObject({ session_id: sessionId, transcript_path: parentTranscript, agent_id: agentId, agent_type: "general-purpose" });
     }
@@ -152,7 +152,7 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} around
     // The sub-agent's transcript: every entry a sidechain of the parent's session, its first the parent's prompt with no origin.
     const entries = lines(agentTranscript);
     expect(entries.every((l) => l.isSidechain === true && l.agentId === agentId && l.sessionId === sessionId)).toBe(true);
-    expect(conversation(entries)).toEqual([`user: ${SUBAGENT_PROMPT}`, "assistant: Bash", "user: tool_result", "assistant: mcp__memchor__memory_recall", "user: tool_result", "assistant: REPLY-4e0 the budget is three."]);
+    expect(conversation(entries)).toEqual([`user: ${SUBAGENT_PROMPT}`, "assistant: Bash", "user: tool_result", "assistant: mcp__debrief__memory_recall", "user: tool_result", "assistant: REPLY-4e0 the budget is three."]);
     expect(entries.find((l) => l.type === "user")?.origin).toBeUndefined();
     const meta = JSON.parse(readFileSync(join(project, sessionId, "subagents", `agent-${agentId}.meta.json`), "utf8")) as Record<string, unknown>;
     expect(meta).toEqual({ agentType: "general-purpose", description: "retry budget", toolUseId: expect.stringMatching(/^toolu_stub_/) as unknown, spawnDepth: 1, requestShape: "foreground", requestNonInteractive: true });
@@ -211,7 +211,7 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} around
     };
   }, 90_000);
 
-  test("background (the default): the parent's Stop runs while the sub-agent works, the report comes back as a task-notification prompt, and a Memchor call without a PreToolUse allow is not run", async () => {
+  test("background (the default): the parent's Stop runs while the sub-agent works, the report comes back as a task-notification prompt, and a Debrief call without a PreToolUse allow is not run", async () => {
     const { rig, sessionId, project, placeholders } = await spawnSubagent({ background: true, outputs: {} });
     const records = rig.records();
     const events = records.map((r) => r.event);
@@ -234,12 +234,12 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} around
     const meta = JSON.parse(readFileSync(join(project, sessionId, "subagents", `agent-${agentId}.meta.json`), "utf8")) as Record<string, unknown>;
     expect(meta["requestShape"]).toBe("background");
 
-    // With no allow from PreToolUse, the sub-agent's Memchor call is not run in -p (no PostToolUse, no result in its transcript).
-    expect(records.filter((r) => r.payload?.["tool_name"] === "mcp__memchor__memory_recall").map((r) => r.event)).toEqual(["PreToolUse"]);
+    // With no allow from PreToolUse, the sub-agent's Debrief call is not run in -p (no PostToolUse, no result in its transcript).
+    expect(records.filter((r) => r.payload?.["tool_name"] === "mcp__debrief__memory_recall").map((r) => r.event)).toEqual(["PreToolUse"]);
     const results = lines(join(project, sessionId, "subagents", `agent-${agentId}.jsonl`)).filter((l) => l.type === "user" && JSON.stringify(l.message?.content).includes('"scope"'));
     expect(results).toEqual([]);
     expect(existsSync(join(project, sessionId, "subagents", `agent-${agentId}.jsonl`))).toBe(true);
 
-    evidence["background"] = sanitize({ hooks: events, firstStop: stops[0]?.payload, taskNotification: prompts[1], meta, memchorCallWithoutAllow: "not run" }, [...placeholders, [agentId, "<agent>"]]);
+    evidence["background"] = sanitize({ hooks: events, firstStop: stops[0]?.payload, taskNotification: prompts[1], meta, debriefCallWithoutAllow: "not run" }, [...placeholders, [agentId, "<agent>"]]);
   }, 90_000);
 });

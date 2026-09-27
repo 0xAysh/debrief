@@ -14,7 +14,7 @@ describe("MCP scope resolution across processes", () => {
     await before.ok("memory_record", { kind: "decision", body: "decided before the move", attribution: "user_direction" });
     await before.close();
 
-    const moved = join(tempDir("memchor-moved-"), "checkout");
+    const moved = join(tempDir("debrief-moved-"), "checkout");
     renameSync(repo, moved);
     const servers = await Promise.all(["claude-code", "codex"].map((host) => spawnServer({ cwd: moved, home, host })));
     const boots = await Promise.all(servers.map((s) => s.ok<BootstrapResult>("memory_bootstrap")));
@@ -30,13 +30,13 @@ describe("MCP scope resolution across processes", () => {
   test("an ambiguous bootstrap asks, refuses workstream writes, and binds the user's choice", async () => {
     const home = tempDir();
     const repo = initRepo();
-    const first = join(tempDir("memchor-wt-"), "wt");
+    const first = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "feat/pay", first);
     const orphanServer = await spawnServer({ cwd: first, home, host: "claude-code" });
     const orphan = (await orphanServer.ok<BootstrapResult>("memory_bootstrap")).scope.workstreamId;
     await orphanServer.close();
     git(repo, "worktree", "remove", "--force", first);
-    const second = join(tempDir("memchor-wt-"), "wt");
+    const second = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", second, "feat/pay");
 
     const server = await spawnServer({ cwd: second, home, host: "codex" });

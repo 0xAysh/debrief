@@ -5,7 +5,7 @@ import { type ElicitRequest, ElicitRequestSchema, type ElicitResult } from "@mod
 import { onCleanup } from "../helpers.js";
 
 /** The CLI as the package ships it: one bundled file (scripts/bundle.mjs). */
-export const CLI = resolve(import.meta.dirname, "../../dist/memchor.mjs");
+export const CLI = resolve(import.meta.dirname, "../../dist/debrief.mjs");
 
 export interface ToolOutcome {
   isError: boolean;
@@ -25,7 +25,7 @@ export interface ServerHandle {
 export const NO_NETWORK = resolve(import.meta.dirname, "no-network.mjs");
 
 /**
- * Spawns `node dist/memchor.mjs mcp` in `cwd` with an isolated MEMCHOR_HOME (and, if given, an
+ * Spawns `node dist/debrief.mjs mcp` in `cwd` with an isolated DEBRIEF_HOME (and, if given, an
  * isolated Claude config dir or Codex home) and connects an SDK client. `networkLog` preloads a guard that
  * records and refuses every network attempt.
  */
@@ -44,7 +44,7 @@ export async function spawnServer(options: {
    * `{ form: {}, url: {} }`) and how the "user" answers; omitted = no elicitation support.
    */
   elicitation?: { capability: Record<string, unknown>; respond: (request: ElicitRequest["params"]) => Promise<ElicitResult> };
-  /** `MEMCHOR_ELICITATION_TIMEOUT_MS` for the server. */
+  /** `DEBRIEF_ELICITATION_TIMEOUT_MS` for the server. */
   elicitationTimeoutMs?: number;
 }): Promise<ServerHandle> {
   const args = [...(options.networkLog === undefined ? [] : ["--import", NO_NETWORK]), CLI, "mcp", ...(options.host === undefined ? [] : ["--host", options.host])];
@@ -55,18 +55,18 @@ export async function spawnServer(options: {
     env: {
       PATH: process.env["PATH"] ?? "",
       HOME: process.env["HOME"] ?? "",
-      MEMCHOR_HOME: options.home,
+      DEBRIEF_HOME: options.home,
       // Never let a spawned server read the developer's real transcripts.
       CLAUDE_CONFIG_DIR: options.claudeConfigDir ?? resolve(options.home, "no-claude-config"),
       CODEX_HOME: options.codexHome ?? resolve(options.home, "no-codex-home"),
-      ...(options.networkLog === undefined ? {} : { MEMCHOR_NETWORK_LOG: options.networkLog }),
-      ...(options.elicitationTimeoutMs === undefined ? {} : { MEMCHOR_ELICITATION_TIMEOUT_MS: String(options.elicitationTimeoutMs) }),
+      ...(options.networkLog === undefined ? {} : { DEBRIEF_NETWORK_LOG: options.networkLog }),
+      ...(options.elicitationTimeoutMs === undefined ? {} : { DEBRIEF_ELICITATION_TIMEOUT_MS: String(options.elicitationTimeoutMs) }),
     },
     stderr: "pipe",
   });
   const elicitation = options.elicitation;
   const client = new Client(
-    { name: options.clientName ?? "memchor-test", version: "0.0.0" },
+    { name: options.clientName ?? "debrief-test", version: "0.0.0" },
     elicitation === undefined ? {} : { capabilities: { elicitation: elicitation.capability } },
   );
   if (elicitation !== undefined) client.setRequestHandler(ElicitRequestSchema, (request) => elicitation.respond(request.params));

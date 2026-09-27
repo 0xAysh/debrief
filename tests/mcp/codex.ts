@@ -10,16 +10,16 @@ import { CLI, NO_NETWORK } from "./harness.js";
  * Drives the real Codex CLI for connection tests: `codex mcp add|list|get` in a temporary
  * CODEX_HOME, `codex app-server` over stdio JSON-RPC, and a localhost stub of the Responses API
  * so a turn can run with no account, model or internet. Codex (a Rust binary) is not covered by
- * the Node no-network preload; only the Memchor processes it starts are.
+ * the Node no-network preload; only the Debrief processes it starts are.
  */
 
 /** The Codex release these tests pin (bundled with the ChatGPT desktop app, 2026-08). */
 export const CODEX_PINNED_VERSION = "0.148.0-alpha.21";
-export const CODEX_BIN = process.env["MEMCHOR_TEST_CODEX_BIN"] ?? "/Applications/ChatGPT.app/Contents/Resources/codex";
+export const CODEX_BIN = process.env["DEBRIEF_TEST_CODEX_BIN"] ?? "/Applications/ChatGPT.app/Contents/Resources/codex";
 
 /** Null when the pinned binary is available; otherwise why the Codex tests are skipped. */
 export function codexSkipReason(): string | null {
-  if (!existsSync(CODEX_BIN)) return `no Codex binary at ${CODEX_BIN} (set MEMCHOR_TEST_CODEX_BIN)`;
+  if (!existsSync(CODEX_BIN)) return `no Codex binary at ${CODEX_BIN} (set DEBRIEF_TEST_CODEX_BIN)`;
   const run = spawnSync(CODEX_BIN, ["--version"], { encoding: "utf8", timeout: 20_000 });
   const version = /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)/.exec(run.stdout)?.[1];
   if (version !== CODEX_PINNED_VERSION) return `${CODEX_BIN} is codex-cli ${version ?? "unknown"}; these tests pin ${CODEX_PINNED_VERSION}`;
@@ -53,22 +53,22 @@ export function codex(env: NodeJS.ProcessEnv, cwd: string, ...args: string[]): {
 }
 
 /**
- * The `codex mcp add` arguments that register Memchor. Codex starts MCP servers with a cleared
- * environment, so CODEX_HOME and MEMCHOR_HOME must be passed explicitly; the test also preloads
- * the no-network guard into the Memchor process.
+ * The `codex mcp add` arguments that register Debrief. Codex starts MCP servers with a cleared
+ * environment, so CODEX_HOME and DEBRIEF_HOME must be passed explicitly; the test also preloads
+ * the no-network guard into the Debrief process.
  */
-export function memchorAddArgs(options: { codexHome: string; memchorHome: string; networkLog: string; env?: Record<string, string> }): string[] {
+export function debriefAddArgs(options: { codexHome: string; debriefHome: string; networkLog: string; env?: Record<string, string> }): string[] {
   return [
     "mcp",
     "add",
-    "memchor",
+    "debrief",
     ...Object.entries(options.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
     "--env",
     `CODEX_HOME=${options.codexHome}`,
     "--env",
-    `MEMCHOR_HOME=${options.memchorHome}`,
+    `DEBRIEF_HOME=${options.debriefHome}`,
     "--env",
-    `MEMCHOR_NETWORK_LOG=${options.networkLog}`,
+    `DEBRIEF_NETWORK_LOG=${options.networkLog}`,
     "--",
     process.execPath,
     "--import",
@@ -91,14 +91,14 @@ export function useStubProvider(codexHome: string, port: number): void {
 }
 
 export interface StubCall {
-  /** Tool name inside the Memchor namespace, e.g. "memory_bootstrap". */
+  /** Tool name inside the Debrief namespace, e.g. "memory_bootstrap". */
   tool: string;
   arguments: Record<string, unknown>;
 }
 
 /**
- * A localhost Responses API: while Memchor calls remain queued, each model request is answered
- * with the next one (a function_call in the `mcp__memchor` namespace Codex advertises, so one
+ * A localhost Responses API: while Debrief calls remain queued, each model request is answered
+ * with the next one (a function_call in the `mcp__debrief` namespace Codex advertises, so one
  * turn can chain several calls); once the queue is empty, with a plain assistant message that
  * ends the turn.
  */
@@ -115,7 +115,7 @@ export async function startStubResponses(script: { calls: StubCall[]; reply: str
         return;
       }
       const json = JSON.parse(body) as { tools?: { type?: string; name?: string }[] };
-      const namespace = json.tools?.find((t) => t.type === "namespace" && t.name?.startsWith("mcp__memchor"))?.name;
+      const namespace = json.tools?.find((t) => t.type === "namespace" && t.name?.startsWith("mcp__debrief"))?.name;
       const next = namespace !== undefined ? queue.shift() : undefined;
       const n = state.requests;
       const item =
@@ -194,7 +194,7 @@ export class CodexAppServer {
   }
 
   async initialize(): Promise<void> {
-    await this.request("initialize", { clientInfo: { name: "memchor-test", version: "0.0.0" }, capabilities: { experimentalApi: true } });
+    await this.request("initialize", { clientInfo: { name: "debrief-test", version: "0.0.0" }, capabilities: { experimentalApi: true } });
     this.notify("initialized");
   }
 

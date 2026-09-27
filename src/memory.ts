@@ -14,7 +14,7 @@ import {
 } from "./bootstrap/workstream-resolution.js";
 import { noteToolCall } from "./bootstrap/host-sessions.js";
 import { headCommit, locateWorkspace, registerWorkspace, resolveHome, type WorkspaceLocation } from "./bootstrap/workspace-resolution.js";
-import { type ErrorCode, MemchorError } from "./errors.js";
+import { type ErrorCode, DebriefError } from "./errors.js";
 import { checkpointNudge, headCheckpointRecordId, headRevision, publishCheckpoint } from "./integrity/checkpoints.js";
 import {
   type Affected,
@@ -144,11 +144,11 @@ export type { Lifecycle, Taint } from "./retrieval/eligibility.js";
 // ───────────────────────────── Public interface ─────────────────────────────
 
 export interface OpenMemoryOptions {
-  /** Trusted: the directory the host launched Memchor in. Scope is derived from it and nothing else. */
+  /** Trusted: the directory the host launched Debrief in. Scope is derived from it and nothing else. */
   cwd: string;
   /** Trusted: which agent host this process serves (e.g. "claude-code", "codex", "pi", "unknown"). */
   host: string;
-  /** Storage root. Defaults to `$MEMCHOR_HOME`, then `~/.memchor`. Never inside the repository. */
+  /** Storage root. Defaults to `$DEBRIEF_HOME`, then `~/.debrief`. Never inside the repository. */
   home?: string;
   /** The host's own session identifier, if known at launch (can also be supplied to `bootstrap`). */
   hostSessionId?: string;
@@ -194,7 +194,7 @@ export interface PackItem {
   title: string | null;
   /**
    * A passage of the body (the best-matching one for a query). Use `read` for the rest.
-   * A passage cut to fit the budget ends with an explicit "cut by Memchor" marker.
+   * A passage cut to fit the budget ends with an explicit "cut by Debrief" marker.
    */
   excerpt: string;
   /** True when `excerpt` is not the whole body. */
@@ -219,7 +219,7 @@ export interface PackItem {
   testRun: TestRunView | null;
   workspaceLevel: boolean;
   host: string;
-  /** Memchor session that wrote (or imported) the record. */
+  /** Debrief session that wrote (or imported) the record. */
   sessionId: string | null;
   /** Where an imported record came from (host, transcript, event); null for records agents wrote. */
   source: ImportedSource | null;
@@ -472,7 +472,7 @@ export interface StatusScope {
    * The signal bootstrap would bind by. Null while ambiguous; after a repository move, until a
    * bootstrap re-points the moved worktree bindings (previewing against the old paths would
    * disagree with what bootstrap then binds); while a schema migration is pending (the next
-   * bootstrap migrates first); and when the database cannot be read or is newer than this Memchor.
+   * bootstrap migrates first); and when the database cannot be read or is newer than this Debrief.
    */
   resolvedBy: ResolutionBasis | null;
   /** The candidates bootstrap would ask the user to choose from, exactly as it would list them. */
@@ -529,7 +529,7 @@ export interface StatusResult {
  *   is `idempotency_conflict` for a different one.
  * - **Checkpoints are compare-and-swap** on `expectedRevision`; never merged.
  * - **Recall filters before ranking** and the whole pack stays within its budget (unless the budget cannot hold even its scope).
- * - Methods are synchronous and throw only `MemchorError` for expected failures.
+ * - Methods are synchronous and throw only `DebriefError` for expected failures.
  */
 export interface Memory {
   /**
@@ -593,7 +593,7 @@ export interface Memory {
   promptHint(input: PromptHintInput): string | null;
   /**
    * Whether a tool call the host is about to run may skip its permission prompt (a pre-tool
-   * hook): Memchor's own read-only calls, by exact server name. A notice for the user comes with
+   * hook): Debrief's own read-only calls, by exact server name. A notice for the user comes with
    * a recall. Null leaves the call to the host's normal approval: every write, a bootstrap
    * carrying the user's consent answer, and any other tool.
    */
@@ -658,7 +658,7 @@ const OPERATIONS = Object.keys(OPERATION_SCHEMAS);
 type Unreplayed<T> = T extends unknown ? Omit<T, "replayed"> : never;
 const INSPECT_BODY_BYTES = 4_096;
 const PRIVATE_NOTICE =
-  "This session will not be remembered: what it stored was forgotten, its transcript will not be imported, and Memchor refuses its writes. Tell the user so in one line. Its content may still be in the host's own transcript files.";
+  "This session will not be remembered: what it stored was forgotten, its transcript will not be imported, and Debrief refuses its writes. Tell the user so in one line. Its content may still be in the host's own transcript files.";
 const FORGET_NOTICE =
   "Nothing has been removed yet. Show the user the targets and the impact, and ask them to confirm explicitly; only then call memory_manage with action forget and this confirmToken. Forgetting cannot be undone. Records listed as invalidated or quarantined keep their own content (forget them too if the user wants). Host transcripts, loaded model contexts, exports and backups are not erased.";
 const DEFAULT_IMPORT_BUDGET_MS = 3_000;
@@ -828,13 +828,13 @@ class LocalMemory implements Memory {
   private capture(parsed: { transcriptPath: string; maxMs: number }): TurnCapture {
     const result = this.guard((): CaptureResult => {
       if (this.importer === null) return skippedCapture("unsupported_host");
-      if (this.closed) throw new MemchorError("storage_unavailable", "This Memory has been closed.");
+      if (this.closed) throw new DebriefError("storage_unavailable", "This Memory has been closed.");
       let location: WorkspaceLocation;
       try {
         location = this.bound?.location ?? locateWorkspace(this.cwd, this.home);
       } catch (error) {
-        // Outside a Git worktree Memchor keeps no memory: a skip, not a failure.
-        if (error instanceof MemchorError && error.code === "scope_unresolved") return skippedCapture("not_a_repository");
+        // Outside a Git worktree Debrief keeps no memory: a skip, not a failure.
+        if (error instanceof DebriefError && error.code === "scope_unresolved") return skippedCapture("not_a_repository");
         throw error;
       }
       return this.importer.capture(location, () => this.workspaceDb(location), parsed.transcriptPath, parsed.maxMs);
@@ -846,7 +846,7 @@ class LocalMemory implements Memory {
       result.state === "failed"
         ? (result.problem ?? { code: "internal", message: "capture failed" })
         : result.reason === "not_a_transcript"
-          ? { code: "not_a_transcript", message: `${parsed.transcriptPath} is not a transcript Memchor imports for ${this.host}` }
+          ? { code: "not_a_transcript", message: `${parsed.transcriptPath} is not a transcript Debrief imports for ${this.host}` }
           : null;
     if (failure !== null) recordHookFailure(this.home, { host: this.host, event: "stop", cwd: this.cwd, ...failure });
     return { ...result, failure };
@@ -862,7 +862,7 @@ class LocalMemory implements Memory {
         const failures = recentHookFailures(this.home, { within: boot.scope.worktree });
         return renderSessionStart(boot, { protocol: PROTOCOL, failures, now: new Date(), digest });
       } catch (error) {
-        if (!(error instanceof MemchorError)) throw error;
+        if (!(error instanceof DebriefError)) throw error;
         // Outside a Git worktree there is no memory to speak of: say nothing.
         if (error.code === "scope_unresolved") return null;
         recordHookFailure(this.home, { host: this.host, event: "session-start", cwd: this.cwd, code: error.code, message: error.message });
@@ -882,7 +882,7 @@ class LocalMemory implements Memory {
         const pack = this.pack(db, scope, parse(RecallInput, { maxBytes: START_PACK_BYTES }));
         return renderSubagentStart({ scope: scopeView(db, scope), pack, preferences, newWorkspace: location.isNew, now: new Date() });
       } catch (error) {
-        if (!(error instanceof MemchorError)) throw error;
+        if (!(error instanceof DebriefError)) throw error;
         if (error.code === "scope_unresolved") return null;
         recordHookFailure(this.home, { host: this.host, event: "subagent-start", cwd: this.cwd, code: error.code, message: error.message });
         return unreadableSubagentStart(error.code);
@@ -895,7 +895,7 @@ class LocalMemory implements Memory {
     const before = this.newestRecordSeq();
     const capture = this.capture(parsed);
     const notice =
-      capture.failure !== null ? userNotice(`⚠ turn not saved (${capture.failure.code}): memchor diag status`) : capture.events > 0 ? userNotice(`saved turn (${capture.events} events)`) : null;
+      capture.failure !== null ? userNotice(`⚠ turn not saved (${capture.failure.code}): debrief diag status`) : capture.events > 0 ? userNotice(`saved turn (${capture.events} events)`) : null;
     const db = this.bound?.db ?? this.unboundDb;
     const failure = capture.failure;
     if (parsed.stopHookActive || capture.workstreamId === null || db === undefined) return { nudge: null, notice, failure, nudgeFailure: null };
@@ -909,7 +909,7 @@ class LocalMemory implements Memory {
       return { nudge, notice, failure, nudgeFailure: null };
     } catch (error) {
       // The turn is saved; a nudge that cannot be worked out is skipped, and the failure kept.
-      if (!(error instanceof MemchorError)) throw error;
+      if (!(error instanceof DebriefError)) throw error;
       recordHookFailure(this.home, { host: this.host, event: "stop", cwd: this.cwd, code: error.code, message: error.message });
       return { nudge: null, notice, failure, nudgeFailure: { code: error.code, message: error.message } };
     }
@@ -924,7 +924,7 @@ class LocalMemory implements Memory {
       try {
         locateWorkspace(this.cwd, this.home);
       } catch (error) {
-        if (error instanceof MemchorError && error.code === "scope_unresolved") return null;
+        if (error instanceof DebriefError && error.code === "scope_unresolved") return null;
         throw error;
       }
       return PREFERENCE_HINT;
@@ -934,8 +934,8 @@ class LocalMemory implements Memory {
   approveTool(input: ApproveToolInput): { notice: string | null } | null {
     return this.guard(() => {
       const parsed = parse(ApproveToolInput, input);
-      const operation = hostDescriptor(this.host)?.memchorTool?.exec(parsed.tool)?.[1];
-      // Every Memchor call, approved here or not: the MCP server learns from this which session made it.
+      const operation = hostDescriptor(this.host)?.debriefTool?.exec(parsed.tool)?.[1];
+      // Every Debrief call, approved here or not: the MCP server learns from this which session made it.
       if (operation !== undefined && parsed.call !== undefined) noteToolCall(this.home, this.host, parsed.call);
       const args: Record<string, unknown> = typeof parsed.input === "object" && parsed.input !== null ? (parsed.input as Record<string, unknown>) : {};
       if (operation === undefined || !readOnlyCall(operation, args)) return null;
@@ -960,7 +960,7 @@ class LocalMemory implements Memory {
       return db.transaction((): ReadResult => {
         const row = requireVisibleRecord(db, scope.workstreamId, parsed.recordId);
         if (parsed.offset > row.body.length) {
-          throw new MemchorError("invalid_input", `offset ${parsed.offset} is past the end of the record (${row.body.length}).`, {
+          throw new DebriefError("invalid_input", `offset ${parsed.offset} is past the end of the record (${row.body.length}).`, {
             details: { offset: parsed.offset, totalLength: row.body.length },
           });
         }
@@ -1094,7 +1094,7 @@ class LocalMemory implements Memory {
   /** A session the user asked not to remember writes nothing (it may still read). */
   private refuseIfPrivate(db: Db, scope: BoundScope): void {
     if (!sessionIsPrivate(db, { sessionId: scope.sessionId, host: scope.host, hostSessionId: this.hostSessionId })) return;
-    throw new MemchorError("session_private", "The user asked Memchor not to remember this session, so it stores nothing. Reads still work.", {
+    throw new DebriefError("session_private", "The user asked Debrief not to remember this session, so it stores nothing. Reads still work.", {
       details: { sessionId: scope.sessionId },
     });
   }
@@ -1131,7 +1131,7 @@ class LocalMemory implements Memory {
       };
       let db: Db | null = null;
       try {
-        if (this.closed) throw new MemchorError("storage_unavailable", "This Memory has been closed.");
+        if (this.closed) throw new DebriefError("storage_unavailable", "This Memory has been closed.");
         const location = locateWorkspace(this.cwd, this.home);
         result.storage.dbPath = location.dbPath;
         result.scope = {
@@ -1165,7 +1165,7 @@ class LocalMemory implements Memory {
         if (schemaVersion > SCHEMA_VERSION) {
           result.problem = {
             code: "unsupported_runtime",
-            message: `The database uses schema version ${schemaVersion}; this Memchor supports up to ${SCHEMA_VERSION}. Upgrade Memchor.`,
+            message: `The database uses schema version ${schemaVersion}; this Debrief supports up to ${SCHEMA_VERSION}. Upgrade Debrief.`,
           };
           return result;
         }
@@ -1198,7 +1198,7 @@ class LocalMemory implements Memory {
         result.preferenceQuestions = count("preference_candidates");
       } catch (error) {
         const mapped = toStorageError(error);
-        if (!(mapped instanceof MemchorError)) throw mapped;
+        if (!(mapped instanceof DebriefError)) throw mapped;
         result.problem = { code: mapped.code, message: mapped.message };
       } finally {
         db?.close();
@@ -1237,7 +1237,7 @@ class LocalMemory implements Memory {
    * explicit choice or task.
    */
   private bind(hints?: ScopeHints): Bound {
-    if (this.closed) throw new MemchorError("storage_unavailable", "This Memory has been closed.");
+    if (this.closed) throw new DebriefError("storage_unavailable", "This Memory has been closed.");
     if (this.bound !== undefined) {
       const { db, location, scope } = this.bound;
       if (hints !== undefined && (hints.task !== undefined || hints.workstream !== undefined || scope.workstream === null)) {
@@ -1275,7 +1275,7 @@ class LocalMemory implements Memory {
       });
     } catch (error) {
       // The capture that follows meets the same problem and reports it.
-      if (error instanceof MemchorError) return 0;
+      if (error instanceof DebriefError) return 0;
       throw error;
     }
   }
@@ -1301,7 +1301,7 @@ class LocalMemory implements Memory {
       this.hostSessionId ??= hostSessionId;
       if (set.changes === 1 || this.hostSessionId === hostSessionId) return;
     }
-    throw new MemchorError("invalid_input", "This Memchor process is already bound to a different host session.", {
+    throw new DebriefError("invalid_input", "This Debrief process is already bound to a different host session.", {
       details: { hostSessionId },
     });
   }
@@ -1376,7 +1376,7 @@ class LocalMemory implements Memory {
         | undefined;
       if (stored !== undefined) {
         if (stored.request_hash !== requestHash) {
-          throw new MemchorError("idempotency_conflict", `Operation key "${operationKey}" was already used for a different request.`, {
+          throw new DebriefError("idempotency_conflict", `Operation key "${operationKey}" was already used for a different request.`, {
             details: { operationKey },
           });
         }
@@ -1405,7 +1405,7 @@ class LocalMemory implements Memory {
     if (parsed.continuation !== undefined) {
       continued = openContinuation(scope.continuationSecret, parsed.continuation, scope);
       if ((parsed.query !== undefined && parsed.query !== continued.query) || (kinds !== null && canonicalJson(kinds) !== canonicalJson(continued.kinds))) {
-        throw new MemchorError("invalid_input", "A continuation cannot change the query or kinds of its sequence.", {
+        throw new DebriefError("invalid_input", "A continuation cannot change the query or kinds of its sequence.", {
           details: { reason: "continuation_mismatch" },
         });
       }
@@ -1638,7 +1638,7 @@ function freshnessSubject(row: RecordRow, imported: boolean): FreshnessSubject {
 }
 
 /**
- * Whether a test run's citations include the run itself as Memchor captured it: a tool result
+ * Whether a test run's citations include the run itself as Debrief captured it: a tool result
  * imported from the host's transcript whose call summary (the first line of its body) contains
  * the command, and whose error flag (in the title the importer writes) agrees with
  * the outcome. Anything else, including unrelated captured output, leaves the run an assertion.
@@ -1741,12 +1741,12 @@ function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
   return schema.parse(removePrivateEverywhere(input));
 }
 
-function invalidInput(error: ZodError): MemchorError {
+function invalidInput(error: ZodError): DebriefError {
   const issues = error.issues.map((issue) => ({ path: issue.path.join("."), code: issue.code, message: issue.message }));
   const scopeHint = issues.some((issue) => issue.code === "unrecognized_keys")
-    ? " Payloads cannot carry scope or unknown fields; scope comes from where the host started Memchor."
+    ? " Payloads cannot carry scope or unknown fields; scope comes from where the host started Debrief."
     : "";
-  return new MemchorError(
+  return new DebriefError(
     "invalid_input",
     `Invalid input: ${issues.map((issue) => (issue.path ? `${issue.path}: ${issue.message}` : issue.message)).join("; ")}.${scopeHint}`,
     { details: { issues } },

@@ -59,7 +59,7 @@ describe("first-use consent", () => {
     const other = initRepo();
     installTranscript(e.config, "2.1.281/basic.jsonl", { cwd: repo });
     installTranscript(e.config, "2.1.183/basic.jsonl", { cwd: other });
-    installTranscript(e.config, "2.1.281/branches.jsonl", { cwd: "/nonexistent/memchor-test/project" });
+    installTranscript(e.config, "2.1.281/branches.jsonl", { cwd: "/nonexistent/debrief-test/project" });
 
     const memory = open(repo, e);
     const boot = memory.bootstrap();
@@ -255,7 +255,7 @@ describe("reconciliation", () => {
     const first = open(repo, e);
     first.bootstrap({ importChoice: "current_project" });
     const before = recordCount(first);
-    expect(before).toBe(7); // 4 messages + 3 tool results; the Memchor echo is not a record
+    expect(before).toBe(7); // 4 messages + 3 tool results; the Debrief echo is not a record
     first.close();
 
     const second = open(repo, e);
@@ -361,7 +361,7 @@ describe("capture safety", () => {
     return parts.join("\n");
   }
 
-  test("hidden reasoning, injected context, binaries, file contents, Memchor echoes and secrets are not stored", () => {
+  test("hidden reasoning, injected context, binaries, file contents, Debrief echoes and secrets are not stored", () => {
     const e = env();
     const repo = initRepo();
     installTranscript(e.config, "2.1.281/basic.jsonl", { cwd: repo });
@@ -391,13 +391,13 @@ describe("capture safety", () => {
 
     const text = storedText(memory);
     expect(text).not.toMatch(/SYNTHETIC-DOTENV|SYNTHETICSECRET123456|b3BlbnNzaC1rZXktdjEAAAAA/);
-    expect(text).toMatch(/\[output withheld by Memchor: the call touched a sensitive path\]/);
+    expect(text).toMatch(/\[output withheld by Debrief: the call touched a sensitive path\]/);
     expect(text).toMatch(/api_key: \[redacted:secret\]/);
     expect(text).toMatch(/\[redacted:private_key\]/);
     const build = memory.recall({ query: "BUILD-HEAD" }).items[0];
     const body = memory.read({ recordId: build?.recordId ?? "", maxBytes: 32_000 }).body;
     expect(body).toMatch(/^\$ npm run build --verbose\n\nBUILD-HEAD compiling/);
-    expect(body).toMatch(/\[… [\d,]+ bytes omitted by Memchor …\]\n.*BUILD-TAIL$/s);
+    expect(body).toMatch(/\[… [\d,]+ bytes omitted by Debrief …\]\n.*BUILD-TAIL$/s);
     expect(Buffer.byteLength(body)).toBeLessThan(2_000);
     expect(boot.import.currentProject?.counters).toMatchObject({ clipped: 2, withheld: 1, redactions: 2 });
   });
@@ -461,7 +461,7 @@ describe("capture safety", () => {
     expect(Buffer.byteLength(canonical)).toBeLessThan(100_000);
   });
 
-  test("Memchor output echoed in a transcript keeps its references to existing records and is never new evidence", () => {
+  test("Debrief output echoed in a transcript keeps its references to existing records and is never new evidence", () => {
     const e = env();
     const repo = initRepo();
     const memory = open(repo, e);
@@ -481,12 +481,12 @@ describe("capture safety", () => {
     expect(memory.recall({ query: "outbox" }).items.map((i) => i.recordId)).toEqual([decision.recordId]);
   });
 
-  describe("an agent repeating Memchor memory it was shown", () => {
+  describe("an agent repeating Debrief memory it was shown", () => {
     const OUTBOX = "Use an outbox table for retries so a crashed worker never loses a charge.";
     const SCHEMA = "Keep the outbox in the payments schema, next to the charges table.";
 
     /**
-     * A session that recalls `echoed` (Memchor output naming those records), with assistant text
+     * A session that recalls `echoed` (Debrief output naming those records), with assistant text
      * `before` and `after` the recall. It runs after the records were written, as it would.
      */
     function session(repo: string, sessionId: string, echoed: string[], before: string[], after: string[]): string {
@@ -497,7 +497,7 @@ describe("capture safety", () => {
       return [
         JSON.stringify({ ...base(), type: "user", origin: { kind: "human" }, message: { content: "Pick up the retry work." } }),
         ...before.map(said),
-        JSON.stringify({ ...base(), type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_recall", name: "mcp__memchor__memory_recall", input: { query: "retries" } }] } }),
+        JSON.stringify({ ...base(), type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_recall", name: "mcp__debrief__memory_recall", input: { query: "retries" } }] } }),
         JSON.stringify({ ...base(), type: "user", origin: { kind: "human" }, message: { content: [{ type: "tool_result", tool_use_id: "toolu_recall", content: JSON.stringify({ items: echoed.map((recordId) => ({ recordId, excerpt: "(excerpt)" })) }) }] } }),
         ...after.map(said),
       ].join("\n") + "\n";
@@ -580,10 +580,10 @@ describe("capture safety", () => {
     expect(open(other, e).status().counts).toBeNull(); // nothing leaked into the other workspace
   });
 
-  test("Memchor output naming another workstream of the workspace binds the transcript there: session metadata outranks the worktree binding", () => {
+  test("Debrief output naming another workstream of the workspace binds the transcript there: session metadata outranks the worktree binding", () => {
     const e = env();
     const repo = initRepo();
-    const sibling = tempDir("memchor-worktree-");
+    const sibling = tempDir("debrief-worktree-");
     git(repo, "worktree", "add", "--quiet", "-b", "feature/other", sibling + "/wt");
     const siblingMemory = open(sibling + "/wt", e);
     const siblingWs = siblingMemory.bootstrap({ importChoice: "none" }).scope.workstreamId;
@@ -712,11 +712,11 @@ describe("review regressions", () => {
     const memory = open(repo, e);
     memory.bootstrap({ importChoice: "current_project" });
     const result = memory.recall({ query: "withheld" }).items.find((i) => i.title?.startsWith("Tool"));
-    expect(result?.excerpt).toMatch(/output withheld by Memchor/);
+    expect(result?.excerpt).toMatch(/output withheld by Debrief/);
     expect(visibleText(memory)).not.toMatch(/SYNTHETIC-DOTENV/);
   });
 
-  test("consent counts separate transcripts written by versions Memchor cannot read", () => {
+  test("consent counts separate transcripts written by versions Debrief cannot read", () => {
     const e = env();
     const repo = initRepo();
     installTranscript(e.config, "2.1.281/basic.jsonl", { cwd: repo });
@@ -724,7 +724,7 @@ describe("review regressions", () => {
     installTranscript(e.config, "", { cwd: repo, sessionId, content: renderFixture("unknown-version.jsonl", { cwd: repo, sessionId }).replace('"version":"2.1.281"', '"version":"3.0.0"') });
     const boot = open(repo, e).bootstrap();
     expect(boot.import.transcripts).toMatchObject({ found: 2, currentProject: 2, unsupportedVersion: 1 });
-    expect(boot.import.question).toMatch(/1 written by a Claude Code version Memchor cannot read yet/);
+    expect(boot.import.question).toMatch(/1 written by a Claude Code version Debrief cannot read yet/);
   });
 });
 

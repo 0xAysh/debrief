@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { estimateTokens } from "../schemas.js";
 import { clipToBytes } from "./search.js";
 
@@ -58,8 +58,8 @@ export function sealContinuation(secret: Buffer, state: ContinuationState): stri
 
 /** Verifies and decodes a token for this scope; anything else (including another scope's token) is `invalid_input`. */
 export function openContinuation(secret: Buffer, token: string, scope: { workspaceId: string; workstreamId: string }): ContinuationState {
-  const invalid = (why: string): MemchorError =>
-    new MemchorError("invalid_input", `The continuation is not valid here (${why}). Start a new recall without it.`, {
+  const invalid = (why: string): DebriefError =>
+    new DebriefError("invalid_input", `The continuation is not valid here (${why}). Start a new recall without it.`, {
       details: { reason: "invalid_continuation" },
     });
   const [payload, signature, extra] = token.split(".");
@@ -331,7 +331,7 @@ function measured<P extends Envelope>(result: P): P {
 }
 
 /** Appended to an excerpt that was cut to fit, so a clipped body never reads as the whole record. */
-export const CUT_MARKER = " [… cut by Memchor to fit the budget; memory_read this recordId for the rest]";
+export const CUT_MARKER = " [… cut by Debrief to fit the budget; memory_read this recordId for the rest]";
 
 /** At most this many collapsed copies are listed on an item; `corroboration.records` counts them all. */
 export const LISTED_COPIES = 5;

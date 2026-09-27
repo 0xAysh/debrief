@@ -10,7 +10,7 @@ function open(cwd: string): Memory {
   return memory;
 }
 
-const HINT = "Memchor: the user's wording may state a lasting preference. If it does, propose it with memory_record kind preference at the end of the turn; never for a one-off instruction.";
+const HINT = "Debrief: the user's wording may state a lasting preference. If it does, propose it with memory_record kind preference at the end of the turn; never for a one-off instruction.";
 
 describe("promptHint: one line for the agent when a prompt states a lasting preference", () => {
   const lasting = [

@@ -76,7 +76,7 @@ describe("a sub-agent's work is kept under the session that started it", () => {
     onCleanup(() => {
       memory.close();
     });
-    expect(memory.bootstrap().import.question).toContain("Memchor found 1 local Claude Code sessions (1 in this project,");
+    expect(memory.bootstrap().import.question).toContain("Debrief found 1 local Claude Code sessions (1 in this project,");
     memory.bootstrap({ importChoice: "current_project" });
     expect(recalled(memory, "retry budget attempts", "SYNTHETIC-FINDING")).toHaveLength(1);
   });
@@ -159,7 +159,7 @@ describe("a sub-agent's work is kept under the session that started it", () => {
     const body = memory.read({ recordId: finding?.recordId ?? "", maxBytes: 32_000 }).body;
     expect(body).toContain("[redacted:");
     expect(body).not.toContain("ghp_a1B2");
-    expect(body).toMatch(/\[… [\d,]+ bytes omitted by Memchor …\]/);
+    expect(body).toMatch(/\[… [\d,]+ bytes omitted by Debrief …\]/);
   });
 
   test("the digest's last reply is the session's own agent, not a sub-agent or the prompt it was given", () => {

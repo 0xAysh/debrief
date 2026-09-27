@@ -65,7 +65,7 @@ describe("provenance and independent roots", () => {
     expect(memory.read({ recordId: restated.recordId }).independentRoot).toBe(`record:${original.recordId}`);
   });
 
-  test("Memchor output echoed in a transcript never becomes a second copy of the claim", () => {
+  test("Debrief output echoed in a transcript never becomes a second copy of the claim", () => {
     const e = env();
     const claim = "Charges must carry a server-side idempotency key per order.";
     const { recordId } = open(e).record({ kind: "decision", body: claim, attribution: "user_direction" });

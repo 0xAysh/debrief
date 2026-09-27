@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type ContextPack, type Memory } from "../../src/memory.js";
-import { catchMemchorError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string): Memory {
   const memory = openMemory({ cwd, host: "claude-code", home });
@@ -37,7 +37,7 @@ describe("recall", () => {
       expect(() => memory.recall({ query })).not.toThrow();
     }
     expect(memory.recall({ query: 'retry" OR "x' }).items).toHaveLength(1);
-    expect(catchMemchorError(() => memory.recall({ query: "!!! ???" })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.recall({ query: "!!! ???" })).code).toBe("invalid_input");
   });
 
   test("ranking prefers records matching more of the query, with a deterministic order", () => {
@@ -52,7 +52,7 @@ describe("recall", () => {
   test("scope applies before ranking: other workstreams are excluded, workspace-level records are included", () => {
     const repo = initRepo();
     const home = tempDir();
-    const worktree = join(tempDir("memchor-wt-"), "wt");
+    const worktree = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "other", worktree);
     const mine = open(repo, home);
     const theirs = open(worktree, home);
@@ -94,7 +94,7 @@ describe("recall", () => {
     const evidence = memory.record({ kind: "evidence", body: "p99 latency 900ms", attribution: "direct_observation" });
     const retracted = memory.record({ kind: "evidence", body: "p99 latency 20ms", attribution: "direct_observation" });
     memory.manage({ action: "retract", recordId: retracted.recordId, reason: "wrong", attribution: "user_direction" });
-    expect(catchMemchorError(() => memory.record({ kind: "decision", body: "x", attribution: "agent_inference", supportedBy: [retracted.recordId] })).code).toBe("not_found");
+    expect(catchDebriefError(() => memory.record({ kind: "decision", body: "x", attribution: "agent_inference", supportedBy: [retracted.recordId] })).code).toBe("not_found");
     const decision = memory.record({ kind: "decision", body: "optimise the latency path", attribution: "agent_inference", supportedBy: [evidence.recordId] });
     expect(memory.recall({ query: "latency" }).items.find((i) => i.recordId === decision.recordId)?.citations).toEqual([
       { recordId: evidence.recordId, relation: "supported_by" },
@@ -189,13 +189,13 @@ describe("recall", () => {
     const [payload = "", signature = ""] = token.split(".");
     const state = JSON.parse(Buffer.from(payload, "base64url").toString()) as { r: string };
     const forged = Buffer.from(JSON.stringify({ ...state, r: state.r.split(",").slice(1).join(",") })).toString("base64url") + "." + signature;
-    expect(catchMemchorError(() => memory.recall({ continuation: forged })).code).toBe("invalid_input");
-    expect(catchMemchorError(() => memory.recall({ continuation: token.slice(0, -2) + "zz" })).code).toBe("invalid_input");
-    expect(catchMemchorError(() => memory.recall({ continuation: token, query: "other" })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.recall({ continuation: forged })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.recall({ continuation: token.slice(0, -2) + "zz" })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.recall({ continuation: token, query: "other" })).code).toBe("invalid_input");
 
-    const worktree = join(tempDir("memchor-wt-"), "wt");
+    const worktree = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "elsewhere", worktree);
-    expect(catchMemchorError(() => open(worktree, home).recall({ continuation: token })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => open(worktree, home).recall({ continuation: token })).code).toBe("invalid_input");
   });
 
   test("the head checkpoint consumes budget first and is clipped, never exceeding the budget", () => {
@@ -215,8 +215,8 @@ describe("recall", () => {
 
   test("budgets have hard caps", () => {
     const memory = open(initRepo(), tempDir());
-    expect(catchMemchorError(() => memory.recall({ maxTokens: 1_000_000 })).code).toBe("invalid_input");
-    expect(catchMemchorError(() => memory.recall({ maxBytes: 10_000_000 })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.recall({ maxTokens: 1_000_000 })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.recall({ maxBytes: 10_000_000 })).code).toBe("invalid_input");
     expect(memory.recall({ maxBytes: 1000 }).budget).toMatchObject({ maxBytes: 1000, maxTokens: 250 });
   });
 });

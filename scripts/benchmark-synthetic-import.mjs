@@ -18,13 +18,13 @@ const defaults = {
   largeTurns: 500,
 };
 const options = parseOptions(process.argv.slice(2), defaults);
-const root = mkdtempSync(join(tmpdir(), "memchor-import-benchmark-"));
+const root = mkdtempSync(join(tmpdir(), "debrief-import-benchmark-"));
 try {
   const scenarios = [
     runScenario("small", options.smallTranscripts, options.smallTurns),
     runScenario("large", options.largeTranscripts, options.largeTurns),
   ];
-  process.stdout.write(JSON.stringify({ format: "memchor-synthetic-import-benchmark-v1", networkCalls: 0, scenarios }, null, 2) + "\n");
+  process.stdout.write(JSON.stringify({ format: "debrief-synthetic-import-benchmark-v1", networkCalls: 0, scenarios }, null, 2) + "\n");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
@@ -33,11 +33,11 @@ function runScenario(name, transcripts, turns) {
   const scenarioRoot = join(root, name);
   const repo = join(scenarioRoot, "repo");
   const config = join(scenarioRoot, "claude");
-  const home = join(scenarioRoot, "memchor");
+  const home = join(scenarioRoot, "debrief");
   mkdirSync(repo, { recursive: true });
   execFileSync("git", ["init", "--quiet", "--initial-branch=main", repo]);
   execFileSync("git", ["-C", repo, "config", "user.email", "benchmark@example.invalid"]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "Memchor Benchmark"]);
+  execFileSync("git", ["-C", repo, "config", "user.name", "Debrief Benchmark"]);
   writeFileSync(join(repo, "README.md"), "synthetic benchmark repository\n");
   execFileSync("git", ["-C", repo, "add", "README.md"]);
   execFileSync("git", ["-C", repo, "commit", "--quiet", "-m", "benchmark fixture"]);

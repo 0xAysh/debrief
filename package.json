@@ -1,14 +1,14 @@
 {
-  "name": "memchor",
+  "name": "debrief-cli",
   "version": "0.0.0",
   "private": true,
   "description": "Local, agent-facing working memory for coding agents.",
   "type": "module",
   "bin": {
-    "memchor": "dist/memchor.mjs"
+    "debrief": "dist/debrief.mjs"
   },
   "files": [
-    "dist/memchor.mjs"
+    "dist/debrief.mjs"
   ],
   "engines": {
     "node": ">=24"

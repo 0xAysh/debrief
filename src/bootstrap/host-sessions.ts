@@ -9,7 +9,7 @@ import { homeLog } from "../storage/home-log.js";
  * and names the session only in its environment, which goes stale after `/clear` starts a new
  * session in the same process. Its PreToolUse hook sees the current `session_id` and the
  * `tool_use_id`, and the MCP call carries the same id in `_meta`: the hook notes the pair here and
- * the server looks it up. The notes live in `$MEMCHOR_HOME` because the hook runs before any
+ * the server looks it up. The notes live in `$DEBRIEF_HOME` because the hook runs before any
  * workspace is resolved and must stay cheap.
  */
 

@@ -6,8 +6,8 @@ import { type PluginInstall, readJson } from "./host-plugins.js";
 import type { PluginFacts } from "./hosts.js";
 
 /**
- * Whether Memchor's plugin is installed in a host and working, for `memchor status`: the host's
- * record of the plugin, which of Memchor's hooks the installed copy registers, and a real MCP
+ * Whether Debrief's plugin is installed in a host and working, for `debrief status`: the host's
+ * record of the plugin, which of Debrief's hooks the installed copy registers, and a real MCP
  * handshake with the server command it registers (as `claude mcp list` does). What each hook
  * last did is `Memory.status().hookRuns`; this module only reads the host's files and starts
  * the server once.
@@ -46,7 +46,7 @@ export async function checkPlugin(facts: PluginFacts, launch: Launch): Promise<P
   } catch (error) {
     return { state: "unreadable", message: error instanceof Error ? error.message : String(error) };
   }
-  const registered = facts.hooks.map((hook) => ({ event: hook.event, registered: JSON.stringify(hooks?.[hook.hostEvent] ?? null).includes(`memchor hook ${hook.event} `) }));
+  const registered = facts.hooks.map((hook) => ({ event: hook.event, registered: JSON.stringify(hooks?.[hook.hostEvent] ?? null).includes(`debrief hook ${hook.event} `) }));
   const server = servers?.[facts.server];
   const command = typeof server?.command === "string" ? server.command : null;
   const args = Array.isArray(server?.args) ? server.args.filter((a): a is string => typeof a === "string") : [];
@@ -66,7 +66,7 @@ async function handshake(command: string, args: string[], facts: PluginFacts, la
   transport.stderr?.on("data", (chunk: Buffer) => {
     if (stderr.length < 2_000) stderr += chunk.toString();
   });
-  const client = new Client({ name: "memchor-status", version: "0" });
+  const client = new Client({ name: "debrief-status", version: "0" });
   let timer: NodeJS.Timeout | undefined;
   try {
     const listed = await Promise.race([
@@ -78,7 +78,7 @@ async function handshake(command: string, args: string[], facts: PluginFacts, la
       }),
     ]);
     const tools = listed.tools.filter((t) => t.name.startsWith("memory_")).length;
-    return { command: line, tools, problem: tools === 0 ? "it answered, but offers no Memchor tools" : null };
+    return { command: line, tools, problem: tools === 0 ? "it answered, but offers no Debrief tools" : null };
   } catch (error) {
     // What the server said first: the error, before any usage text or stack.
     const said = stderr.split("\n").find((l) => l.trim() !== "")?.trim();

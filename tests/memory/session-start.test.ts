@@ -45,14 +45,14 @@ describe("sessionStart: what a session-start hook injects", () => {
     expect(items.length).toBeGreaterThanOrEqual(3);
     for (const line of items) expect(line).toMatch(/^- \[(evidence|note|decision|observation|next_step|question) · \d+(m|h|d|w|mo|y) · claude-code · (current|stale|unknown)\] .+ \(rec_[0-9a-f]{32}\)$/);
     expect(start.context.length).toBeLessThanOrEqual(SESSION_CONTEXT_CHARS);
-    expect(start.notice).toMatch(/^◪ memchor · checkpoint r1 loaded · 1 preference · \d+ items$/);
+    expect(start.notice).toMatch(/^◪ debrief · checkpoint r1 loaded · 1 preference · \d+ items$/);
   });
 
   test("an empty workspace says so with what to record once; later sessions only say it is empty", () => {
     const { repo, home, config } = workspace();
     const first = started(open(repo, home, config));
     expect(first.context).toMatch(/No memory for this repository yet\. Record decisions, failed attempts and next steps/);
-    expect(first.notice).toMatch(/^◪ memchor · no memory yet/);
+    expect(first.notice).toMatch(/^◪ debrief · no memory yet/);
     const later = started(open(repo, home, config));
     expect(later.context).toContain("No memory for this workstream yet.");
     expect(later.context).not.toContain("Record decisions, failed attempts");
@@ -81,7 +81,7 @@ describe("sessionStart: what a session-start hook injects", () => {
     const start = started(open(repo, home, config));
     expect(start.context).toMatch(/^Memory could not be loaded \(storage_\w+\)\. Do not assume this project has none\./);
     expect(start.context).not.toContain("No memory");
-    expect(start.notice).toMatch(/^◪ memchor · memory could not be loaded \(storage_\w+\)$/);
+    expect(start.notice).toMatch(/^◪ debrief · memory could not be loaded \(storage_\w+\)$/);
     expect(open(repo, home, config).status().hookFailures.map((f) => [f.event, f.code.startsWith("storage_")])).toEqual([["session-start", true]]);
   });
 
@@ -103,7 +103,7 @@ describe("sessionStart: what a session-start hook injects", () => {
     recordHookFailure(home, { host: "claude-code", event: "stop", cwd: repo, code: "storage_busy", message: "database is locked" });
     recordHookFailure(home, { host: "claude-code", event: "stop", cwd: initRepo(), code: "storage_full", message: "another repository's failure" });
     const start = started(open(repo, home, config));
-    expect(start.notice).toMatch(/ · ⚠ 1 hook failure \(storage_busy\): memchor diag status$/);
+    expect(start.notice).toMatch(/ · ⚠ 1 hook failure \(storage_busy\): debrief diag status$/);
   });
 });
 

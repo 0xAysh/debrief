@@ -48,7 +48,7 @@ CREATE TABLE import_events (
   event_id      TEXT NOT NULL,
   content_hash  TEXT NOT NULL,
   record_id     TEXT REFERENCES records (id),
-  -- record: stored as a record; tool_call: held to describe its result; echo: Memchor's
+  -- record: stored as a record; tool_call: held to describe its result; echo: Debrief's
   -- own output seen in the transcript (references kept in meta, never a record).
   disposition   TEXT NOT NULL CHECK (disposition IN ('record', 'tool_call', 'echo')),
   meta          TEXT NOT NULL DEFAULT '{}',

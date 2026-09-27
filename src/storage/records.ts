@@ -8,7 +8,7 @@ import type { Applicability, Attribution, ExternalRef, Freshness, RecordKind, Re
 import { type Db, prepared, requireTransaction } from "./database.js";
 
 /**
- * Applicability as stored: the caller's fields, plus what Memchor adds. A reported test run
+ * Applicability as stored: the caller's fields, plus what Debrief adds. A reported test run
  * carries the state it ran against; a preference, how the user's confirmation arrived.
  */
 export type StoredApplicability = Applicability & { testRun?: StoredTestRun; confirmation?: "user" | "agent_reported" };

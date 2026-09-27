@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import type { Attribution } from "../schemas.js";
 import { type Db, requireTransaction } from "../storage/database.js";
 
@@ -10,10 +10,10 @@ import { type Db, requireTransaction } from "../storage/database.js";
  * the change's transaction, just before it commits.
  *
  * It exists for one supported restore procedure: putting an older copy of `memory.sqlite` back
- * (a backup, a file-level restore). On the next open, Memchor re-applies every ledger entry the
+ * (a backup, a file-level restore). On the next open, Debrief re-applies every ledger entry the
  * database lacks (see `replayLedger`), so the older copy cannot bring back what was corrected,
  * retracted or forgotten after it was taken. Entries hold ids only, never content: the ledger
- * must not become a second copy of what the user asked Memchor to forget.
+ * must not become a second copy of what the user asked Debrief to forget.
  *
  * Entries are appended only after every effect of the change succeeded, so the only entry that
  * can describe an uncommitted change is one whose COMMIT itself failed (a crash). It is re-applied on the next
@@ -59,7 +59,7 @@ export function appendLedger(db: Db, entry: LedgerEntry | PrivateSessionEntry): 
     writeSync(fd, `${JSON.stringify(entry)}\n`);
     fsyncSync(fd);
   } catch (error) {
-    throw new MemchorError("storage_unavailable", `Could not write the lifecycle ledger ${path}; nothing was changed.`, { details: { path }, cause: error });
+    throw new DebriefError("storage_unavailable", `Could not write the lifecycle ledger ${path}; nothing was changed.`, { details: { path }, cause: error });
   } finally {
     if (fd !== undefined) closeSync(fd);
   }

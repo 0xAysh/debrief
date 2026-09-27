@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { toStorageError } from "../storage/database.js";
 
 /** Where a worktree's memory lives, derived only from trusted inputs (cwd + Git + home). */
@@ -58,7 +58,7 @@ interface Registry {
 const MAX_FORMER_KEYS = 10;
 
 export function resolveHome(home: string | undefined): string {
-  return home ?? process.env["MEMCHOR_HOME"] ?? join(homedir(), ".memchor");
+  return home ?? process.env["DEBRIEF_HOME"] ?? join(homedir(), ".debrief");
 }
 
 /**
@@ -78,12 +78,12 @@ export function resolveHome(home: string | undefined): string {
  *   separate workspace; requiring exactly one candidate means two vanished copies of one
  *   history are never guessed between (the newcomer gets its own workspace). An unborn
  *   repository has no root commit, so it is never matched this way. Known limit: a fresh clone
- *   made after the original was deleted is indistinguishable from a move (Memchor keeps no
+ *   made after the original was deleted is indistinguishable from a move (Debrief keeps no
  *   marker inside the repository) and continues the original's memory.
  *
  * Invariants:
  * - Only reads the repository (`git rev-parse`/`rev-list`/`cat-file`, optional locks disabled);
- *   every file Memchor writes lives under `home`, and only {@link registerWorkspace} writes.
+ *   every file Debrief writes lives under `home`, and only {@link registerWorkspace} writes.
  * - The workspace id is a pure function of the repository key and the registry, so two
  *   processes that first-bootstrap the same repository concurrently converge on the same id
  *   even if one registry write is lost to the other's rename.
@@ -93,7 +93,7 @@ export function locateWorkspace(cwd: string, home: string): WorkspaceLocation {
   // One spawn for both paths; --show-toplevel fails outside a worktree (and in bare repos).
   const [topLevel, commonDir] = gitOrScopeError(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"]).split("\n");
   if (topLevel === undefined || commonDir === undefined) {
-    throw new MemchorError("scope_unresolved", `Memchor could not resolve a Git worktree from ${cwd}.`, { details: { cwd } });
+    throw new DebriefError("scope_unresolved", `Debrief could not resolve a Git worktree from ${cwd}.`, { details: { cwd } });
   }
   const worktree = realpathSync(topLevel);
   const repositoryKey = realpathSync(commonDir);
@@ -278,7 +278,7 @@ function readRegistry(path: string): Registry {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    throw new MemchorError("storage_unavailable", `The Memchor registry at ${path} is unreadable; it was left untouched.`, {
+    throw new DebriefError("storage_unavailable", `The Debrief registry at ${path} is unreadable; it was left untouched.`, {
       details: { path },
       cause: error,
     });
@@ -289,7 +289,7 @@ function readRegistry(path: string): Registry {
     (parsed as { version?: unknown }).version !== 1 ||
     typeof (parsed as { repositories?: unknown }).repositories !== "object"
   ) {
-    throw new MemchorError("storage_unavailable", `The Memchor registry at ${path} has an unsupported format; it was left untouched.`, {
+    throw new DebriefError("storage_unavailable", `The Debrief registry at ${path} has an unsupported format; it was left untouched.`, {
       details: { path },
     });
   }
@@ -330,9 +330,9 @@ function gitOrScopeError(cwd: string, args: string[]): string {
     return runGit(cwd, args);
   } catch (error) {
     const stderr = typeof error === "object" && error !== null && "stderr" in error ? String(error.stderr).trim() : "";
-    throw new MemchorError(
+    throw new DebriefError(
       "scope_unresolved",
-      `Memchor could not resolve a Git worktree from ${cwd}. Start the agent inside a Git repository.`,
+      `Debrief could not resolve a Git worktree from ${cwd}. Start the agent inside a Git repository.`,
       { details: { cwd, git: stderr || (error instanceof Error ? error.message : String(error)) } },
     );
   }

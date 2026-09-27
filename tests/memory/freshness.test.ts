@@ -157,7 +157,7 @@ describe("local code freshness", () => {
       externalRefs: [{ kind: "code", locator: "src/gateway.ts", commit: git(repo, "rev-parse", "HEAD") }],
     });
     expect(recallItem(memory, unknown.recordId).externalRefs[0]).toMatchObject({ freshness: "unknown", reason: "unknown_commit" });
-    // Pinned by the caller, so Memchor did not fingerprint it: honest unknown, not current.
+    // Pinned by the caller, so Debrief did not fingerprint it: honest unknown, not current.
     expect(recallItem(memory, known.recordId).externalRefs[0]).toMatchObject({ freshness: "unknown", reason: "not_observed" });
   });
 

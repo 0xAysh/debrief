@@ -8,7 +8,7 @@ import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, typ
 import { z } from "zod";
 import { sessionOfCall, sessionOfServer } from "../bootstrap/host-sessions.js";
 import { resolveHome } from "../bootstrap/workspace-resolution.js";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import type { HostReply, Memory, PreferenceQuestion } from "../memory.js";
 import { openMemory } from "../memory.js";
 import { OPERATION_SCHEMAS, type OperationName } from "../schemas.js";
@@ -17,7 +17,7 @@ import { PROTOCOL } from "../protocol.js";
 /**
  * Thin MCP adapter over the memory module. It holds no memory policy: it forwards raw
  * tool arguments to the module (which parses them with its own schemas), returns results
- * as structuredContent plus the same JSON as text, and maps `MemchorError` to an
+ * as structuredContent plus the same JSON as text, and maps `DebriefError` to an
  * `isError: true` envelope `{ error: { code, message, retryable, details } }`.
  */
 
@@ -36,7 +36,7 @@ const TOOLS: Record<OperationName, ToolSpec> = {
   },
   memory_recall: {
     description:
-      "Return a bounded, cited context pack: the head checkpoint first, then eligible records ranked for the query. Respects maxTokens/maxBytes (bodies are cut first, never warnings or citations); follow `continuation` for more. Items carry recordIds, citations, attribution, host/session/source provenance, live freshness per reference with a warning (stale/unknown: read the current file; remote refs: verify with your own tools), and corroboration counted by independent roots, with copies (branched transcripts, derived or cited restatements) collapsed under copies. Memchor never returns file content. While scope.ambiguity is set, only workspace-level memory is returned.",
+      "Return a bounded, cited context pack: the head checkpoint first, then eligible records ranked for the query. Respects maxTokens/maxBytes (bodies are cut first, never warnings or citations); follow `continuation` for more. Items carry recordIds, citations, attribution, host/session/source provenance, live freshness per reference with a warning (stale/unknown: read the current file; remote refs: verify with your own tools), and corroboration counted by independent roots, with copies (branched transcripts, derived or cited restatements) collapsed under copies. Debrief never returns file content. While scope.ambiguity is set, only workspace-level memory is returned.",
     run: (memory, args) => memory.recall(args as never),
   },
   memory_read: {
@@ -46,7 +46,7 @@ const TOOLS: Record<OperationName, ToolSpec> = {
   },
   memory_record: {
     description:
-      "Store one attributed piece of working knowledge (evidence, decision, attempt, constraint, question, next_step, note, reference). kind preference is different: it stores nothing until the user confirms, and Memchor asks them directly (Everywhere / This repo only / No). Propose one only for lasting language (\"always\", \"never\", \"remember\", \"from now on\", \"I prefer\") or a correction the user repeats, never for a one-off instruction; raise all candidates together at the end of the turn, never mid-task. If preference.state comes back pending with preference.relay allowed, ask the user preference.question in chat and relay their exact answer with memory_manage answer_preference; with relay refused they dismissed it, so do not ask again now. Store knowledge about artifacts and point to them with externalRefs; never paste whole files. For code as it is on disk, give only kind/locator/path(/lines): Memchor fingerprints the file itself so later sessions can tell whether it changed. Cite evidence with supportedBy. Use operationKey to make retries safe. Do not re-record recalled memory. Fails with scope_ambiguous while no workstream is chosen, unless workspaceLevel is true.",
+      "Store one attributed piece of working knowledge (evidence, decision, attempt, constraint, question, next_step, note, reference). kind preference is different: it stores nothing until the user confirms, and Debrief asks them directly (Everywhere / This repo only / No). Propose one only for lasting language (\"always\", \"never\", \"remember\", \"from now on\", \"I prefer\") or a correction the user repeats, never for a one-off instruction; raise all candidates together at the end of the turn, never mid-task. If preference.state comes back pending with preference.relay allowed, ask the user preference.question in chat and relay their exact answer with memory_manage answer_preference; with relay refused they dismissed it, so do not ask again now. Store knowledge about artifacts and point to them with externalRefs; never paste whole files. For code as it is on disk, give only kind/locator/path(/lines): Debrief fingerprints the file itself so later sessions can tell whether it changed. Cite evidence with supportedBy. Use operationKey to make retries safe. Do not re-record recalled memory. Fails with scope_ambiguous while no workstream is chosen, unless workspaceLevel is true.",
     run: (memory, args) => memory.record(args as never),
   },
   memory_checkpoint: {
@@ -56,12 +56,12 @@ const TOOLS: Record<OperationName, ToolSpec> = {
   },
   memory_manage: {
     description:
-      "Inspect or change what Memchor remembers when the user asks (\"what do you remember about X\", \"that is wrong\", \"that changed\"). inspect: a record's state, history, evidence, and what was derived from it, even if it is no longer current. correct: the claim was wrong; body = the corrected claim (never the old one), reason = why. supersede: it was right but is outdated; body = the new version. retract: wrong, no replacement. restore: undo a retraction. forget_preview (recordIds) shows what forgetting would remove and changes nothing; show it to the user, and only after they explicitly confirm call forget with its confirmToken (it cannot be undone). Each change also takes restatements, conclusions resting on the claim, and checkpoints repeating it out of recall at once, and blocks re-import of the same transcript event. Use attribution user_direction only when the user asked for the change. Tell the user what changed (affected). When the user says not to remember this session, call private_session: it forgets what this session stored and refuses later writes (session_private); confirm to the user in one line.",
+      "Inspect or change what Debrief remembers when the user asks (\"what do you remember about X\", \"that is wrong\", \"that changed\"). inspect: a record's state, history, evidence, and what was derived from it, even if it is no longer current. correct: the claim was wrong; body = the corrected claim (never the old one), reason = why. supersede: it was right but is outdated; body = the new version. retract: wrong, no replacement. restore: undo a retraction. forget_preview (recordIds) shows what forgetting would remove and changes nothing; show it to the user, and only after they explicitly confirm call forget with its confirmToken (it cannot be undone). Each change also takes restatements, conclusions resting on the claim, and checkpoints repeating it out of recall at once, and blocks re-import of the same transcript event. Use attribution user_direction only when the user asked for the change. Tell the user what changed (affected). When the user says not to remember this session, call private_session: it forgets what this session stored and refuses later writes (session_private); confirm to the user in one line.",
     run: (memory, args) => memory.manage(args as never),
   },
   memory_status: {
     description:
-      "Report Memchor health: embedded SQLite/FTS5 runtime, schema version, database paths, resolved scope, counts, capabilities, transcript-import consent, progress and capture gaps, and whether this host lets Memchor ask the user a question directly (client.elicitation).",
+      "Report Debrief health: embedded SQLite/FTS5 runtime, schema version, database paths, resolved scope, counts, capabilities, transcript-import consent, progress and capture gaps, and whether this host lets Debrief ask the user a question directly (client.elicitation).",
     run: (memory, args) => memory.status(args as never),
   },
 };
@@ -86,7 +86,7 @@ const DEFAULT_ELICITATION_TIMEOUT_MS = 60_000;
 const REQUEST_TIMEOUT: number = ErrorCode.RequestTimeout;
 
 export interface McpServerOptions {
-  /** Bound on waiting for the user's answer to a preference question; defaults to `$MEMCHOR_ELICITATION_TIMEOUT_MS`, then 60 s. */
+  /** Bound on waiting for the user's answer to a preference question; defaults to `$DEBRIEF_ELICITATION_TIMEOUT_MS`, then 60 s. */
   elicitationTimeoutMs?: number;
   cwd: string;
   /** From `--host`; falls back to the MCP client's name, then "unknown". */
@@ -102,9 +102,9 @@ export interface McpServerOptions {
  * initialize handshake, so the client's name is known when no `--host` was given.
  */
 export function createMcpServer(options: McpServerOptions): { server: Server; close: () => void } {
-  const log = options.log ?? ((message: string) => process.stderr.write(`memchor: ${message}\n`));
+  const log = options.log ?? ((message: string) => process.stderr.write(`debrief: ${message}\n`));
   const home = resolveHome(options.home);
-  const server = new Server({ name: "memchor", version: "0.0.0" }, { capabilities: { tools: {} }, instructions: PROTOCOL });
+  const server = new Server({ name: "debrief", version: "0.0.0" }, { capabilities: { tools: {} }, instructions: PROTOCOL });
   let memory: Memory | undefined;
   let memorySession: string | undefined;
   // The Memory opens on the first call, so a session the call names is known before bootstrap
@@ -159,7 +159,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     backfill.unref();
   };
 
-  const elicitationTimeoutMs = options.elicitationTimeoutMs ?? (Number(process.env["MEMCHOR_ELICITATION_TIMEOUT_MS"]) || DEFAULT_ELICITATION_TIMEOUT_MS);
+  const elicitationTimeoutMs = options.elicitationTimeoutMs ?? (Number(process.env["DEBRIEF_ELICITATION_TIMEOUT_MS"]) || DEFAULT_ELICITATION_TIMEOUT_MS);
   /**
    * Puts preference questions to the user through one MCP elicitation form (one field per
    * question, one bounded wait for all of them) and passes back what the host did, question by
@@ -176,7 +176,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
         return memory.settlePreference({ candidateId: question.candidateId, reply });
       } catch (error) {
         // Settled meanwhile by another call (the answer stands there): report the question as it was.
-        if (error instanceof MemchorError) return question;
+        if (error instanceof DebriefError) return question;
         throw error;
       }
     };
@@ -191,7 +191,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
         const reply = await server.elicitInput(
           {
             mode: "form",
-            message: open.length === 1 ? (open[0]?.question ?? "") : `Memchor has ${open.length} preference questions. Answer the ones you want to.`,
+            message: open.length === 1 ? (open[0]?.question ?? "") : `Debrief has ${open.length} preference questions. Answer the ones you want to.`,
             requestedSchema: {
               type: "object",
               properties: Object.fromEntries(
@@ -250,9 +250,9 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
       }
       return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
     } catch (error) {
-      if (!(error instanceof MemchorError)) {
+      if (!(error instanceof DebriefError)) {
         log(`internal error in ${request.params.name}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
-        throw new McpError(ErrorCode.InternalError, "Memchor hit an internal error; the outcome is unknown, so recall before retrying a write.");
+        throw new McpError(ErrorCode.InternalError, "Debrief hit an internal error; the outcome is unknown, so recall before retrying a write.");
       }
       const envelope = error.toEnvelope();
       return { isError: true, content: [{ type: "text", text: JSON.stringify(envelope) }], structuredContent: { ...envelope } };
@@ -295,5 +295,5 @@ export async function runStdioServer(options: McpServerOptions): Promise<void> {
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
   await server.connect(new StdioServerTransport());
-  process.stderr.write(`memchor: MCP server ready (cwd ${options.cwd})\n`);
+  process.stderr.write(`debrief: MCP server ready (cwd ${options.cwd})\n`);
 }

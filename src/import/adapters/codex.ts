@@ -75,8 +75,8 @@ const HEAD_BYTES = 1 << 20;
  */
 const CONTEXT_SCAN_BYTES = [64 << 10, 256 << 10, 1 << 20];
 
-/** Memchor's own tools (every operation it offers), under whatever name the user gave the MCP server (Codex may append `_<12 hex>` on a name collision). */
-const MEMCHOR_TOOL = new RegExp(`^mcp__.+__(${Object.keys(OPERATION_SCHEMAS).join("|")})(?:_[0-9a-f]{12})?$`);
+/** Debrief's own tools (every operation it offers), under whatever name the user gave the MCP server (Codex may append `_<12 hex>` on a name collision). */
+const DEBRIEF_TOOL = new RegExp(`^mcp__.+__(${Object.keys(OPERATION_SCHEMAS).join("|")})(?:_[0-9a-f]{12})?$`);
 /** Codex's framing of a tool output: exec (`Process exited with code N`), apply_patch (`Exit code: N`) and MCP (`Wall time`). */
 const OUTPUT_HEADER = /^(?:Chunk ID: [^\n]*\n)?(?:Exit code: (-?\d+)\n)?Wall time: [^\n]*\n(?:Process exited with code (-?\d+)\n|Process running with session ID [^\n]*\n)?(?:Original token count: [^\n]*\n)?Output:\n/;
 /** Codex's local-compaction summary starts with this sentence (`prompts/templates/compact/summary_prefix.md`), then a newline. */
@@ -538,8 +538,8 @@ function isContextual(content: unknown): boolean {
 
 /** One-line description, touched paths and semantic kind of a call. `input` is null when the model's arguments were not JSON. */
 function describeCall(tool: string, input: unknown, raw: unknown, cwd: string): { summary: string; paths: string[]; urls: string[]; toolKind: ToolKind; inputDigest?: string } {
-  const memchor = MEMCHOR_TOOL.exec(tool);
-  if (memchor !== null) return { summary: `${memchor[1] ?? tool} ${JSON.stringify(input ?? {})}`, paths: [], urls: [], toolKind: "memchor" };
+  const debrief = DEBRIEF_TOOL.exec(tool);
+  if (debrief !== null) return { summary: `${debrief[1] ?? tool} ${JSON.stringify(input ?? {})}`, paths: [], urls: [], toolKind: "debrief" };
   const args = asObject(input);
   const str = (key: string): string | null => (typeof args[key] === "string" ? args[key] : null);
   const at = (path: string): string => (isAbsolute(path) ? path : resolve(cwd, path));

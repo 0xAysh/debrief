@@ -1,5 +1,5 @@
 import type BetterSqlite3 from "better-sqlite3";
-import { MemchorError } from "../../errors.js";
+import { DebriefError } from "../../errors.js";
 import * as initial from "./0001-initial.js";
 import * as transcriptImport from "./0002-transcript-import.js";
 import * as importSourceFingerprint from "./0003-import-source-fingerprint.js";
@@ -64,10 +64,10 @@ export function assertSupportedSchema(db: BetterSqlite3.Database): void {
   if (found > SCHEMA_VERSION) throw newerSchema(found);
 }
 
-function newerSchema(found: number): MemchorError {
-  return new MemchorError(
+function newerSchema(found: number): DebriefError {
+  return new DebriefError(
     "unsupported_runtime",
-    `This database uses schema version ${found}, but this Memchor build supports up to ${SCHEMA_VERSION}. Upgrade Memchor; the database was not modified.`,
+    `This database uses schema version ${found}, but this Debrief build supports up to ${SCHEMA_VERSION}. Upgrade Debrief; the database was not modified.`,
     { details: { schemaVersion: found, supportedSchemaVersion: SCHEMA_VERSION } },
   );
 }

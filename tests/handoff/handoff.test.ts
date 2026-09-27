@@ -9,7 +9,7 @@ import { writeArtifact } from "./artifacts.js";
 
 /**
  * The central V1 story (issue #20, PRD §18 "Handoff"), proved across real processes: separate
- * `memchor mcp` servers for Claude Code and Codex share one MEMCHOR_HOME and one Git worktree,
+ * `debrief mcp` servers for Claude Code and Codex share one DEBRIEF_HOME and one Git worktree,
  * and each imports only hand-written transcripts from its own temporary host history dir. Every
  * server runs with the no-network preload. The packs these tests see are written, with temporary
  * paths replaced by placeholders, to the git-ignored `tests/mcp/__artifacts__/handoff/` as PR evidence.
@@ -25,7 +25,7 @@ const RETRY_FACT = "src/retry.ts: backoff() retries every 5xx, including 504, wi
 
 /** A committed repository at `<fresh temp dir>/<name>` (so two can share a basename) with the two files the story is about. */
 function storeRepo(name = "store"): string {
-  const dir = join(tempDir("memchor-handoff-"), name);
+  const dir = join(tempDir("debrief-handoff-"), name);
   mkdirSync(join(dir, "src"), { recursive: true });
   git(dir, "init", "--quiet", "--initial-branch=fix/double-charge");
   writeFileSync(join(dir, "src/gateway.ts"), "export async function charge(order) {\n  return retry(() => post(order), { retries: 3 });\n}\n");
@@ -47,7 +47,7 @@ function item(pack: ContextPack, body: string, host?: string): PackItem {
 
 describe("Claude → fresh Codex → fresh Claude handoff across processes", () => {
   test("continues one workstream with attributed Claude and Codex memory, live freshness, kept conflicts, CAS checkpoints and no cross-workspace leakage", async () => {
-    const home = tempDir("memchor-home-");
+    const home = tempDir("debrief-home-");
     const repo = storeRepo();
     const otherRepo = storeRepo();
     const claudeDir = claudeConfigDir();
@@ -56,12 +56,12 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
     const placeholders: [string, string][] = [
       [repo, "<repo>"],
       [otherRepo, "<other-repo-same-basename>"],
-      [home, "<memchor-home>"],
+      [home, "<debrief-home>"],
       [claudeDir, "<claude-config-dir>"],
       [codexDir, "<codex-home>"],
     ];
     const spawn = async (cwd: string, host: "claude-code" | "codex", meta?: Record<string, unknown>): Promise<ServerHandle> => {
-      const networkLog = join(tempDir("memchor-net-"), "network.log");
+      const networkLog = join(tempDir("debrief-net-"), "network.log");
       logs.push(networkLog);
       return spawnServer({ cwd, home, host, claudeConfigDir: claudeDir, codexHome: codexDir, networkLog, ...(meta === undefined ? {} : { meta }) });
     };
@@ -77,7 +77,7 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
     const claude = await spawn(repo, "claude-code");
     const asked = await claude.ok<BootstrapResult>("memory_bootstrap");
     expect(asked.import).toMatchObject({ host: "claude-code", state: "consent_required" });
-    expect(asked.import.question).toMatch(/^Memchor found 3 local Claude Code sessions \(2 in this project, 1 in other projects\)/);
+    expect(asked.import.question).toMatch(/^Debrief found 3 local Claude Code sessions \(2 in this project, 1 in other projects\)/);
     const claudeBoot = await claude.ok<BootstrapResult>("memory_bootstrap", { importChoice: "current_project" });
     expect(claudeBoot.import).toMatchObject({ state: "complete", currentProject: { transcripts: 2, complete: 2 } });
     expect(claudeBoot.scope).toMatchObject({ workspaceLabel: "store", workstreamLabel: "fix/double-charge", resolvedBy: "new_workstream", headRevision: 0, host: "claude-code" });
@@ -105,7 +105,7 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
     expect(claudeCheckpoint).toMatchObject({ revision: 1, previousRevision: 0 });
     await claude.close();
 
-    // The unrelated repository with the same directory name gets its own Claude memory (same MEMCHOR_HOME, same host dirs).
+    // The unrelated repository with the same directory name gets its own Claude memory (same DEBRIEF_HOME, same host dirs).
     const otherClaude = await spawn(otherRepo, "claude-code");
     expect((await otherClaude.ok<BootstrapResult>("memory_bootstrap")).import.state).toBe("not_approved");
     const otherBoot = await otherClaude.ok<BootstrapResult>("memory_bootstrap", { importChoice: "current_project" });
@@ -132,7 +132,7 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
     const codex = await spawn(repo, "codex", { threadId });
     const codexAsked = await codex.ok<BootstrapResult>("memory_bootstrap");
     expect(codexAsked.import).toMatchObject({ host: "codex", state: "consent_required" });
-    expect(codexAsked.import.question).toMatch(/^Memchor found 2 local Codex sessions \(1 in this project, 1 in other projects\)/);
+    expect(codexAsked.import.question).toMatch(/^Debrief found 2 local Codex sessions \(1 in this project, 1 in other projects\)/);
     const codexBoot = await codex.ok<BootstrapResult>("memory_bootstrap", { importChoice: "current_project" });
     mainPacks.push(codexBoot.context);
     expect(codexBoot.import).toMatchObject({ state: "complete", currentProject: { transcripts: 1, complete: 1, counters: { echoes: 1 } } });
@@ -174,7 +174,7 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
 
     // Root rule: the /branch copy is the same Claude observation (one item listing the copy). Codex
     // stating the claim after its own failing test run, before recalling anything, is a second
-    // observation. Its verbatim repeat after the Memchor recall echoed Claude's record is a copy of
+    // observation. Its verbatim repeat after the Debrief recall echoed Claude's record is a copy of
     // that record (derived_from), and the echo itself is never a record, so neither corroborates.
     const roots = await codex.ok<ContextPack>("memory_recall", { query: "root cause retries idempotency key", maxTokens: 8_000 });
     mainPacks.push(roots);
@@ -256,7 +256,7 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
     const nextPage = await resumed.ok<ContextPack>("memory_recall", { continuation: firstPage.continuation, maxBytes: 2_100 });
     mainPacks.push(full, firstPage, nextPage);
     expect(firstPage).toMatchObject({ truncated: true, items: [], checkpoint: { recordId: codexCheckpoint.recordId, truncated: true } });
-    expect(firstPage.checkpoint?.excerpt).toMatch(/cut by Memchor.*memory_read/);
+    expect(firstPage.checkpoint?.excerpt).toMatch(/cut by Debrief.*memory_read/);
     expect(firstPage.checkpoint).toMatchObject({ citations: full.checkpoint?.citations, externalRefs: full.checkpoint?.externalRefs, warning: full.checkpoint?.warning });
     expect(nextPage.items.length).toBeGreaterThan(0);
     for (const page of [firstPage, nextPage]) {
@@ -264,7 +264,7 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
       for (const cut of page.items) {
         const whole = full.items.find((i) => i.recordId === cut.recordId);
         expect(cut).toMatchObject({ warning: whole?.warning, citations: whole?.citations, externalRefs: whole?.externalRefs, freshness: whole?.freshness, independentRoot: whole?.independentRoot });
-        if (cut.excerpt !== whole?.excerpt) expect(cut.excerpt).toMatch(/cut by Memchor/);
+        if (cut.excerpt !== whole?.excerpt) expect(cut.excerpt).toMatch(/cut by Debrief/);
       }
     }
     expect(nextPage.items.some((i) => i.freshness === "stale" && i.warning !== null)).toBe(true);
@@ -300,16 +300,16 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
   }, 120_000);
 
   test("a worktree two earlier sessions could continue asks instead of guessing, stays workspace-level until the choice, then binds it", async () => {
-    const home = tempDir("memchor-home-");
+    const home = tempDir("debrief-home-");
     const repo = storeRepo();
     const logs: string[] = [];
     const spawn = async (cwd: string, host: "claude-code" | "codex"): Promise<ServerHandle> => {
-      const networkLog = join(tempDir("memchor-net-"), "network.log");
+      const networkLog = join(tempDir("debrief-net-"), "network.log");
       logs.push(networkLog);
       return spawnServer({ cwd, home, host, claudeConfigDir: claudeConfigDir(), codexHome: codexHome(), networkLog });
     };
     const worktree = (branch: string, create = false): string => {
-      const path = join(tempDir("memchor-wt-"), "wt");
+      const path = join(tempDir("debrief-wt-"), "wt");
       git(repo, "worktree", "add", "--quiet", ...(create ? ["-b", branch, path] : [path, branch]));
       return path;
     };
@@ -378,7 +378,7 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
     writeArtifact("pack-ambiguous", { asked, chosen }, [
       [repo, "<repo>"],
       [third, "<new-worktree-on-feat-webhook>"],
-      [home, "<memchor-home>"],
+      [home, "<debrief-home>"],
     ]);
   }, 120_000);
 });

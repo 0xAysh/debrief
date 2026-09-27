@@ -9,7 +9,7 @@ import { writeArtifact } from "./artifacts.js";
 
 /**
  * The repository/worktree identity and freshness matrix for the #20 PR: each case runs
- * against real Git repositories and SQLite through the memory module, asserts what Memchor
+ * against real Git repositories and SQLite through the memory module, asserts what Debrief
  * observed against the documented expectation, and is written (case → expected → observed)
  * to the git-ignored `tests/mcp/__artifacts__/handoff/identity-freshness-matrix.json`.
  */
@@ -44,14 +44,14 @@ function open(cwd: string, home: string, options: { host?: string; claudeConfigD
 }
 
 function worktree(repo: string, branch: string, create = false): string {
-  const path = join(tempDir("memchor-wt-"), "wt");
+  const path = join(tempDir("debrief-wt-"), "wt");
   git(repo, "worktree", "add", "--quiet", ...(create ? ["-b", branch, path] : [path, branch]));
   return path;
 }
 
 /** A committed repository at `<fresh temp dir>/<name>`, so two can share a basename. */
 function namedRepo(name: string): string {
-  const dir = join(tempDir("memchor-matrix-"), name);
+  const dir = join(tempDir("debrief-matrix-"), name);
   mkdirSync(join(dir, "src"), { recursive: true });
   git(dir, "init", "--quiet", "--initial-branch=main");
   writeFileSync(join(dir, "src/gateway.ts"), "export function charge() {\n  return retry(3);\n}\n");
@@ -87,7 +87,7 @@ describe("repository/worktree identity matrix", () => {
       const scope = before.bootstrap().scope;
       const { recordId } = before.record({ kind: "decision", body: "kept across the move", attribution: "user_direction" });
       before.close();
-      const moved = join(tempDir("memchor-moved-"), "checkout");
+      const moved = join(tempDir("debrief-moved-"), "checkout");
       renameSync(repo, moved);
       const after = open(moved, home).bootstrap();
       return {
@@ -123,7 +123,7 @@ describe("repository/worktree identity matrix", () => {
       const home = tempDir();
       const original = initRepo();
       const scope = open(original, home).bootstrap().scope;
-      const clone = join(tempDir("memchor-clone-"), "copy");
+      const clone = join(tempDir("debrief-clone-"), "copy");
       git(original, "clone", "--quiet", original, clone);
       const cloned = open(clone, home).bootstrap().scope;
       return { sameWorkspace: cloned.workspaceId === scope.workspaceId, originalKeepsWorkspace: open(original, home).bootstrap().scope.workspaceId === scope.workspaceId };
@@ -139,7 +139,7 @@ describe("repository/worktree identity matrix", () => {
       const home = tempDir();
       const original = initRepo();
       const scope = open(original, home).bootstrap().scope;
-      const clone = join(tempDir("memchor-clone-"), "copy");
+      const clone = join(tempDir("debrief-clone-"), "copy");
       git(original, "clone", "--quiet", original, clone);
       rmSync(original, { recursive: true, force: true });
       return { sameWorkspace: open(clone, home).bootstrap().scope.workspaceId === scope.workspaceId };
@@ -292,7 +292,7 @@ describe("freshness matrix", () => {
   matrixCase("freshness", "caller-pinned commit this repository lacks", "nothing to compare against", { freshness: "unknown", reason: "unknown_commit", warning: "read the current file" }, () =>
     freshnessOf([{ kind: "code", locator: "src/gateway.ts", commit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" }], () => undefined),
   );
-  matrixCase("freshness", "remote reference (issue/PR/URL)", "remote state changes without a local trace and Memchor makes no network call", { freshness: "unknown", reason: "remote_unverified", warning: "verify with your own tools" }, () =>
+  matrixCase("freshness", "remote reference (issue/PR/URL)", "remote state changes without a local trace and Debrief makes no network call", { freshness: "unknown", reason: "remote_unverified", warning: "verify with your own tools" }, () =>
     freshnessOf([{ kind: "issue", locator: "#20" }], () => undefined),
   );
   matrixCase(

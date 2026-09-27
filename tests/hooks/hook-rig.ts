@@ -86,7 +86,7 @@ export interface HookRig {
 }
 
 export function hookRig(): HookRig {
-  const dir = tempDir("memchor-hooks-");
+  const dir = tempDir("debrief-hooks-");
   const script = join(dir, "hook.mjs");
   const log = join(dir, "hooks.log");
   const config = join(dir, "outputs.json");

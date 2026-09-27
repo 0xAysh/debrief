@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Where each host records that Memchor's plugin is installed. Only file reads: the host table
+ * Where each host records that Debrief's plugin is installed. Only file reads: the host table
  * (src/hosts.ts) points at these, and every hook loads that table.
  */
 

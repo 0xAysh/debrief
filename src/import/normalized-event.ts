@@ -27,7 +27,7 @@ export interface EventOrigin {
 }
 
 /** Host-neutral meaning of a tool call; retention policy belongs to the importer. */
-export type ToolKind = "artifact_access" | "memchor" | "other";
+export type ToolKind = "artifact_access" | "debrief" | "other";
 
 export type NormalizedEvent = EventOrigin &
   (

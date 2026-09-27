@@ -37,12 +37,12 @@ import type { ExternalRef, Freshness } from "../schemas.js";
  * - **Documents in the worktree are files.** A `document` reference whose path resolves inside
  *   the worktree (`docs/design.md`) is fingerprinted and checked exactly like code.
  * - **Remote references are historical.** Issues, PRs, URLs and documents behind a URL can
- *   change without any local trace, and Memchor makes no network call, so they are `unknown` /
+ *   change without any local trace, and Debrief makes no network call, so they are `unknown` /
  *   `remote_unverified` until the agent checks them with its own tools.
  * - **A test result applies to the state it ran against.** A record's `testRun` is stamped with
  *   HEAD and a fingerprint of the working tree (see {@link worktreeFingerprint}); it is current
  *   only while both are unchanged. A run the agent merely reported (no cited tool output that
- *   Memchor captured from the transcript) is an assertion and is never current.
+ *   Debrief captured from the transcript) is an assertion and is never current.
  *
  * Work is bounded: at most {@link FRESHNESS_LIMITS.refsPerCheck} references and
  * {@link FRESHNESS_LIMITS.totalBytes} hashed bytes per call, files over
@@ -73,7 +73,7 @@ export const FRESHNESS_REASONS = [
   "outside_worktree",
   /** unknown: the caller-supplied commit does not exist in this repository. */
   "unknown_commit",
-  /** unknown: the file is larger than Memchor hashes and its Git state changed. */
+  /** unknown: the file is larger than Debrief hashes and its Git state changed. */
   "too_large",
   /** unknown: the path exists but could not be read as a regular file. */
   "unreadable",
@@ -81,7 +81,7 @@ export const FRESHNESS_REASONS = [
   "check_limit",
   /** unknown: issue/PR/URL/document state is historical until verified with the agent's own tools. */
   "remote_unverified",
-  /** unknown: an `other` reference Memchor has no way to check. */
+  /** unknown: an `other` reference Debrief has no way to check. */
   "not_checkable",
 ] as const;
 export type FreshnessReason = (typeof FRESHNESS_REASONS)[number];
@@ -105,16 +105,16 @@ export interface StoredTestRun {
   commit: string | null;
   /** {@link worktreeFingerprint} when the run was recorded. */
   worktree: string | null;
-  /** `captured`: the record cites tool output Memchor imported from the host's transcript; `asserted`: the agent's word only. */
+  /** `captured`: the record cites tool output Debrief imported from the host's transcript; `asserted`: the agent's word only. */
   evidence: "captured" | "asserted";
 }
 
 /** A test run as presented: whether it still applies to the repository as it is now. */
 export type TestRunView = Omit<StoredTestRun, "worktree"> & { applies: Freshness; reason: TestRunReason };
 
-/** A reference as stored: the caller's pointer plus what Memchor observed at write time. */
+/** A reference as stored: the caller's pointer plus what Debrief observed at write time. */
 export interface StoredRef extends ExternalRef {
-  /** Memchor-captured: the file had uncommitted or untracked changes when observed. */
+  /** Debrief-captured: the file had uncommitted or untracked changes when observed. */
   dirty?: boolean;
 }
 
@@ -146,7 +146,7 @@ const FRESHNESS_WARNINGS = {
   stale: "Stale: a referenced file changed or is gone. Read the current file before relying on this.",
   unverified: "Unverified: a referenced file may have changed. Read the current file before relying on this.",
   remote: "Historical: issue/PR/URL/document state is as observed then; verify it with your own tools.",
-  asserted: "Asserted: the agent reported this test run; Memchor did not capture its output. Rerun the tests before relying on it.",
+  asserted: "Asserted: the agent reported this test run; Debrief did not capture its output. Rerun the tests before relying on it.",
   testStale: "The tests ran against another commit or working tree; rerun them before relying on this.",
   testUnknown: "The working tree could not be fingerprinted, so this test run may not apply; rerun the tests before relying on it.",
 } as const;
@@ -156,14 +156,14 @@ const REMOTE_KINDS: ReadonlySet<string> = new Set(["issue", "pr", "url", "docume
 /** A locator with a scheme (`https:`, `file:`) is not a worktree path. */
 const URL_LIKE = /^[a-z][a-z0-9+.-]*:/i;
 
-/** Code, and documents that name a path rather than a URL: files Memchor can fingerprint in the worktree. */
+/** Code, and documents that name a path rather than a URL: files Debrief can fingerprint in the worktree. */
 function isLocalFile(ref: ExternalRef): boolean {
   return ref.kind === "code" || (ref.kind === "document" && !URL_LIKE.test(ref.path ?? ref.locator));
 }
 const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
 
 /**
- * Adds Memchor's own observation to each local code reference the caller did not
+ * Adds Debrief's own observation to each local code reference the caller did not
  * describe: commit, dirty flag and a bounded content hash, stamped `observedAt` now.
  * A reference the caller pinned (`commit` or `observedHash` given) is kept as supplied,
  * since it may describe a version other than the one on disk. Paths outside the worktree,
@@ -227,7 +227,7 @@ export function freshnessFloor(refs: readonly StoredRef[], testRun?: StoredTestR
   };
 }
 
-/** The worktree fingerprint is Memchor's bookkeeping, not something an agent can use. */
+/** The worktree fingerprint is Debrief's bookkeeping, not something an agent can use. */
 function presentTestRun(run: StoredTestRun): Omit<StoredTestRun, "worktree"> {
   return { command: run.command, outcome: run.outcome, ...(run.exitCode === undefined ? {} : { exitCode: run.exitCode }), commit: run.commit, evidence: run.evidence };
 }
@@ -338,7 +338,7 @@ class Checker {
 }
 
 function present(ref: StoredRef): Omit<CheckedRef, "freshness" | "reason"> {
-  // The content hash and dirty flag are Memchor's bookkeeping, not something an agent can use.
+  // The content hash and dirty flag are Debrief's bookkeeping, not something an agent can use.
   const pointer: StoredRef = { ...ref };
   delete pointer.observedHash;
   delete pointer.dirty;

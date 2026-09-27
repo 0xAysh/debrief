@@ -3,7 +3,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
-import { catchMemchorError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string, options: { host?: string; hostSessionId?: string } = {}): Memory {
   const memory = openMemory({ cwd, host: options.host ?? "claude-code", home, ...(options.hostSessionId === undefined ? {} : { hostSessionId: options.hostSessionId }) });
@@ -15,7 +15,7 @@ function open(cwd: string, home: string, options: { host?: string; hostSessionId
 
 /** A new linked worktree of `repo` checked out on `branch` (created when `create`). */
 function addWorktree(repo: string, branch: string, create = false): string {
-  const path = join(tempDir("memchor-wt-"), "wt");
+  const path = join(tempDir("debrief-wt-"), "wt");
   git(repo, "worktree", "add", "--quiet", ...(create ? ["-b", branch, path] : [path, branch]));
   return path;
 }
@@ -94,17 +94,17 @@ describe("workstream resolution", () => {
     const memory = open(addWorktree(repo, "feat/y"), home);
     expect(memory.bootstrap().scope.ambiguity).not.toBeNull();
 
-    const refusedRecord = catchMemchorError(() => memory.record({ kind: "note", body: "x", attribution: "agent_inference" }));
+    const refusedRecord = catchDebriefError(() => memory.record({ kind: "note", body: "x", attribution: "agent_inference" }));
     expect(refusedRecord.code).toBe("scope_ambiguous");
     expect(refusedRecord.message).toMatch(/memory_bootstrap with workstream/);
-    expect(catchMemchorError(() => memory.checkpoint({ expectedRevision: 0, goal: "g", status: "s" })).code).toBe("scope_ambiguous");
+    expect(catchDebriefError(() => memory.checkpoint({ expectedRevision: 0, goal: "g", status: "s" })).code).toBe("scope_ambiguous");
     expect(memory.record({ kind: "note", body: "workspace-wide note", attribution: "agent_inference", workspaceLevel: true }).workspaceLevel).toBe(true);
 
     const pack = memory.recall({ query: "zebracorn" });
     expect(pack.items.map((item) => item.recordId)).toEqual([shared.recordId]);
     expect(pack.scope.ambiguity?.candidates).toHaveLength(1);
     expect(pack.notice).toMatch(/No workstream is bound yet/);
-    expect(catchMemchorError(() => memory.read({ recordId: privateRecord.recordId })).code).toBe("scope_denied");
+    expect(catchDebriefError(() => memory.read({ recordId: privateRecord.recordId })).code).toBe("scope_denied");
     expect(memory.read({ recordId: shared.recordId }).body).toMatch(/zebracorn preference/);
   });
 
@@ -115,9 +115,9 @@ describe("workstream resolution", () => {
     const memory = open(repo, home);
     const own = memory.bootstrap().scope.workstreamId;
 
-    const foreign = catchMemchorError(() => memory.bootstrap({ workstream: other }));
+    const foreign = catchDebriefError(() => memory.bootstrap({ workstream: other }));
     expect(foreign.code).toBe("not_found");
-    expect(catchMemchorError(() => memory.bootstrap({ workstream: "ws_0000000000000000" })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.bootstrap({ workstream: "ws_0000000000000000" })).code).toBe("invalid_input");
     expect(memory.recall().scope.workstreamId).toBe(own);
     expect(open(repo, home).bootstrap().scope.workstreamId).toBe(own);
   });
@@ -209,7 +209,7 @@ describe("candidate checkpoint summaries", () => {
     const dbPath = orphan.status().storage.dbPath ?? "";
     orphan.close();
     if (rewriteBody !== undefined) {
-      // A checkpoint body in a form this Memchor did not render (e.g. an older format).
+      // A checkpoint body in a form this Debrief did not render (e.g. an older format).
       const db = new Database(dbPath);
       db.prepare("UPDATE records SET body = ? WHERE id = ?").run(rewriteBody, recordId);
       db.close();
@@ -299,7 +299,7 @@ describe("status reports what bootstrap would resolve, and writes nothing", () =
     const before = open(repo, home);
     const boot = before.bootstrap().scope;
     before.close();
-    const moved = join(tempDir("memchor-moved-"), "renamed");
+    const moved = join(tempDir("debrief-moved-"), "renamed");
     renameSync(repo, moved);
 
     const status = open(moved, home).status();

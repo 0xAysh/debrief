@@ -10,7 +10,7 @@
  *   was asked directly and dismissed it).
  * - `sessions.private`: "don't remember this session". Its writes are refused, and transcripts
  *   that belong to it are never imported.
- * - `transcript_sessions`: which Memchor sessions a transcript's Memchor output names, so that
+ * - `transcript_sessions`: which Debrief sessions a transcript's Debrief output names, so that
  *   marking a session private can find its transcript (Claude Code sends no session id).
  * - `private_transcripts`: transcripts that are never imported again. No foreign keys: markers
  *   outlive what they name, and a restored older database gets them back from the ledger.

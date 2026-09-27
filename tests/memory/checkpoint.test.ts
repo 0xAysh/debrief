@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
-import { catchMemchorError, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string, host = "claude-code"): Memory {
   const memory = openMemory({ cwd, host, home });
@@ -42,7 +42,7 @@ describe("checkpoint", () => {
     const memory = open(initRepo(), tempDir());
     memory.checkpoint({ expectedRevision: 0, goal: "g", status: "one" });
 
-    const error = catchMemchorError(() => memory.checkpoint({ expectedRevision: 0, goal: "g", status: "two" }));
+    const error = catchDebriefError(() => memory.checkpoint({ expectedRevision: 0, goal: "g", status: "two" }));
     expect(error.code).toBe("checkpoint_conflict");
     expect(error.details).toMatchObject({ currentRevision: 1, expectedRevision: 0 });
     expect(memory.recall().checkpoint?.excerpt).toContain("Status: one");
@@ -58,7 +58,7 @@ describe("checkpoint", () => {
     expect(seen).toEqual([0, 0]);
 
     const win = claude.checkpoint({ expectedRevision: 0, goal: "g", status: "claude's view" });
-    const lose = catchMemchorError(() => codex.checkpoint({ expectedRevision: 0, goal: "g", status: "codex's view" }));
+    const lose = catchDebriefError(() => codex.checkpoint({ expectedRevision: 0, goal: "g", status: "codex's view" }));
 
     expect(win.revision).toBe(1);
     expect(lose.code).toBe("checkpoint_conflict");
@@ -76,7 +76,7 @@ describe("checkpoint", () => {
 
     expect(memory.checkpoint(input)).toEqual({ ...first, replayed: true });
     expect(memory.status().counts?.checkpoints).toBe(1);
-    expect(catchMemchorError(() => memory.checkpoint({ ...input, status: "different" })).code).toBe("idempotency_conflict");
+    expect(catchDebriefError(() => memory.checkpoint({ ...input, status: "different" })).code).toBe("idempotency_conflict");
   });
 
   test("checkpoint history is append-only; only the head is surfaced by recall, earlier revisions stay readable", () => {

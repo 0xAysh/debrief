@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * Hook overhead as Claude Code pays it (#32): each `memchor hook <event>` run the way the plugin
- * runs it, `sh -c "memchor hook …"` with the host's payload on stdin, process start included.
- * The `memchor` command comes from `npm pack` of this checkout, installed offline into a
+ * Hook overhead as Claude Code pays it (#32): each `debrief hook <event>` run the way the plugin
+ * runs it, `sh -c "debrief hook …"` with the host's payload on stdin, process start included.
+ * The `debrief` command comes from `npm pack` of this checkout, installed offline into a
  * temporary prefix (as `npm install -g` would). Hooks are interleaved round-robin so load on the
  * machine spreads evenly, and the report records that load: numbers from a busy machine are not
  * evidence. Timings are observations, never pass/fail thresholds.
  *
  *   npm run measure:hooks -- [--runs 30] [--compare <entry.js>]
  *
- * `--compare` also times `node <entry.js> hook …` next to `node <installed dist/memchor.mjs> hook …`,
+ * `--compare` also times `node <entry.js> hook …` next to `node <installed dist/debrief.mjs> hook …`,
  * e.g. the unbundled `dist/cli.js`, so the two differ only in what Node loads.
  */
 import { execFileSync, spawnSync } from "node:child_process";
@@ -22,7 +22,7 @@ import { openMemory } from "../dist/memory.js";
 const { values } = parseArgs({ options: { runs: { type: "string", default: "30" }, compare: { type: "string" } } });
 const RUNS = Number(values.runs);
 const ROOT = resolve(import.meta.dirname, "..");
-const scratch = mkdtempSync(join(tmpdir(), "memchor-hook-overhead-"));
+const scratch = mkdtempSync(join(tmpdir(), "debrief-hook-overhead-"));
 try {
   const before = machine();
   const rows = measure();
@@ -35,11 +35,11 @@ function measure() {
   const packed = execFileSync("npm", ["pack", "--pack-destination", scratch, "--silent"], { cwd: ROOT, encoding: "utf8" }).trim().split("\n").at(-1);
   const prefix = join(scratch, "prefix");
   execFileSync("npm", ["install", "--global", "--prefix", prefix, "--offline", "--no-audit", "--no-fund", join(scratch, packed)], { stdio: "ignore" });
-  const installedCli = join(prefix, "lib", "node_modules", "memchor", "dist", "memchor.mjs");
+  const installedCli = join(prefix, "lib", "node_modules", "debrief", "dist", "debrief.mjs");
 
   // A repository with a checkpoint and approved history, and one real transcript for Stop.
   const repo = join(scratch, "repo");
-  const home = join(scratch, "memchor");
+  const home = join(scratch, "debrief");
   const config = join(scratch, "claude");
   mkdirSync(repo);
   execFileSync("git", ["init", "--quiet", "--initial-branch=main", repo]);
@@ -60,21 +60,21 @@ function measure() {
     "session-start": { ...base, hook_event_name: "SessionStart", source: "startup" },
     "subagent-start": { ...base, hook_event_name: "SubagentStart", agent_id: "a0123456789abcdef", agent_type: "general-purpose" },
     "user-prompt-submit": { ...base, hook_event_name: "UserPromptSubmit", prompt: "Fix the retry loop." },
-    "pre-tool-use": { ...base, hook_event_name: "PreToolUse", tool_name: "mcp__plugin_memchor_memchor__memory_recall", tool_input: { query: "retry" }, tool_use_id: "toolu_01" },
+    "pre-tool-use": { ...base, hook_event_name: "PreToolUse", tool_name: "mcp__plugin_debrief_debrief__memory_recall", tool_input: { query: "retry" }, tool_use_id: "toolu_01" },
     stop: { ...base, hook_event_name: "Stop", stop_hook_active: false },
   };
   const variants = {
-    "memchor (PATH)": (event) => `memchor hook ${event} --host claude-code`,
+    "debrief (PATH)": (event) => `debrief hook ${event} --host claude-code`,
     ...(values.compare === undefined
       ? {}
-      : { "node dist/memchor.mjs": (event) => `'${process.execPath}' '${installedCli}' hook ${event} --host claude-code`, [`node ${values.compare}`]: (event) => `'${process.execPath}' '${resolve(values.compare)}' hook ${event} --host claude-code` }),
+      : { "node dist/debrief.mjs": (event) => `'${process.execPath}' '${installedCli}' hook ${event} --host claude-code`, [`node ${values.compare}`]: (event) => `'${process.execPath}' '${resolve(values.compare)}' hook ${event} --host claude-code` }),
   };
   // Each Node process notes its own CPU time and how long it ran from start to exit: on a busy
   // machine these hold still while wall time does not.
   const preload = join(scratch, "timing.mjs");
   const timing = join(scratch, "timing.log");
-  writeFileSync(preload, 'import { writeFileSync } from "node:fs";\nprocess.on("exit", () => { const c = process.cpuUsage(); writeFileSync(process.env.MEMCHOR_TIMING_LOG, `${(c.user + c.system) / 1000} ${performance.now()}`); });\n');
-  const env = { ...process.env, PATH: `${join(prefix, "bin")}:${process.env.PATH}`, MEMCHOR_HOME: home, CLAUDE_CONFIG_DIR: config, NODE_OPTIONS: `--import=${preload}`, MEMCHOR_TIMING_LOG: timing };
+  writeFileSync(preload, 'import { writeFileSync } from "node:fs";\nprocess.on("exit", () => { const c = process.cpuUsage(); writeFileSync(process.env.DEBRIEF_TIMING_LOG, `${(c.user + c.system) / 1000} ${performance.now()}`); });\n');
+  const env = { ...process.env, PATH: `${join(prefix, "bin")}:${process.env.PATH}`, DEBRIEF_HOME: home, CLAUDE_CONFIG_DIR: config, NODE_OPTIONS: `--import=${preload}`, DEBRIEF_TIMING_LOG: timing };
   const run = (command, stdin) => {
     const started = process.hrtime.bigint();
     const done = spawnSync("/bin/sh", ["-c", command], { cwd: repo, env, input: stdin, encoding: "utf8" });
@@ -108,7 +108,7 @@ function machine() {
 
 function report(rows, before, after) {
   return [
-    `# memchor hook overhead · ${RUNS} runs each, interleaved, after 3 warm-up runs`,
+    `# debrief hook overhead · ${RUNS} runs each, interleaved, after 3 warm-up runs`,
     `machine: ${before.spec}`,
     `before: ${before.load}`,
     `after:  ${after.load}`,

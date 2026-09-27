@@ -19,12 +19,12 @@ interface HostHistory {
 }
 
 function env(home: string, history: HostHistory): NodeJS.ProcessEnv {
-  return { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", MEMCHOR_HOME: home, CLAUDE_CONFIG_DIR: history.claudeConfig, CODEX_HOME: history.codexHome };
+  return { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: home, CLAUDE_CONFIG_DIR: history.claudeConfig, CODEX_HOME: history.codexHome };
 }
 
-function memchor(cwd: string, home: string, history: HostHistory, ...args: string[]): ImportRun {
+function debrief(cwd: string, home: string, history: HostHistory, ...args: string[]): ImportRun {
   const run = spawnSync(process.execPath, [CLI, ...args, "--host", history.host], { cwd, env: env(home, history), encoding: "utf8" });
-  if (run.status !== 0) throw new Error(`memchor ${args.join(" ")} exited ${String(run.status)}: ${run.stderr}`);
+  if (run.status !== 0) throw new Error(`debrief ${args.join(" ")} exited ${String(run.status)}: ${run.stderr}`);
   return JSON.parse(run.stdout) as ImportRun;
 }
 
@@ -84,11 +84,11 @@ describe.each(HOSTS)("interrupted $host import", ({ install, recordsPerTurn }) =
     expect(atKill).toBeGreaterThan(0);
     expect(atKill).toBeLessThan(expected);
 
-    const resumed = memchor(repo, killedHome, history, "diag", "import");
+    const resumed = debrief(repo, killedHome, history, "diag", "import");
     const clean = (() => {
       const home = tempDir();
-      memchor(repo, home, history, "diag", "consent", "--set", "current_project");
-      return memchor(repo, home, history, "diag", "import");
+      debrief(repo, home, history, "diag", "consent", "--set", "current_project");
+      return debrief(repo, home, history, "diag", "import");
     })();
 
     for (const run of [resumed, clean]) {

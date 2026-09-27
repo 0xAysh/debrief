@@ -7,7 +7,7 @@ const FIXTURES = resolve(import.meta.dirname, "fixtures/claude-code");
 
 /** A fresh stand-in for `$CLAUDE_CONFIG_DIR` (transcripts live under its `projects/`). */
 export function claudeConfigDir(): string {
-  return tempDir("memchor-claude-");
+  return tempDir("debrief-claude-");
 }
 
 /** Claude Code's project directory name: the cwd with every non-alphanumeric character replaced by "-". */
@@ -177,7 +177,7 @@ const CODEX_FIXTURES = resolve(import.meta.dirname, "fixtures/codex");
 
 /** A fresh stand-in for `$CODEX_HOME` (rollouts live under its `sessions/` and `archived_sessions/`). */
 export function codexHome(): string {
-  return tempDir("memchor-codex-");
+  return tempDir("debrief-codex-");
 }
 
 /** A UUIDv7-shaped thread id, like the ones Codex generates. */

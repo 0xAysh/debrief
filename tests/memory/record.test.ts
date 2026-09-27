@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
-import { catchMemchorError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string): Memory {
   const memory = openMemory({ cwd, host: "codex", home });
@@ -41,7 +41,7 @@ describe("record", () => {
       citations: [{ recordId: evidence.recordId, relation: "supported_by" }],
       applicability: { commit: git(repo, "rev-parse", "HEAD") },
     });
-    // The file does not exist, so Memchor had nothing to fingerprint: freshness is unknown.
+    // The file does not exist, so Debrief had nothing to fingerprint: freshness is unknown.
     expect(byId.get(evidence.recordId)?.externalRefs).toEqual([
       { kind: "code", locator: "src/checkout/retry.ts", path: "src/checkout/retry.ts", lines: [40, 82], freshness: "unknown", reason: "not_observed" },
     ]);
@@ -63,7 +63,7 @@ describe("record", () => {
     const memory = open(initRepo(), tempDir());
     memory.record({ kind: "note", body: "first", attribution: "agent_inference", operationKey: "op-1" });
 
-    const error = catchMemchorError(() =>
+    const error = catchDebriefError(() =>
       memory.record({ kind: "note", body: "second", attribution: "agent_inference", operationKey: "op-1" }),
     );
     expect(error.code).toBe("idempotency_conflict");
@@ -74,7 +74,7 @@ describe("record", () => {
     const memory = open(initRepo(), tempDir());
     const missing = "rec_" + "0".repeat(32);
 
-    const error = catchMemchorError(() =>
+    const error = catchDebriefError(() =>
       memory.record({ kind: "decision", body: "orphan decision", attribution: "agent_inference", supportedBy: [missing], operationKey: "k" }),
     );
     expect(error.code).toBe("not_found");
@@ -86,7 +86,7 @@ describe("record", () => {
 
   test("bodies over 16 KiB are rejected: memory stores knowledge about artifacts, not artifacts", () => {
     const memory = open(initRepo(), tempDir());
-    const error = catchMemchorError(() => memory.record({ kind: "evidence", body: "x".repeat(16 * 1024 + 1), attribution: "direct_observation" }));
+    const error = catchDebriefError(() => memory.record({ kind: "evidence", body: "x".repeat(16 * 1024 + 1), attribution: "direct_observation" }));
     expect(error.code).toBe("invalid_input");
     expect(error.message).toMatch(/content_too_large/);
   });
@@ -94,11 +94,11 @@ describe("record", () => {
   test("records cannot cite a record from another workstream", () => {
     const repo = initRepo();
     const home = tempDir();
-    const worktree = tempDir("memchor-wt-") + "/wt";
+    const worktree = tempDir("debrief-wt-") + "/wt";
     git(repo, "worktree", "add", "--quiet", "-b", "other", worktree);
     const foreign = open(worktree, home).record({ kind: "note", body: "other stream", attribution: "agent_inference" });
 
-    const error = catchMemchorError(() =>
+    const error = catchDebriefError(() =>
       open(repo, home).record({ kind: "note", body: "mine", attribution: "agent_inference", links: [{ to: foreign.recordId, relation: "related_to" }] }),
     );
     expect(error.code).toBe("scope_denied");

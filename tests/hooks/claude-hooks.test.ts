@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { initRepo, tempDir } from "../helpers.js";
-import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, memchorAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
+import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, debriefAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
 import { type HookEvent, type HookOutput, type HookRecord, type HookRegistration, hookRig, sanitize } from "./hook-rig.js";
 
 /**
@@ -28,12 +28,12 @@ interface Session {
   sandbox: ReturnType<typeof claudeSandbox>;
 }
 
-/** A sandboxed Claude Code with memchor registered in user scope, in a fresh repository. */
+/** A sandboxed Claude Code with debrief registered in user scope, in a fresh repository. */
 function session(): Session {
   const sandbox = claudeSandbox();
   const repo = initRepo({ branch: "feat/hooks" });
-  const memchorHome = tempDir();
-  const added = claude(claudeEnv(sandbox), repo, ...memchorAddArgs({ memchorHome, networkLog: join(tempDir(), "network.log") }));
+  const debriefHome = tempDir();
+  const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: join(tempDir(), "network.log") }));
   expect(added.code, added.stderr).toBe(0);
   return {
     repo,
@@ -43,7 +43,7 @@ function session(): Session {
       [sandbox.configDir, "<claude-config>"],
       [sandbox.home, "<claude-home>"],
       [repo, "<repo>"],
-      [memchorHome, "<memchor-home>"],
+      [debriefHome, "<debrief-home>"],
       // Claude Code names the project directory after the repository path with every / replaced.
       [repo.replaceAll("/", "-"), "<repo-slug>"],
     ],
@@ -244,9 +244,9 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} comman
 
     // Control: no hook, no --allowedTools: -p denies the call.
     const none = await drive(s, { events: {}, calls });
-    expect(outcome(none.run)).toMatchObject({ denied: ["mcp__memchor__memory_status"], ran: false });
+    expect(outcome(none.run)).toMatchObject({ denied: ["mcp__debrief__memory_status"], ran: false });
 
-    const allowed = await drive(s, { events: { PreToolUse: { matcher: "mcp__memchor__.*" }, Stop: {} }, outputs: allow, calls });
+    const allowed = await drive(s, { events: { PreToolUse: { matcher: "mcp__debrief__.*" }, Stop: {} }, outputs: allow, calls });
     const allowedOutcome = outcome(allowed.run);
     expect(allowedOutcome).toMatchObject({ denied: [], ran: true });
     const pre = only(allowed.rig.records(), "PreToolUse");
@@ -270,9 +270,9 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} comman
       cwd: s.repo,
       hook_event_name: "PreToolUse",
       permission_mode: "default",
-      tool_name: "mcp__memchor__memory_status",
+      tool_name: "mcp__debrief__memory_status",
       tool_input: {},
-      mcp_server: { name: "memchor", source: "user" },
+      mcp_server: { name: "debrief", source: "user" },
     });
     expect(prePayload["tool_use_id"]).toMatch(/^toolu_stub_\d+$/);
     expect(prePayload["effort"]).toEqual({ level: expect.any(String) as unknown });
@@ -282,12 +282,12 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} comman
     expect(transcriptHas(stop, "user", "Hello hooks.")).toBe(true);
 
     // A bare server name is an exact match on the tool name: it never fires.
-    const bare = await drive(s, { events: { PreToolUse: { matcher: "mcp__memchor" } }, outputs: allow, calls });
+    const bare = await drive(s, { events: { PreToolUse: { matcher: "mcp__debrief" } }, outputs: allow, calls });
     expect(only(bare.rig.records(), "PreToolUse")).toHaveLength(0);
-    expect(outcome(bare.run)).toMatchObject({ denied: ["mcp__memchor__memory_status"], ran: false });
+    expect(outcome(bare.run)).toMatchObject({ denied: ["mcp__debrief__memory_status"], ran: false });
 
-    // The regex that would also cover a plugin-bundled server (mcp__plugin_memchor_memchor__*) still matches the user-scope name.
-    const pluginForm = await drive(s, { events: { PreToolUse: { matcher: "mcp__(plugin_memchor_)?memchor__.*" } }, outputs: allow, calls });
+    // The regex that would also cover a plugin-bundled server (mcp__plugin_debrief_debrief__*) still matches the user-scope name.
+    const pluginForm = await drive(s, { events: { PreToolUse: { matcher: "mcp__(plugin_debrief_)?debrief__.*" } }, outputs: allow, calls });
     expect(only(pluginForm.rig.records(), "PreToolUse")).toHaveLength(1);
     expect(outcome(pluginForm.run)).toMatchObject({ denied: [], ran: true });
 
@@ -295,9 +295,9 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} comman
       {
         payload: prePayload,
         noHook: { denied: outcome(none.run).denied },
-        allow: { matcher: "mcp__memchor__.*", fired: true, ran: true, denied: [] },
-        bareMatcher: { matcher: "mcp__memchor", fired: false, denied: ["mcp__memchor__memory_status"] },
-        pluginRegex: { matcher: "mcp__(plugin_memchor_)?memchor__.*", fired: true, ran: true, pluginNameTested: false },
+        allow: { matcher: "mcp__debrief__.*", fired: true, ran: true, denied: [] },
+        bareMatcher: { matcher: "mcp__debrief", fired: false, denied: ["mcp__debrief__memory_status"] },
+        pluginRegex: { matcher: "mcp__(plugin_debrief_)?debrief__.*", fired: true, ran: true, pluginNameTested: false },
         transcriptAtStopAfterToolTurn: { ...transcriptShape(stop), hasToolResult: (stop?.transcript.lines ?? []).some((l) => JSON.stringify(l).includes('"tool_result"')), hasLastAssistantText: transcriptHas(stop, "assistant", "Done.") },
       },
       [...allowed.placeholders, [allowedOutcome.sessionId, "<session>"], [String(prePayload["prompt_id"]), "<prompt-id>"]],

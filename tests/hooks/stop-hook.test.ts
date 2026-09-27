@@ -15,7 +15,7 @@ interface Env {
   config: string;
 }
 
-/** Runs `memchor hook stop` as Claude Code would: payload on stdin, cwd = the project. */
+/** Runs `debrief hook stop` as Claude Code would: payload on stdin, cwd = the project. */
 function stopHook(env: Env, stdin: string, home = env.home) {
   const started = performance.now();
   const run = spawnSync(process.execPath, [CLI, "hook", "stop", "--host", "claude-code"], {
@@ -23,7 +23,7 @@ function stopHook(env: Env, stdin: string, home = env.home) {
     input: stdin,
     encoding: "utf8",
     timeout: 20_000,
-    env: { ...process.env, MEMCHOR_HOME: home, CLAUDE_CONFIG_DIR: env.config },
+    env: { ...process.env, DEBRIEF_HOME: home, CLAUDE_CONFIG_DIR: env.config },
   });
   return { code: run.status, stdout: run.stdout, stderr: run.stderr, ms: performance.now() - started };
 }
@@ -48,13 +48,13 @@ function approvedRepo(): Env {
   return env;
 }
 
-describe("memchor hook stop (Claude Code payload on stdin)", () => {
+describe("debrief hook stop (Claude Code payload on stdin)", () => {
   test("imports the session's transcript and tells the user what it saved", () => {
     const env = approvedRepo();
     const session = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
     const run = stopHook(env, payload(env, session.path, session.sessionId));
     expect(run).toMatchObject({ code: 0, stderr: "" });
-    expect(JSON.parse(run.stdout)).toEqual({ systemMessage: expect.stringMatching(/^◪ memchor · saved turn \(\d+ events\)$/) as unknown });
+    expect(JSON.parse(run.stdout)).toEqual({ systemMessage: expect.stringMatching(/^◪ debrief · saved turn \(\d+ events\)$/) as unknown });
     expect(stopHook(env, payload(env, session.path, session.sessionId))).toMatchObject({ code: 0, stdout: "", stderr: "" });
     const memory = open(env);
     expect(memory.recall({ query: "idempotency key per order" }).items.some((i) => i.excerpt.includes("idempotency key per order"))).toBe(true);
@@ -75,7 +75,7 @@ describe("memchor hook stop (Claude Code payload on stdin)", () => {
     for (const stdin of ["not json", JSON.stringify({ hook_event_name: "Stop" })]) expect(stopHook(env, stdin)).toMatchObject({ code: 0, stdout: "" });
     const wrongPath = stopHook(env, payload(env, outside, "5e550000-0000-4000-8000-0000000000d1"));
     expect(wrongPath.code).toBe(0);
-    expect(JSON.parse(wrongPath.stdout)).toEqual({ systemMessage: "◪ memchor · ⚠ turn not saved (not_a_transcript): memchor diag status" });
+    expect(JSON.parse(wrongPath.stdout)).toEqual({ systemMessage: "◪ debrief · ⚠ turn not saved (not_a_transcript): debrief diag status" });
     expect(open(env).status().hookFailures.map((f) => [f.host, f.event, f.code])).toEqual([
       ["claude-code", "stop", "invalid_input"],
       ["claude-code", "stop", "invalid_input"],
@@ -90,7 +90,7 @@ describe("memchor hook stop (Claude Code payload on stdin)", () => {
       cwd: env.repo,
       input: payload(env, session.path, session.sessionId),
       encoding: "utf8",
-      env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+      env: { ...process.env, DEBRIEF_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
     });
     expect(run).toMatchObject({ status: 0, stdout: "" });
     expect(run.stderr).toMatch(/--host must be one of claude-code \(got codex\)/);
@@ -105,14 +105,14 @@ describe("memchor hook stop (Claude Code payload on stdin)", () => {
     writeFileSync(dbPath, "this is not a SQLite database, and it is long enough to have a header".repeat(20));
     const run = stopHook(env, payload(env, session.path, session.sessionId));
     expect(run.code).toBe(0);
-    expect(JSON.parse(run.stdout)).toEqual({ systemMessage: expect.stringMatching(/^◪ memchor · ⚠ turn not saved \(storage_\w+\): memchor diag status$/) as unknown });
-    expect(run.stderr).toMatch(/^memchor hook stop: storage_/);
+    expect(JSON.parse(run.stdout)).toEqual({ systemMessage: expect.stringMatching(/^◪ debrief · ⚠ turn not saved \(storage_\w+\): debrief diag status$/) as unknown });
+    expect(run.stderr).toMatch(/^debrief hook stop: storage_/);
     expect(run.ms).toBeLessThan(5_000);
     expect(open(env).status().hookFailures.map((f) => f.code)).toEqual([expect.stringMatching(/^storage_/)]);
   });
 });
 
-describe("memchor hook stop: the stale-checkpoint nudge", () => {
+describe("debrief hook stop: the stale-checkpoint nudge", () => {
   test("the fifth turn of work without a checkpoint blocks the stop once with the reason; a stop already continued never blocks", () => {
     const env = approvedRepo();
     const sessionId = "5e550000-0000-4000-8000-0000000000d2";
@@ -128,21 +128,21 @@ describe("memchor hook stop: the stale-checkpoint nudge", () => {
     expect(stops.slice(0, 4).map((stop) => (JSON.parse(stop.stdout) as { decision?: string }).decision)).toEqual([undefined, undefined, undefined, undefined]);
     expect(JSON.parse(stops[4]?.stdout ?? "")).toEqual({
       decision: "block",
-      reason: expect.stringMatching(/^Memchor: 5 turns since the last checkpoint \(none yet\), with files changed or commands run\./) as unknown,
-      systemMessage: expect.stringMatching(/^◪ memchor · saved turn/) as unknown,
+      reason: expect.stringMatching(/^Debrief: 5 turns since the last checkpoint \(none yet\), with files changed or commands run\./) as unknown,
+      systemMessage: expect.stringMatching(/^◪ debrief · saved turn/) as unknown,
     });
     expect(stopHook(env, payload(env, path, sessionId, true))).toMatchObject({ code: 0, stdout: "", stderr: "" });
   });
 });
 
-describe("memchor hook session-start (Claude Code payload on stdin)", () => {
+describe("debrief hook session-start (Claude Code payload on stdin)", () => {
   function sessionStartHook(env: Env, stdin: string) {
     const run = spawnSync(process.execPath, [CLI, "hook", "session-start", "--host", "claude-code"], {
       cwd: env.repo,
       input: stdin,
       encoding: "utf8",
       timeout: 20_000,
-      env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+      env: { ...process.env, DEBRIEF_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
     });
     return { code: run.status, stdout: run.stdout, stderr: run.stderr };
   }
@@ -159,7 +159,7 @@ describe("memchor hook session-start (Claude Code payload on stdin)", () => {
     expect(Object.keys(output).sort()).toEqual(["hookSpecificOutput", "systemMessage"]);
     expect(output.hookSpecificOutput.hookEventName).toBe("SessionStart");
     expect(output.hookSpecificOutput.additionalContext).toContain("Wire the key into charge()");
-    expect(output.systemMessage).toMatch(/^◪ memchor · checkpoint r1 loaded/);
+    expect(output.systemMessage).toMatch(/^◪ debrief · checkpoint r1 loaded/);
   });
 
   test("the session it binds carries Claude Code's session id", () => {
@@ -180,7 +180,7 @@ describe("memchor hook session-start (Claude Code payload on stdin)", () => {
   });
 });
 
-describe("memchor hook subagent-start (Claude Code payload on stdin)", () => {
+describe("debrief hook subagent-start (Claude Code payload on stdin)", () => {
   const subagentStart = { hook_event_name: "SubagentStart", agent_id: "a0123456789abcdef", agent_type: "general-purpose", prompt_id: "5e550000-0000-4000-8000-0000000000d1" };
 
   test("prints Claude Code's SubagentStart JSON: context for the sub-agent's model, and nothing for the user", () => {
@@ -204,25 +204,25 @@ describe("memchor hook subagent-start (Claude Code payload on stdin)", () => {
   });
 });
 
-/** Runs `memchor hook <event> --host claude-code` with a payload on stdin, as Claude Code would. */
+/** Runs `debrief hook <event> --host claude-code` with a payload on stdin, as Claude Code would. */
 function hook(env: Env, args: string[], payload: object) {
   const run = spawnSync(process.execPath, [CLI, "hook", ...args, "--host", "claude-code"], {
     cwd: env.repo,
     input: JSON.stringify({ session_id: "5e550000-0000-4000-8000-0000000000f1", transcript_path: join(env.config, "projects", "x", "5e550000-0000-4000-8000-0000000000f1.jsonl"), cwd: env.repo, permission_mode: "default", ...payload }),
     encoding: "utf8",
     timeout: 20_000,
-    env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+    env: { ...process.env, DEBRIEF_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
   });
   return { code: run.status, stdout: run.stdout, stderr: run.stderr };
 }
 
-describe("memchor hook user-prompt-submit (Claude Code payload on stdin)", () => {
+describe("debrief hook user-prompt-submit (Claude Code payload on stdin)", () => {
   test("lasting-preference wording adds one line of context for the agent; anything else prints nothing", () => {
     const env = approvedRepo();
     const hinted = hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: "From now on, use pnpm." });
     expect(hinted).toMatchObject({ code: 0, stderr: "" });
     expect(JSON.parse(hinted.stdout)).toEqual({
-      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: expect.stringMatching(/^Memchor: the user's wording may state a lasting preference\. [^\n]+$/) as unknown },
+      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: expect.stringMatching(/^Debrief: the user's wording may state a lasting preference\. [^\n]+$/) as unknown },
     });
     expect(hook(env, ["user-prompt-submit"], { hook_event_name: "UserPromptSubmit", prompt: "Fix the retry loop." })).toMatchObject({ code: 0, stdout: "", stderr: "" });
     expect(open(env).status().hookFailures).toEqual([]);
@@ -235,19 +235,19 @@ describe("memchor hook user-prompt-submit (Claude Code payload on stdin)", () =>
   });
 });
 
-describe("memchor hook pre-tool-use (Claude Code payload on stdin)", () => {
+describe("debrief hook pre-tool-use (Claude Code payload on stdin)", () => {
   const call = (tool_name: string, tool_input: object) => ({ hook_event_name: "PreToolUse", tool_name, tool_input, tool_use_id: "toolu_01" });
 
-  test("a read-only Memchor call is allowed, a recall with a notice for the user; a write prints nothing", () => {
+  test("a read-only Debrief call is allowed, a recall with a notice for the user; a write prints nothing", () => {
     const env = approvedRepo();
-    expect(JSON.parse(hook(env, ["pre-tool-use"], call("mcp__memchor__memory_read", { recordId: "rec_0123456789abcdef0123456789abcdef" })).stdout)).toEqual({
+    expect(JSON.parse(hook(env, ["pre-tool-use"], call("mcp__debrief__memory_read", { recordId: "rec_0123456789abcdef0123456789abcdef" })).stdout)).toEqual({
       hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
     });
-    expect(JSON.parse(hook(env, ["pre-tool-use"], call("mcp__memchor__memory_recall", { query: "retry policy" })).stdout)).toEqual({
+    expect(JSON.parse(hook(env, ["pre-tool-use"], call("mcp__debrief__memory_recall", { query: "retry policy" })).stdout)).toEqual({
       hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
-      systemMessage: "◪ memchor · recalling: retry policy",
+      systemMessage: "◪ debrief · recalling: retry policy",
     });
-    expect(hook(env, ["pre-tool-use"], call("mcp__memchor__memory_record", { kind: "note", body: "x", attribution: "agent_inference" }))).toMatchObject({ code: 0, stdout: "", stderr: "" });
+    expect(hook(env, ["pre-tool-use"], call("mcp__debrief__memory_record", { kind: "note", body: "x", attribution: "agent_inference" }))).toMatchObject({ code: 0, stdout: "", stderr: "" });
     expect(open(env).status().hookFailures).toEqual([]);
   });
 
@@ -273,7 +273,7 @@ describe("memchor hook pre-tool-use (Claude Code payload on stdin)", () => {
 
       const hook = spawn(process.execPath, [CLI, "hook", "stop", "--host", "claude-code"], {
         cwd: env.repo,
-        env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+        env: { ...process.env, DEBRIEF_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
         stdio: ["pipe", "ignore", "pipe"],
       });
       let stderr = "";
@@ -301,7 +301,7 @@ describe("memchor hook pre-tool-use (Claude Code payload on stdin)", () => {
   }, 120_000);
 });
 
-describe("each hook's last run (for memchor status)", () => {
+describe("each hook's last run (for debrief status)", () => {
   test("every hook records when it last ran, where, and how it ended; a hook that never ran has no entry", () => {
     const env = approvedRepo();
     const session = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
@@ -359,26 +359,26 @@ describe("each hook's last run (for memchor status)", () => {
   });
 });
 
-describe("memchor status (Claude Code)", () => {
+describe("debrief status (Claude Code)", () => {
   function statusCli(env: Env) {
     const run = spawnSync(process.execPath, [CLI, "status"], {
       cwd: env.repo,
       encoding: "utf8",
       timeout: 30_000,
-      env: { ...process.env, MEMCHOR_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
+      env: { ...process.env, DEBRIEF_HOME: env.home, CLAUDE_CONFIG_DIR: env.config },
     });
     return { code: run.status, stdout: run.stdout, stderr: run.stderr };
   }
 
-  test("without the plugin it says how to install it; transcripts from a version Memchor does not import are a problem", () => {
+  test("without the plugin it says how to install it; transcripts from a version Debrief does not import are a problem", () => {
     const env = approvedRepo();
     const transcript = installTranscript(env.config, "2.1.281/basic.jsonl", { cwd: env.repo });
     writeFileSync(transcript.path, readFileSync(transcript.path, "utf8").replaceAll('"version":"2.1.281"', '"version":"3.0.0"'));
     const run = statusCli(env);
     expect(run.code, run.stderr).toBe(1);
-    expect(run.stdout).toMatch(/^memchor status · Claude Code$/m);
-    expect(run.stdout).toMatch(/^ {2}plugin {9}✘ not installed: in Claude Code run \/plugin marketplace add 0xAysh\/memchor, then \/plugin install memchor@memchor$/m);
-    expect(run.stdout).toMatch(/^ {2}transcripts {4}✘ 1 from a Claude Code version Memchor does not import \(it imports 2\.1\.183 up to 2\.2\.0\)$/m);
+    expect(run.stdout).toMatch(/^debrief status · Claude Code$/m);
+    expect(run.stdout).toMatch(/^ {2}plugin {9}✘ not installed: in Claude Code run \/plugin marketplace add 0xAysh\/debrief, then \/plugin install debrief@debrief$/m);
+    expect(run.stdout).toMatch(/^ {2}transcripts {4}✘ 1 from a Claude Code version Debrief does not import \(it imports 2\.1\.183 up to 2\.2\.0\)$/m);
     expect(run.stdout).toMatch(/^ {2}import {9}current_project$/m);
     expect(run.stdout).toMatch(new RegExp(`^ {2}storage {8}${(open(env).status().storage.dbPath ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
     expect(run.stdout).toMatch(/^✘ 2 problems$/m);

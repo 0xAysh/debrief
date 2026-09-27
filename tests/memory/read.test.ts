@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
-import { catchMemchorError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string): Memory {
   const memory = openMemory({ cwd, host: "pi", home });
@@ -55,17 +55,17 @@ describe("read", () => {
   test("another workstream's record is scope_denied; retracted and unknown records are not_found", () => {
     const repo = initRepo();
     const home = tempDir();
-    const worktree = join(tempDir("memchor-wt-"), "wt");
+    const worktree = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "other", worktree);
     const mine = open(repo, home);
     const foreign = open(worktree, home).record({ kind: "note", body: "theirs", attribution: "agent_inference" });
     const retracted = mine.record({ kind: "note", body: "wrong", attribution: "agent_inference" });
     mine.manage({ action: "retract", recordId: retracted.recordId, reason: "wrong", attribution: "user_direction" });
 
-    expect(catchMemchorError(() => mine.read({ recordId: foreign.recordId })).code).toBe("scope_denied");
-    expect(catchMemchorError(() => mine.read({ recordId: retracted.recordId })).code).toBe("not_found");
-    expect(catchMemchorError(() => mine.read({ recordId: "rec_" + "f".repeat(32) })).code).toBe("not_found");
-    expect(catchMemchorError(() => mine.read({ recordId: "../../etc/passwd" })).code).toBe("invalid_input");
+    expect(catchDebriefError(() => mine.read({ recordId: foreign.recordId })).code).toBe("scope_denied");
+    expect(catchDebriefError(() => mine.read({ recordId: retracted.recordId })).code).toBe("not_found");
+    expect(catchDebriefError(() => mine.read({ recordId: "rec_" + "f".repeat(32) })).code).toBe("not_found");
+    expect(catchDebriefError(() => mine.read({ recordId: "../../etc/passwd" })).code).toBe("invalid_input");
   });
 
   test("links are returned in both directions, only when the other end is visible", () => {

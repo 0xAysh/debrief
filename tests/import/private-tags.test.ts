@@ -99,7 +99,7 @@ describe("<private>…</private> is replaced before anything is stored", () => {
     expect(bytes).not.toContain(MARKER.toLowerCase());
   });
 
-  test("a span inside a tool call (a shell command, a Memchor call) never reaches import metadata", () => {
+  test("a span inside a tool call (a shell command, a Debrief call) never reaches import metadata", () => {
     const repo = initRepo();
     const home = tempDir();
     const config = claudeConfigDir();
@@ -109,7 +109,7 @@ describe("<private>…</private> is replaced before anything is stored", () => {
     const content =
       base +
       claudeToolExchange({ cwd: repo, sessionId, gitBranch: "main", parentUuid: null, id: 9_000, tool: "Bash", input: { command: `echo ${span}` }, result: "ok" }) +
-      claudeToolExchange({ cwd: repo, sessionId, gitBranch: "main", parentUuid: null, id: 9_010, tool: "mcp__memchor__memory_recall", input: { query: `retry ${span}` }, result: '{"items":[]}' });
+      claudeToolExchange({ cwd: repo, sessionId, gitBranch: "main", parentUuid: null, id: 9_010, tool: "mcp__debrief__memory_recall", input: { query: `retry ${span}` }, result: '{"items":[]}' });
     installTranscript(config, "", { cwd: repo, sessionId, content });
     const memory = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config });
     onCleanup(() => {

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { sep } from "node:path";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { summarizeCheckpoint, type CheckpointSummary } from "../integrity/checkpoints.js";
 import { ELIGIBLE_STATE_SQL } from "../retrieval/eligibility.js";
 import { type Db, prepared, requireTransaction, writeTransaction } from "../storage/database.js";
@@ -15,7 +15,7 @@ import { mainWorktreeOf, type WorkspaceLocation } from "./workspace-resolution.j
  * | # | Signal | Weight | Why |
  * |---|---|---|---|
  * | – | Explicit choice (`workstream: <id> \| "new"`) | Decides | The user answered the question; it also rebinds the worktree |
- * | 1 | Session metadata: this host session id already bound, or Memchor output in an imported transcript naming its workstream | Authoritative | Memchor itself bound that very session; nothing is closer evidence |
+ * | 1 | Session metadata: this host session id already bound, or Debrief output in an imported transcript naming its workstream | Authoritative | Debrief itself bound that very session; nothing is closer evidence |
  * | 2 | Existing binding of this Git worktree | Authoritative | The worktree is where the work physically happens; bindings survive branch switches |
  * | 3 | Explicit task identity (`task` hint → task key) | Strong | The user named the task; a workstream with that key is the same task. A *different* task than the bound workstream's is a conflict, never overridden silently |
  * | 4 | Strong match to one active workstream | – | V1 knows no strong signal beyond 1–3; branch similarity is not one |
@@ -72,7 +72,7 @@ export interface ScopeSignals {
   branch: string;
   /** Step 1 (live and imported): the host's own session id; `sessionId` is the session being resolved, never evidence for itself. */
   session?: { host: string; hostSessionId: string | null; sessionId?: string };
-  /** Step 1 (imported): workstreams that Memchor output inside the transcript reported as bound. */
+  /** Step 1 (imported): workstreams that Debrief output inside the transcript reported as bound. */
   namedWorkstreams?: readonly string[];
   /** Step 3: the task identity the user gave (raw; normalised here). */
   task?: string;
@@ -155,7 +155,7 @@ function decide(db: Db, signals: ScopeSignals, taskKey: string | null): Decision
     if (signals.choice === "new") return { status: "create", basis: "choice" };
     const chosen = workstreamRow(db, signals.choice);
     if (chosen === null) {
-      throw new MemchorError("not_found", `No workstream ${signals.choice} exists in this workspace. Choose one of scope.ambiguity.candidates, or "new".`, {
+      throw new DebriefError("not_found", `No workstream ${signals.choice} exists in this workspace. Choose one of scope.ambiguity.candidates, or "new".`, {
         details: { workstreamId: signals.choice },
       });
     }
@@ -166,7 +166,7 @@ function decide(db: Db, signals: ScopeSignals, taskKey: string | null): Decision
   const worktreeBound = boundTo(db, signals.worktree);
   if (sessionBound.length > 1) {
     return ambiguous(db, [
-      ...sessionBound.map((row) => ({ row, signal: "session_binding" as const, detail: "Memchor bound this session to it" })),
+      ...sessionBound.map((row) => ({ row, signal: "session_binding" as const, detail: "Debrief bound this session to it" })),
       ...(worktreeBound === null ? [] : [{ row: worktreeBound, signal: "worktree_binding" as const, detail: "this worktree is bound to it" }]),
     ]);
   }
@@ -180,7 +180,7 @@ function decide(db: Db, signals: ScopeSignals, taskKey: string | null): Decision
     const agrees = taskKey === null || (anchor.task_key === null ? tasked.every((row) => row.id === anchor.id) : anchor.task_key === taskKey);
     if (agrees) return { status: "bind", row: anchor, basis };
     return ambiguous(db, [
-      { row: anchor, signal: basis, detail: `${basis === "session_binding" ? "Memchor bound this session" : "this worktree is bound"} to it (task ${anchor.task_key ?? "not set"}, not ${taskKey})` },
+      { row: anchor, signal: basis, detail: `${basis === "session_binding" ? "Debrief bound this session" : "this worktree is bound"} to it (task ${anchor.task_key ?? "not set"}, not ${taskKey})` },
       ...tasked.map((row) => ({ row, signal: "task" as const, detail: `its task is ${taskKey}` })),
     ]);
   }
@@ -316,7 +316,7 @@ function question(candidates: readonly WorkstreamCandidate[], omitted: number): 
     return `${i + 1}. ${c.label}${task} (${c.workstreamId}): ${state}; last active ${c.lastActiveAt}. Why: ${c.reasons.map((r) => r.detail).join("; ")}.`;
   });
   return [
-    "Memchor could not tell which workstream this session continues, and does not guess:",
+    "Debrief could not tell which workstream this session continues, and does not guess:",
     ...lines,
     ...(omitted > 0 ? [`(${omitted} less recently active candidate${omitted === 1 ? "" : "s"} not listed.)`] : []),
     `${candidates.length + 1}. Start a new workstream for this worktree.`,
@@ -456,7 +456,7 @@ function liveSignals(location: WorkspaceLocation, session: SessionIdentity, hint
 /** The bound workstream id for a workstream-scoped write; `scope_ambiguous` while the session has none. */
 export function requireWorkstream(scope: BoundScope, operation: string): string {
   if (scope.workstream !== null) return scope.workstream.id;
-  throw new MemchorError(
+  throw new DebriefError(
     "scope_ambiguous",
     `${operation} needs a workstream, and this session has none yet: more than one could continue here (scope.ambiguity). Ask the user which one, then call memory_bootstrap with workstream set to its id or "new". Records meant for the whole repository can still be written with workspaceLevel: true.`,
     { details: { operation, candidates: scope.ambiguity?.candidates.map((c) => c.workstreamId) ?? [] } },
@@ -511,8 +511,8 @@ function workspaceFit(rows: readonly { id: string; repository_key: string }[], l
   return location.formerRepositoryKeys.includes(row.repository_key) ? "moved" : "foreign";
 }
 
-function foreignDatabase(location: WorkspaceLocation, rows: readonly { id: string; repository_key: string }[]): MemchorError {
-  return new MemchorError(
+function foreignDatabase(location: WorkspaceLocation, rows: readonly { id: string; repository_key: string }[]): DebriefError {
+  return new DebriefError(
     "storage_unavailable",
     `The database at ${location.dbPath} belongs to a different repository or workspace; refusing to use it for ${location.worktree}.`,
     {

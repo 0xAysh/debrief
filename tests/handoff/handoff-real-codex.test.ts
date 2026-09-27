@@ -4,7 +4,7 @@ import { describe, expect, test } from "vitest";
 import type { BootstrapResult, CheckpointResult, ContextPack, RecordResult } from "../../src/memory.js";
 import { git, tempDir } from "../helpers.js";
 import { claudeConfigDir, installTranscript } from "../import/fixtures.js";
-import { CODEX_PINNED_VERSION, codex, CodexAppServer, codexEnv, codexSkipReason, memchorAddArgs, startStubResponses, useStubProvider } from "../mcp/codex.js";
+import { CODEX_PINNED_VERSION, codex, CodexAppServer, codexEnv, codexSkipReason, debriefAddArgs, startStubResponses, useStubProvider } from "../mcp/codex.js";
 import { spawnServer } from "../mcp/harness.js";
 import { writeArtifact } from "./artifacts.js";
 
@@ -14,14 +14,14 @@ if (SKIP !== null) process.stderr.write(`real-Codex handoff test skipped: ${SKIP
 const DECISION = "Charge with a server-side idempotency key per order; remove client retries.";
 const RETRY_FACT = "src/retry.ts: backoff() retries every 5xx, including 504, with no idempotency key.";
 
-/** What Memchor answered to each of the thread's calls, as Codex persisted it in the rollout (`mcp_tool_call_end`). */
-function memchorResults(rolloutPath: string): { tool: string; result: Record<string, unknown>; isError: boolean }[] {
+/** What Debrief answered to each of the thread's calls, as Codex persisted it in the rollout (`mcp_tool_call_end`). */
+function debriefResults(rolloutPath: string): { tool: string; result: Record<string, unknown>; isError: boolean }[] {
   const out: { tool: string; result: Record<string, unknown>; isError: boolean }[] = [];
   for (const line of readFileSync(rolloutPath, "utf8").split("\n")) {
     if (line.trim() === "") continue;
     const entry = JSON.parse(line) as { type?: string; payload?: { type?: string; invocation?: { server?: string; tool?: string }; result?: { Ok?: { structuredContent?: Record<string, unknown>; isError?: boolean } } } };
     const payload = entry.payload;
-    if (entry.type !== "event_msg" || payload?.type !== "mcp_tool_call_end" || payload.invocation?.server !== "memchor") continue;
+    if (entry.type !== "event_msg" || payload?.type !== "mcp_tool_call_end" || payload.invocation?.server !== "debrief") continue;
     out.push({ tool: payload.invocation.tool ?? "", result: payload.result?.Ok?.structuredContent ?? {}, isError: payload.result?.Ok?.isError === true });
   }
   return out;
@@ -29,13 +29,13 @@ function memchorResults(rolloutPath: string): { tool: string; result: Record<str
 
 /**
  * The handoff with the Codex step driven by the pinned real Codex CLI (`codex app-server`, a
- * legacy-history thread, a localhost stub of the Responses API scripting the model's Memchor
- * calls). Claude's steps are `memchor mcp --host claude-code` processes, as in handoff.test.ts.
+ * legacy-history thread, a localhost stub of the Responses API scripting the model's Debrief
+ * calls). Claude's steps are `debrief mcp --host claude-code` processes, as in handoff.test.ts.
  */
 describe.skipIf(SKIP !== null)(`handoff through the real Codex ${CODEX_PINNED_VERSION}`, () => {
   test("Claude checkpoints → a real Codex thread bootstraps, sees Claude's memory with live freshness and publishes revision 2 → a fresh Claude session receives it", async () => {
-    const home = tempDir("memchor-home-");
-    const repo = join(tempDir("memchor-handoff-"), "store");
+    const home = tempDir("debrief-home-");
+    const repo = join(tempDir("debrief-handoff-"), "store");
     mkdirSync(join(repo, "src"), { recursive: true });
     git(repo, "init", "--quiet", "--initial-branch=fix/double-charge");
     writeFileSync(join(repo, "src/gateway.ts"), "export async function charge(order) {\n  return retry(() => post(order), { retries: 3 });\n}\n");
@@ -44,7 +44,7 @@ describe.skipIf(SKIP !== null)(`handoff through the real Codex ${CODEX_PINNED_VE
     git(repo, "commit", "--quiet", "-m", "checkout");
     const claudeDir = claudeConfigDir();
     installTranscript(claudeDir, "2.1.281/basic.jsonl", { cwd: repo });
-    const logs = ["claude", "codex", "resumed", "import"].map((name) => join(tempDir("memchor-net-"), `${name}.log`));
+    const logs = ["claude", "codex", "resumed", "import"].map((name) => join(tempDir("debrief-net-"), `${name}.log`));
     const [claudeLog = "", codexLog = "", resumedLog = "", importLog = ""] = logs;
 
     // Claude: consent, import, decision, a fact about the file that will change, checkpoint 1.
@@ -57,9 +57,9 @@ describe.skipIf(SKIP !== null)(`handoff through the real Codex ${CODEX_PINNED_VE
     writeFileSync(join(repo, "src/retry.ts"), "export function backoff(status) {\n  return status >= 500 && status !== 504;\n}\n");
 
     // Codex, registered exactly as the README says, in a new thread in the same worktree.
-    const codexHome = tempDir("memchor-codex-home-");
-    const env = codexEnv(codexHome, tempDir("memchor-codex-user-"));
-    const added = codex(env, tempDir(), ...memchorAddArgs({ codexHome, memchorHome: home, networkLog: codexLog }));
+    const codexHome = tempDir("debrief-codex-home-");
+    const env = codexEnv(codexHome, tempDir("debrief-codex-user-"));
+    const added = codex(env, tempDir(), ...debriefAddArgs({ codexHome, debriefHome: home, networkLog: codexLog }));
     expect(added.code, added.stderr).toBe(0);
     const stub = await startStubResponses({
       calls: [
@@ -74,12 +74,12 @@ describe.skipIf(SKIP !== null)(`handoff through the real Codex ${CODEX_PINNED_VE
       reply: "Continued from Claude's checkpoint and published revision 2.",
     });
     useStubProvider(codexHome, stub.port);
-    const server = new CodexAppServer(env, tempDir("memchor-not-a-repo-"));
+    const server = new CodexAppServer(env, tempDir("debrief-not-a-repo-"));
     await server.initialize();
     const { threadId, path } = await server.runTurn(repo, "Continue the checkout double-charge fix from the Claude handoff.");
     server.close();
 
-    const results = memchorResults(path);
+    const results = debriefResults(path);
     expect(results.map((r) => r.tool)).toEqual(["memory_bootstrap", "memory_bootstrap", "memory_recall", "memory_checkpoint"]);
     expect(results.every((r) => !r.isError)).toBe(true);
     const [asked, boot, recall, checkpoint] = results.map((r) => r.result) as unknown as [BootstrapResult, BootstrapResult, ContextPack, CheckpointResult];
@@ -102,7 +102,7 @@ describe.skipIf(SKIP !== null)(`handoff through the real Codex ${CODEX_PINNED_VE
     await resumed.close();
 
     // The thread's own rollout, imported later, joins the same workstream by the session Codex's
-    // Memchor bound to its thread id; Memchor's four answers in it are echoes, never records.
+    // Debrief bound to its thread id; Debrief's four answers in it are echoes, never records.
     const importer = await spawnServer({ cwd: repo, home, host: "codex", codexHome, networkLog: importLog });
     const imported = await importer.ok<BootstrapResult>("memory_bootstrap");
     expect(imported.import).toMatchObject({ state: "complete", currentProject: { complete: 1, counters: { echoes: 4 } } });
@@ -112,9 +112,9 @@ describe.skipIf(SKIP !== null)(`handoff through the real Codex ${CODEX_PINNED_VE
     await importer.close();
 
     for (const log of logs) expect(existsSync(log) ? readFileSync(log, "utf8") : "", log).toBe("");
-    writeArtifact("real-codex-thread", { codex: CODEX_PINNED_VERSION, memchorCalls: results, resumedClaudeBootstrap: resumedBoot }, [
+    writeArtifact("real-codex-thread", { codex: CODEX_PINNED_VERSION, debriefCalls: results, resumedClaudeBootstrap: resumedBoot }, [
       [repo, "<repo>"],
-      [home, "<memchor-home>"],
+      [home, "<debrief-home>"],
       [codexHome, "<codex-home>"],
     ]);
   }, 120_000);

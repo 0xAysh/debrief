@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { type ManageResult, type Memory, openMemory } from "../../src/memory.js";
-import { catchMemchorError, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, initRepo, onCleanup, tempDir } from "../helpers.js";
 import { claudeConfigDir, codexHome, codexThreadId, installCodexRollout, installTranscript, renderFixture } from "../import/fixtures.js";
 
 interface Env {
@@ -54,7 +54,7 @@ describe("don't remember this session", () => {
       () => memory.checkpoint({ expectedRevision: 0, goal: "g", status: "s" }),
       () => memory.manage({ action: "retract", recordId: written, reason: "r", attribution: "user_direction" }),
     ]) {
-      expect(catchMemchorError(write).code).toBe("session_private");
+      expect(catchDebriefError(write).code).toBe("session_private");
     }
     // Reads still work.
     expect(memory.recall().items).toEqual([]);
@@ -78,10 +78,10 @@ describe("don't remember this session", () => {
     later.bootstrap();
     expect(later.status().counts?.records).toBe(0);
     const resumed = open(repo, e, { host: "codex", hostSessionId: threadId });
-    expect(catchMemchorError(() => resumed.record({ kind: "note", body: "x", attribution: "agent_inference" })).code).toBe("session_private");
+    expect(catchDebriefError(() => resumed.record({ kind: "note", body: "x", attribution: "agent_inference" })).code).toBe("session_private");
   });
 
-  test("a Claude transcript whose Memchor output names a private session is never imported, not even what came before it", () => {
+  test("a Claude transcript whose Debrief output names a private session is never imported, not even what came before it", () => {
     const repo = initRepo({ branch: "fix/double-charge" });
     const e = env();
     const live = open(repo, e);

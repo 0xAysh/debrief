@@ -1,15 +1,15 @@
 /**
- * The one error type Memchor's memory module throws for expected failures.
+ * The one error type Debrief's memory module throws for expected failures.
  *
- * Every adapter (MCP, CLI) maps a `MemchorError` to its envelope verbatim via
- * {@link MemchorError.toEnvelope}; adapters never invent codes of their own.
- * Anything thrown that is *not* a `MemchorError` is a programming bug.
+ * Every adapter (MCP, CLI) maps a `DebriefError` to its envelope verbatim via
+ * {@link DebriefError.toEnvelope}; adapters never invent codes of their own.
+ * Anything thrown that is *not* a `DebriefError` is a programming bug.
  */
 export const ERROR_CODES = [
   /** The process cwd is not inside a Git worktree, so no workspace can be derived. */
   "scope_unresolved",
   /**
-   * More than one workstream could own this scope, or its signals conflict; Memchor refuses
+   * More than one workstream could own this scope, or its signals conflict; Debrief refuses
    * to guess. Thrown by workstream-scoped writes (`record` without `workspaceLevel`,
    * `checkpoint`) while bootstrap's `scope.ambiguity` is unanswered. Transcript import also
    * reports it as a gap reason for a transcript that is held or quarantined instead of attached.
@@ -30,7 +30,7 @@ export const ERROR_CODES = [
    */
   "lifecycle_conflict",
   /**
-   * The user asked Memchor not to remember this session (`memory_manage private_session`), so it
+   * The user asked Debrief not to remember this session (`memory_manage private_session`), so it
    * cannot write memory. Reads still work. Not retryable: the session stays private.
    */
   "session_private",
@@ -42,7 +42,7 @@ export const ERROR_CODES = [
   "storage_full",
   /** The database or registry cannot be opened, read, or written. */
   "storage_unavailable",
-  /** The embedded SQLite build or the on-disk schema is not supported by this Memchor. */
+  /** The embedded SQLite build or the on-disk schema is not supported by this Debrief. */
   "unsupported_runtime",
 ] as const;
 
@@ -57,8 +57,8 @@ export interface ErrorEnvelope {
   };
 }
 
-export class MemchorError extends Error {
-  override readonly name = "MemchorError";
+export class DebriefError extends Error {
+  override readonly name = "DebriefError";
   readonly code: ErrorCode;
   /** True only when repeating the identical request may succeed without the caller changing anything. */
   readonly retryable: boolean;

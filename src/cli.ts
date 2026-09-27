@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { resolveHome } from "./bootstrap/workspace-resolution.js";
-import { MemchorError } from "./errors.js";
+import { DebriefError } from "./errors.js";
 import { HOOK_HOSTS, HOST_IDS, type HostId, HOSTS, hostDescriptor, type PluginFacts, TRANSCRIPT_HOSTS } from "./hosts.js";
 import { consentFacts } from "./import/reconcile.js";
 import { openMemory, type Memory } from "./memory.js";
@@ -15,33 +15,33 @@ import { runStdioServer } from "./transports/mcp.js";
 import { hostStatus } from "./transports/status.js";
 
 const USAGE = `Usage:
-  memchor status                                      Is Memchor installed and working here? (exit 1 when not)
-  memchor import [--set ${IMPORT_CHOICES.join("|")}]
+  debrief status                                      Is Debrief installed and working here? (exit 1 when not)
+  debrief import [--set ${IMPORT_CHOICES.join("|")}]
                                                       Import past sessions' transcripts, as the user chose (--set records the choice)
-  memchor mcp [--host ${HOST_IDS.join("|")}]
+  debrief mcp [--host ${HOST_IDS.join("|")}]
                                                       Serve MCP over stdio (started by the agent host)
-  memchor hook stop --host ${HOOK_HOSTS.join("|")}
+  debrief hook stop --host ${HOOK_HOSTS.join("|")}
                                                       Capture the session's latest turn; ask for a stale checkpoint (the host's Stop hook; payload on stdin)
-  memchor hook session-start --host ${HOOK_HOSTS.join("|")}
+  debrief hook session-start --host ${HOOK_HOSTS.join("|")}
                                                       Print session-start context (run by the host's SessionStart hook; payload on stdin)
-  memchor hook subagent-start --host ${HOOK_HOSTS.join("|")}
+  debrief hook subagent-start --host ${HOOK_HOSTS.join("|")}
                                                       Print a sub-agent's starting context (run by the host's SubagentStart hook; payload on stdin)
-  memchor hook user-prompt-submit --host ${HOOK_HOSTS.join("|")}
+  debrief hook user-prompt-submit --host ${HOOK_HOSTS.join("|")}
                                                       Hint the agent when a prompt states a lasting preference (payload on stdin)
-  memchor hook pre-tool-use --host ${HOOK_HOSTS.join("|")}
-                                                      Let Memchor's read-only calls skip the permission prompt (payload on stdin)
-  memchor diag status                                 Runtime, storage and scope health
-  memchor diag records [--query <text>] [--kind <k>]  List eligible records for this worktree
-  memchor diag reindex                                Rebuild the search index from canonical records
-  memchor diag integrity                              SQLite, foreign-key and search-index checks
-  memchor diag demo [--temp-home]                     Run bootstrap → record → checkpoint → recall here and print the pack
-                                                      (writes demo records to $MEMCHOR_HOME, or to a new temp home)
-  memchor diag consent [--set ${IMPORT_CHOICES.join("|")}] [--host ${TRANSCRIPT_HOSTS.join("|")}]
+  debrief hook pre-tool-use --host ${HOOK_HOSTS.join("|")}
+                                                      Let Debrief's read-only calls skip the permission prompt (payload on stdin)
+  debrief diag status                                 Runtime, storage and scope health
+  debrief diag records [--query <text>] [--kind <k>]  List eligible records for this worktree
+  debrief diag reindex                                Rebuild the search index from canonical records
+  debrief diag integrity                              SQLite, foreign-key and search-index checks
+  debrief diag demo [--temp-home]                     Run bootstrap → record → checkpoint → recall here and print the pack
+                                                      (writes demo records to $DEBRIEF_HOME, or to a new temp home)
+  debrief diag consent [--set ${IMPORT_CHOICES.join("|")}] [--host ${TRANSCRIPT_HOSTS.join("|")}]
                                                       Show (or change) the host's transcript-import decision
-  memchor diag import [--host ${TRANSCRIPT_HOSTS.join("|")}]
+  debrief diag import [--host ${TRANSCRIPT_HOSTS.join("|")}]
                                                       Import approved transcripts to completion and print progress
 
-Scope is always the Git worktree of the current directory. Storage: $MEMCHOR_HOME or ~/.memchor.`;
+Scope is always the Git worktree of the current directory. Storage: $DEBRIEF_HOME or ~/.debrief.`;
 
 async function main(argv: string[]): Promise<number> {
   const [command, subcommand] = argv;
@@ -87,14 +87,14 @@ async function main(argv: string[]): Promise<number> {
       },
       strict: true,
     });
-    const home = values["temp-home"] === true ? mkdtempSync(join(tmpdir(), "memchor-demo-")) : resolveHome(undefined);
+    const home = values["temp-home"] === true ? mkdtempSync(join(tmpdir(), "debrief-demo-")) : resolveHome(undefined);
     // Transcript commands act as the host whose history they manage; the rest as a diagnostic tool.
     const transcripts = subcommand === "consent" || subcommand === "import";
     // A host that cannot import would only report "unsupported" for a mistyped name.
     if (transcripts && values.host !== undefined && !(TRANSCRIPT_HOSTS as string[]).includes(values.host)) {
       return usage(`--host must be one of ${TRANSCRIPT_HOSTS.join(", ")} (got ${values.host})`);
     }
-    const host = values.host ?? (transcripts ? "claude-code" : "memchor-diag");
+    const host = values.host ?? (transcripts ? "claude-code" : "debrief-diag");
     if (values.set !== undefined && !IMPORT_CHOICES.includes(values.set as ImportChoice)) return usage(`--set must be one of ${IMPORT_CHOICES.join(", ")}`);
     const memory = openMemory({ cwd: process.cwd(), host, home });
     try {
@@ -162,7 +162,7 @@ function diag(memory: Memory, subcommand: string, values: { query?: string | und
   }
 }
 
-/** The hosts `memchor status` and `memchor import` act for: those Memchor installs into as a plugin. */
+/** The hosts `debrief status` and `debrief import` act for: those Debrief installs into as a plugin. */
 function installedHosts(): { host: HostId; facts: PluginFacts }[] {
   return HOST_IDS.flatMap((host) => {
     const facts = HOSTS[host].plugin;
@@ -180,13 +180,13 @@ function importHistory(choice: ImportChoice | undefined): number {
     const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined) });
     try {
       const status = memory.importHistory(choice === undefined ? {} : { importChoice: choice });
-      const lines = [`memchor import · ${facts.hostName}`];
+      const lines = [`debrief import · ${facts.hostName}`];
       const row = (label: string, value: string): void => {
         lines.push(`  ${label.padEnd(13)}${value}`);
       };
       if (status.state === "consent_required") {
         const question = consentFacts(facts.hostName, status.transcripts ?? { found: 0, currentProject: 0, otherProjects: 0, unassigned: 0, unsupportedVersion: 0 });
-        lines.push(question.found, "", question.ask, "", question.privacy, `Answer with memchor import --set ${IMPORT_CHOICES.join("|")}`);
+        lines.push(question.found, "", question.ask, "", question.privacy, `Answer with debrief import --set ${IMPORT_CHOICES.join("|")}`);
       } else if (status.state === "declined") {
         row("choice", "none: no transcripts are imported");
       } else {
@@ -206,7 +206,7 @@ function importHistory(choice: ImportChoice | undefined): number {
   return unsettled ? 1 : 0;
 }
 
-/** Each host Memchor installs into as a plugin, checked from this directory; exit 1 when any has a problem. */
+/** Each host Debrief installs into as a plugin, checked from this directory; exit 1 when any has a problem. */
 async function status(): Promise<number> {
   let problems = 0;
   for (const { host, facts } of installedHosts()) {
@@ -224,28 +224,28 @@ async function status(): Promise<number> {
 
 /** The tracer-bullet flow through the public interface; returns the recalled pack. */
 function demo(memory: Memory, home: string): unknown {
-  process.stderr.write(`memchor demo: writing demo records to ${home}\n`);
-  const { scope } = memory.bootstrap({ hostSessionId: "memchor-diag-demo" });
+  process.stderr.write(`debrief demo: writing demo records to ${home}\n`);
+  const { scope } = memory.bootstrap({ hostSessionId: "debrief-diag-demo" });
   const evidence = memory.record({
     kind: "evidence",
-    title: "Memchor demo observation",
-    body: "memchor demo tracer: the memory database opened in WAL mode with FTS5 available.",
+    title: "Debrief demo observation",
+    body: "debrief demo tracer: the memory database opened in WAL mode with FTS5 available.",
     attribution: "direct_observation",
   });
   const decision = memory.record({
     kind: "decision",
-    body: "memchor demo tracer: keep one SQLite database per workspace.",
+    body: "debrief demo tracer: keep one SQLite database per workspace.",
     attribution: "agent_inference",
     supportedBy: [evidence.recordId],
   });
   memory.checkpoint({
     expectedRevision: scope.headRevision,
-    goal: "memchor demo tracer",
+    goal: "debrief demo tracer",
     status: "Recorded one observation and one decision.",
     nextSteps: ["Recall them from a fresh session"],
     supportedBy: [evidence.recordId, decision.recordId],
   });
-  return memory.recall({ query: "memchor demo tracer" });
+  return memory.recall({ query: "debrief demo tracer" });
 }
 
 function oneLine(text: string): string {
@@ -258,7 +258,7 @@ function print(value: unknown): void {
 }
 
 function usage(problem?: string): number {
-  if (problem !== undefined) process.stderr.write(`memchor: ${problem}\n\n`);
+  if (problem !== undefined) process.stderr.write(`debrief: ${problem}\n\n`);
   process.stderr.write(USAGE + "\n");
   return problem === undefined ? 0 : 64;
 }
@@ -268,11 +268,11 @@ main(process.argv.slice(2)).then(
     if (code >= 0) process.exitCode = code;
   },
   (error: unknown) => {
-    if (error instanceof MemchorError) {
-      process.stderr.write(`memchor: ${error.message}\n${JSON.stringify(error.toEnvelope(), null, 2)}\n`);
+    if (error instanceof DebriefError) {
+      process.stderr.write(`debrief: ${error.message}\n${JSON.stringify(error.toEnvelope(), null, 2)}\n`);
       process.exitCode = 2;
     } else {
-      process.stderr.write(`memchor: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
+      process.stderr.write(`debrief: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
       process.exitCode = 70;
     }
   },

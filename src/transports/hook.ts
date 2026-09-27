@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { HOOK_HOSTS, hostDescriptor } from "../hosts.js";
 import { recordHookFailure } from "../import/hook-failures.js";
 import { recordHookRun } from "../import/hook-runs.js";
@@ -9,7 +9,7 @@ import { unreadableSessionStart, unreadableSubagentStart } from "../retrieval/se
 import { LIMITS } from "../schemas.js";
 
 /**
- * `memchor hook <event>`: what a host runs at its lifecycle events. A shallow transport, like
+ * `debrief hook <event>`: what a host runs at its lifecycle events. A shallow transport, like
  * the MCP server: it parses the host's payload, calls the memory module, and prints what the
  * host should see. Scope, consent and import rules stay in the module.
  *
@@ -30,7 +30,7 @@ export interface HookOutcome {
   stderr: string;
 }
 
-/** The fields Memchor reads from each hook payload; hosts send more, and newer builds add fields. */
+/** The fields Debrief reads from each hook payload; hosts send more, and newer builds add fields. */
 const StopPayload = z.looseObject({
   session_id: z.string().min(1),
   transcript_path: z.string().min(1),
@@ -64,13 +64,13 @@ const QUIET: HookOutcome = { stdout: "", stderr: "" };
 export function runHook(run: HookRun): HookOutcome {
   let host = "unknown";
   let event = "unknown";
-  // How the run ended, for `memchor status`: the code of the failure it recorded, if any.
+  // How the run ended, for `debrief status`: the code of the failure it recorded, if any.
   let failureCode: string | null = null;
   // Failures before the memory module can decide anything (arguments, payload, a bug) are recorded here.
   const fail = (code: string, message: string, stdout = ""): HookOutcome => {
     failureCode = code;
     recordHookFailure(run.home, { host, event, cwd: run.cwd, code, message });
-    return { stdout, stderr: `memchor hook ${event}: ${code}: ${message}\n` };
+    return { stdout, stderr: `debrief hook ${event}: ${code}: ${message}\n` };
   };
   // What a start hook prints when it fails unexpectedly: that memory was not loaded, never that there is none.
   let unreadable: ((code: string) => string) | null = null;
@@ -94,7 +94,7 @@ export function runHook(run: HookRun): HookOutcome {
       if (stop === null) return fail("invalid_input", "the hook payload is not a Stop payload with session_id and transcript_path");
       const ended = withMemory(run, host, (memory) => memory.endTurn({ transcriptPath: stop.transcript_path, stopHookActive: stop.stop_hook_active }));
       failureCode = ended.failure?.code ?? ended.nudgeFailure?.code ?? null;
-      return { stdout: hooks.stop(ended), stderr: ended.failure === null ? "" : `memchor hook stop: ${ended.failure.code}: ${ended.failure.message}\n` };
+      return { stdout: hooks.stop(ended), stderr: ended.failure === null ? "" : `debrief hook stop: ${ended.failure.code}: ${ended.failure.message}\n` };
     }
     if (event === "session-start") {
       unreadable = (code) => hooks.sessionStart(unreadableSessionStart(code));
@@ -130,7 +130,7 @@ export function runHook(run: HookRun): HookOutcome {
     }
     return fail("invalid_input", `unknown hook: ${run.args.join(" ")}`);
   } catch (error) {
-    const code = error instanceof MemchorError ? error.code : "internal";
+    const code = error instanceof DebriefError ? error.code : "internal";
     const message = error instanceof Error ? error.message : String(error);
     return fail(code, message, unreadable === null ? "" : unreadable(code));
   } finally {

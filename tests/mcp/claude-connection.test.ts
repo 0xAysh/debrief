@@ -9,9 +9,9 @@ import {
   claudeEnv,
   claudeSandbox,
   claudeSkipReason,
-  MEMCHOR_COMMAND,
+  DEBRIEF_COMMAND,
   mcpServerLog,
-  memchorAddArgs,
+  debriefAddArgs,
   sessionToolTraffic,
   startStubMessages,
 } from "./claude.js";
@@ -23,14 +23,14 @@ const TOOLS = ["memory_bootstrap", "memory_checkpoint", "memory_manage", "memory
 
 function setup(branch: string) {
   const sandbox = claudeSandbox();
-  const memchorHome = tempDir();
+  const debriefHome = tempDir();
   const networkLog = join(tempDir(), "network.log");
   const repo = initRepo({ branch });
   const before = snapshotTree(repo);
   const env = claudeEnv(sandbox);
-  const added = claude(env, repo, ...memchorAddArgs({ memchorHome, networkLog }));
+  const added = claude(env, repo, ...debriefAddArgs({ debriefHome, networkLog }));
   expect(added.code, added.stderr).toBe(0);
-  return { sandbox, memchorHome, networkLog, repo, before, env, added };
+  return { sandbox, debriefHome, networkLog, repo, before, env, added };
 }
 
 function networkAttempts(networkLog: string): string {
@@ -38,14 +38,14 @@ function networkAttempts(networkLog: string): string {
 }
 
 describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} connection`, () => {
-  test("claude mcp add -s user writes only the isolated user config; list and get connect to memchor, started in the project directory", () => {
-    const { sandbox, memchorHome, networkLog, repo, before, env, added } = setup("feat/claude");
+  test("claude mcp add -s user writes only the isolated user config; list and get connect to debrief, started in the project directory", () => {
+    const { sandbox, debriefHome, networkLog, repo, before, env, added } = setup("feat/claude");
     const configFile = join(sandbox.configDir, ".claude.json");
-    expect(added.stdout).toContain(`Added stdio MCP server memchor with command: ${MEMCHOR_COMMAND.join(" ")} to user config`);
+    expect(added.stdout).toContain(`Added stdio MCP server debrief with command: ${DEBRIEF_COMMAND.join(" ")} to user config`);
     expect(added.stdout).toContain(`File modified: ${configFile}`);
     const config = JSON.parse(readFileSync(configFile, "utf8")) as { mcpServers?: unknown; projects?: Record<string, { mcpServers?: Record<string, unknown> }> };
     expect(config.mcpServers).toEqual({
-      memchor: { type: "stdio", command: process.execPath, args: MEMCHOR_COMMAND.slice(1), env: { MEMCHOR_HOME: memchorHome, MEMCHOR_NETWORK_LOG: networkLog } },
+      debrief: { type: "stdio", command: process.execPath, args: DEBRIEF_COMMAND.slice(1), env: { DEBRIEF_HOME: debriefHome, DEBRIEF_NETWORK_LOG: networkLog } },
     });
     expect(config.projects?.[repo]?.mcpServers ?? {}).toEqual({});
 
@@ -54,26 +54,26 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} connec
     expect(broken.code, broken.stderr).toBe(0);
 
     const list = claude(env, repo, "mcp", "list");
-    expect(list.stdout).toContain(`memchor: ${MEMCHOR_COMMAND.join(" ")} - ✔ Connected`);
+    expect(list.stdout).toContain(`debrief: ${DEBRIEF_COMMAND.join(" ")} - ✔ Connected`);
     expect(list.stdout).toMatch(/broken: .* - ✘ Failed to connect/);
-    const get = claude(env, repo, "mcp", "get", "memchor");
+    const get = claude(env, repo, "mcp", "get", "debrief");
     expect(get.code).toBe(0);
-    for (const line of ["Scope: User config (available in all your projects)", "Status: ✔ Connected", "Type: stdio", `Command: ${process.execPath}`, `MEMCHOR_HOME=${memchorHome}`])
+    for (const line of ["Scope: User config (available in all your projects)", "Status: ✔ Connected", "Type: stdio", `Command: ${process.execPath}`, `DEBRIEF_HOME=${debriefHome}`])
       expect(get.stdout).toContain(line);
     const missing = claude(env, repo, "mcp", "get", "missing");
     expect(missing.code).toBe(1);
     expect(missing.stdout + missing.stderr).toContain('No MCP server named "missing"');
 
-    // Memchor's startup line, captured by Claude Code: a user-scope server runs in the project directory.
-    expect(mcpServerLog(sandbox, "memchor")).toContain(`memchor: MCP server ready (cwd ${repo})`);
-    // The health check only handshakes: Memchor touched no storage and the repository gained no .mcp.json.
-    expect(readdirSync(memchorHome)).toEqual([]);
+    // Debrief's startup line, captured by Claude Code: a user-scope server runs in the project directory.
+    expect(mcpServerLog(sandbox, "debrief")).toContain(`debrief: MCP server ready (cwd ${repo})`);
+    // The health check only handshakes: Debrief touched no storage and the repository gained no .mcp.json.
+    expect(readdirSync(debriefHome)).toEqual([]);
     expect(snapshotTree(repo)).toEqual(before);
     expect(networkAttempts(networkLog)).toBe("");
   });
 
-  test("a claude -p session against a localhost stub model calls memchor's tools, and memchor resolves the session's repository", async () => {
-    const { sandbox, memchorHome, networkLog, repo, before } = setup("feat/claude");
+  test("a claude -p session against a localhost stub model calls debrief's tools, and debrief resolves the session's repository", async () => {
+    const { sandbox, debriefHome, networkLog, repo, before } = setup("feat/claude");
     const stub = await startStubMessages({
       calls: [
         { tool: "memory_bootstrap", input: {} },
@@ -82,31 +82,31 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} connec
       reply: "Bootstrapped; nothing to continue yet.",
     });
     const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" });
-    const run = await claudeAsync(env, repo, "-p", "Continue the claude handoff work.", "--output-format", "json", "--allowedTools", "mcp__memchor__memory_bootstrap mcp__memchor__memory_status");
+    const run = await claudeAsync(env, repo, "-p", "Continue the claude handoff work.", "--output-format", "json", "--allowedTools", "mcp__debrief__memory_bootstrap mcp__debrief__memory_status");
     expect(run.code, run.stderr).toBe(0);
     const result = JSON.parse(run.stdout) as { is_error: boolean; result: string; session_id: string };
     expect(result).toMatchObject({ is_error: false, result: "Bootstrapped; nothing to continue yet." });
 
     // Claude Code offered all seven tools, under its mcp__<server>__<tool> names.
     const offered = stub.offeredTools[0] ?? [];
-    expect(offered.filter((name) => name.startsWith("mcp__memchor__")).sort()).toEqual(TOOLS.map((tool) => `mcp__memchor__${tool}`));
+    expect(offered.filter((name) => name.startsWith("mcp__debrief__")).sort()).toEqual(TOOLS.map((tool) => `mcp__debrief__${tool}`));
 
     const traffic = sessionToolTraffic(sandbox, result.session_id);
-    expect(traffic.uses).toEqual(["mcp__memchor__memory_bootstrap", "mcp__memchor__memory_status"]);
+    expect(traffic.uses).toEqual(["mcp__debrief__memory_bootstrap", "mcp__debrief__memory_status"]);
     const boot = JSON.parse(traffic.results[0] ?? "{}") as { scope?: Record<string, unknown> };
     expect(boot.scope).toMatchObject({ worktree: repo, branch: "feat/claude", workstreamLabel: "feat/claude", host: "claude-code", ambiguity: null });
     const status = JSON.parse(traffic.results[1] ?? "{}") as { storage?: { home?: string }; client?: unknown };
-    expect(status.storage?.home).toBe(memchorHome);
+    expect(status.storage?.home).toBe(debriefHome);
     // The pinned Claude Code advertises elicitation ({} = form mode), so preference questions can go to the user directly.
     expect(status.client).toMatchObject({ name: "claude-code", elicitation: { form: true, url: false } });
-    const registry = JSON.parse(readFileSync(join(memchorHome, "registry.json"), "utf8")) as { repositories: Record<string, unknown> };
+    const registry = JSON.parse(readFileSync(join(debriefHome, "registry.json"), "utf8")) as { repositories: Record<string, unknown> };
     expect(Object.keys(registry.repositories)).toEqual([join(repo, ".git")]);
 
     expect(snapshotTree(repo)).toEqual(before);
     expect(networkAttempts(networkLog)).toBe("");
   }, 60_000);
 
-  test("headless claude -p and a preference question: the tool call returns within Memchor's bound, and what Claude Code did is recorded", async () => {
+  test("headless claude -p and a preference question: the tool call returns within Debrief's bound, and what Claude Code did is recorded", async () => {
     const { sandbox, repo } = setup("feat/claude");
     const stub = await startStubMessages({
       calls: [
@@ -115,16 +115,16 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} connec
       ],
       reply: "Asked.",
     });
-    const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000", MEMCHOR_ELICITATION_TIMEOUT_MS: "5000" });
+    const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000", DEBRIEF_ELICITATION_TIMEOUT_MS: "5000" });
     const started = Date.now();
-    const run = await claudeAsync(env, repo, "-p", "From now on use bun, not npm.", "--output-format", "json", "--allowedTools", "mcp__memchor__memory_bootstrap mcp__memchor__memory_record");
+    const run = await claudeAsync(env, repo, "-p", "From now on use bun, not npm.", "--output-format", "json", "--allowedTools", "mcp__debrief__memory_bootstrap mcp__debrief__memory_record");
     const elapsedMs = Date.now() - started;
     expect(run.code, run.stderr).toBe(0);
     const result = JSON.parse(run.stdout) as { session_id: string };
     const traffic = sessionToolTraffic(sandbox, result.session_id);
     const preference = (JSON.parse(traffic.results[1] ?? "{}") as { preference?: { state?: string; relay?: string | null } }).preference;
     // Claude Code logs the question it received ("Elicitation request received in print mode").
-    const received = mcpServerLog(sandbox, "memchor").includes("Elicitation request received");
+    const received = mcpServerLog(sandbox, "debrief").includes("Elicitation request received");
     // pending + refused: the host answered cancel (or never); pending + allowed: the request failed; declined: it answered decline.
     const outcome = preference?.state === "pending" ? (preference.relay === "refused" ? "cancelled" : "unavailable") : (preference?.state ?? null);
     // Evidence, not an assertion about Claude Code's choice: -p has no one to ask.

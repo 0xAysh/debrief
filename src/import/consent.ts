@@ -2,13 +2,13 @@ import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFi
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { writeFileAtomic } from "../bootstrap/workspace-resolution.js";
-import { MemchorError } from "../errors.js";
+import { DebriefError } from "../errors.js";
 import { type ImportChoice } from "../schemas.js";
 import { toStorageError } from "../storage/database.js";
 
 /**
  * A host's transcript-import decision. It is host-level, not per workspace ("all projects"
- * chosen in one repository governs every other), so it lives in `$MEMCHOR_HOME/consent.json`
+ * chosen in one repository governs every other), so it lives in `$DEBRIEF_HOME/consent.json`
  * rather than in a workspace database.
  */
 export interface Consent {
@@ -98,7 +98,7 @@ function withConsentLock<T>(home: string, fn: () => T): T {
         if (code !== "EEXIST") throw error;
         if (removeAbandonedLock(lockPath)) continue;
         if (Date.now() >= deadline) {
-          throw new MemchorError("storage_busy", "The transcript-import consent file is busy with another writer; retry shortly.", {
+          throw new DebriefError("storage_busy", "The transcript-import consent file is busy with another writer; retry shortly.", {
             retryable: true,
             details: { path: lockPath },
             cause: error,
@@ -191,14 +191,14 @@ function readFile(home: string): ConsentFile {
   try {
     parsed = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
-    throw new MemchorError("storage_unavailable", `The Memchor consent file at ${file} is unreadable; nothing will be imported until it is fixed.`, {
+    throw new DebriefError("storage_unavailable", `The Debrief consent file at ${file} is unreadable; nothing will be imported until it is fixed.`, {
       details: { path: file },
       cause: error,
     });
   }
   const hosts = (parsed as { hosts?: unknown } | null)?.hosts;
   if ((parsed as { version?: unknown } | null)?.version !== 1 || hosts === null || typeof hosts !== "object") {
-    throw new MemchorError("storage_unavailable", `The Memchor consent file at ${file} has an unsupported format; it was left untouched.`, {
+    throw new DebriefError("storage_unavailable", `The Debrief consent file at ${file} has an unsupported format; it was left untouched.`, {
       details: { path: file },
     });
   }

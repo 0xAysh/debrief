@@ -2,9 +2,9 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 
 import { join } from "node:path";
 
 /**
- * When each host hook last ran, where, and how it ended, so `memchor status` can tell a hook that
+ * When each host hook last ran, where, and how it ended, so `debrief status` can tell a hook that
  * works from one that fails or never fires. One small file per host and event in
- * `$MEMCHOR_HOME/hook-runs/`, replaced on every run: a hook pays one write, status one read per
+ * `$DEBRIEF_HOME/hook-runs/`, replaced on every run: a hook pays one write, status one read per
  * hook, and nothing grows. Like the failure log it lives in the home, because the run may have
  * failed to open any database.
  */

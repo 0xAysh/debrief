@@ -1,5 +1,5 @@
-// Preloaded with `node --import` into spawned Memchor processes: any attempt to open a
-// network connection, resolve a name or fetch a URL is logged to $MEMCHOR_NETWORK_LOG and
+// Preloaded with `node --import` into spawned Debrief processes: any attempt to open a
+// network connection, resolve a name or fetch a URL is logged to $DEBRIEF_NETWORK_LOG and
 // fails. Stdio pipes are not network connections and are unaffected.
 import { appendFileSync } from "node:fs";
 import dns from "node:dns";
@@ -8,7 +8,7 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 
-const log = process.env.MEMCHOR_NETWORK_LOG;
+const log = process.env.DEBRIEF_NETWORK_LOG;
 function blocked(what) {
   return function () {
     if (log) appendFileSync(log, `${what}\n`);

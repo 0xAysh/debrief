@@ -13,15 +13,15 @@ import { CLI, NO_NETWORK } from "../mcp/harness.js";
 /**
  * Validates the importer against the developer's real, unmodified Claude Code history:
  * the git-ignored local snapshot `.real-transcripts/claude` (`npm run snapshot:transcripts`),
- * or any config dir named by MEMCHOR_REAL_CLAUDE_DIR (e.g. ~/.claude, read in place).
+ * or any config dir named by DEBRIEF_REAL_CLAUDE_DIR (e.g. ~/.claude, read in place).
  * Skipped where neither exists (a fresh clone, CI). Imports go only to a temporary
- * MEMCHOR_HOME; nothing from the history is ever committed.
+ * DEBRIEF_HOME; nothing from the history is ever committed.
  */
 const REPO = resolve(import.meta.dirname, "../..");
 const SNAPSHOT = join(REPO, ".real-transcripts", "claude");
-const REAL = process.env["MEMCHOR_REAL_CLAUDE_DIR"] ?? (existsSync(join(SNAPSHOT, "projects")) ? SNAPSHOT : undefined);
+const REAL = process.env["DEBRIEF_REAL_CLAUDE_DIR"] ?? (existsSync(join(SNAPSHOT, "projects")) ? SNAPSHOT : undefined);
 const CODEX_SNAPSHOT = join(REPO, ".real-transcripts", "codex");
-const REAL_CODEX = process.env["MEMCHOR_REAL_CODEX_HOME"] ?? (existsSync(join(CODEX_SNAPSHOT, "sessions")) || existsSync(join(CODEX_SNAPSHOT, "archived_sessions")) ? CODEX_SNAPSHOT : undefined);
+const REAL_CODEX = process.env["DEBRIEF_REAL_CODEX_HOME"] ?? (existsSync(join(CODEX_SNAPSHOT, "sessions")) || existsSync(join(CODEX_SNAPSHOT, "archived_sessions")) ? CODEX_SNAPSHOT : undefined);
 
 interface Run {
   elapsedMs: number;
@@ -33,15 +33,15 @@ interface Run {
 function run(home: string, networkLog: string, ...args: string[]): Run {
   const out = spawnSync(process.execPath, ["--import", NO_NETWORK, CLI, ...args], {
     cwd: REPO,
-    env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", MEMCHOR_HOME: home, CLAUDE_CONFIG_DIR: REAL ?? "", CODEX_HOME: REAL_CODEX ?? "", MEMCHOR_NETWORK_LOG: networkLog },
+    env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: home, CLAUDE_CONFIG_DIR: REAL ?? "", CODEX_HOME: REAL_CODEX ?? "", DEBRIEF_NETWORK_LOG: networkLog },
     encoding: "utf8",
     maxBuffer: 64 << 20,
   });
-  if (out.status !== 0) throw new Error(`memchor ${args.join(" ")} exited ${String(out.status)}: ${out.stderr}`);
+  if (out.status !== 0) throw new Error(`debrief ${args.join(" ")} exited ${String(out.status)}: ${out.stderr}`);
   return JSON.parse(out.stdout) as Run;
 }
 
-describe.skipIf(REAL === undefined)("real local Claude Code history (local snapshot or MEMCHOR_REAL_CLAUDE_DIR)", () => {
+describe.skipIf(REAL === undefined)("real local Claude Code history (local snapshot or DEBRIEF_REAL_CLAUDE_DIR)", () => {
   test("every real transcript parses within the compatibility table with no malformed lines", () => {
     const adapter = claudeCodeAdapter({ configDir: REAL ?? "" });
     const files = adapter.discover();
@@ -153,7 +153,7 @@ function codexTotals(home: string, repos: Set<string>) {
   return totals;
 }
 
-describe.skipIf(REAL_CODEX === undefined)("real local Codex history (local snapshot or MEMCHOR_REAL_CODEX_HOME)", () => {
+describe.skipIf(REAL_CODEX === undefined)("real local Codex history (local snapshot or DEBRIEF_REAL_CODEX_HOME)", () => {
   test("every real rollout parses; only rollouts created outside the compatibility table stop, and none has malformed lines", () => {
     const adapter = codexAdapter({ codexHome: REAL_CODEX ?? "" });
     const { files, excluded, versions, stops, events } = readEverything(adapter);
@@ -182,7 +182,7 @@ describe.skipIf(REAL_CODEX === undefined)("real local Codex history (local snaps
     const totals = codexTotals(home, repos);
     process.stderr.write(
       `real Codex import: ${first.elapsedMs} ms total, peak RSS ${first.peakRssMB} MB, ${totals.workspaces.size} workspaces, ${totals.records} records, ` +
-        `${totals.stopped} stopped, ${totals.quarantined} quarantined, ${totals.echoes} Memchor echoes, ${totals.redactions} redactions, ${totals.withheld} withheld, ` +
+        `${totals.stopped} stopped, ${totals.quarantined} quarantined, ${totals.echoes} Debrief echoes, ${totals.redactions} redactions, ${totals.withheld} withheld, ` +
         `gaps ${JSON.stringify(first.import.gaps.map((g) => g.reason))}\n`,
     );
     expect(totals.records).toBeGreaterThan(0);

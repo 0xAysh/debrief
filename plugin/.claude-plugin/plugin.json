@@ -1,8 +1,8 @@
 {
-  "name": "memchor",
+  "name": "debrief",
   "version": "0.0.0",
-  "description": "Local working memory for Claude Code: the session's checkpoint at start, every turn saved at stop, sub-agents included. Needs the memchor command on PATH (npm install -g memchor).",
+  "description": "Local working memory for Claude Code: the session's checkpoint at start, every turn saved at stop, sub-agents included. Needs the debrief command on PATH (npm install -g debrief-cli).",
   "author": { "name": "0xAysh" },
-  "homepage": "https://github.com/0xAysh/memchor",
-  "repository": "https://github.com/0xAysh/memchor"
+  "homepage": "https://github.com/0xAysh/debrief",
+  "repository": "https://github.com/0xAysh/debrief"
 }

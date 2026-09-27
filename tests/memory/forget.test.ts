@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { type ManageResult, openMemory, type Memory } from "../../src/memory.js";
-import { catchMemchorError, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string, host = "claude-code"): Memory {
   const memory = openMemory({ cwd, host, home });
@@ -84,7 +84,7 @@ describe("forget", () => {
       db.close();
     }
     expect(memory.recall({ query: "stripe payouts investigation" }).items).toEqual([]);
-    expect(catchMemchorError(() => memory.read({ recordId: ids.investigation })).details).toMatchObject({ lifecycle: "forgotten" });
+    expect(catchDebriefError(() => memory.read({ recordId: ids.investigation })).details).toMatchObject({ lifecycle: "forgotten" });
     expect(memory.manage({ action: "inspect", recordId: ids.investigation })).toMatchObject({
       record: { lifecycle: "forgotten", body: "", title: null, eligible: false },
       history: [{ action: "forget", attribution: "user_direction" }],
@@ -113,16 +113,16 @@ describe("forget", () => {
     const theirs = elsewhere.record({ kind: "note", body: "x", attribution: "agent_inference" }).recordId;
     const foreignToken = preview(elsewhere, [theirs]).confirmToken;
 
-    expect(catchMemchorError(() => memory.manage({ action: "forget", reason: "r", attribution: "user_direction" } as never)).code).toBe("invalid_input");
+    expect(catchDebriefError(() => memory.manage({ action: "forget", reason: "r", attribution: "user_direction" } as never)).code).toBe("invalid_input");
     const { confirmToken } = preview(memory, [ids.investigation]);
     const [payload = "", signature = ""] = confirmToken.split(".");
     const tampered = `${payload}.${signature.slice(0, -2)}AA`;
     for (const token of [tampered, foreignToken]) {
-      expect(catchMemchorError(() => memory.manage({ action: "forget", confirmToken: token, reason: "r", attribution: "user_direction" })).details).toMatchObject({ reason: "invalid_confirmation" });
+      expect(catchDebriefError(() => memory.manage({ action: "forget", confirmToken: token, reason: "r", attribution: "user_direction" })).details).toMatchObject({ reason: "invalid_confirmation" });
     }
 
     memory.record({ kind: "note", body: "Rests on it too.", attribution: "agent_inference", supportedBy: [ids.investigation] });
-    const outdated = catchMemchorError(() => memory.manage({ action: "forget", confirmToken, reason: "r", attribution: "user_direction" }));
+    const outdated = catchDebriefError(() => memory.manage({ action: "forget", confirmToken, reason: "r", attribution: "user_direction" }));
     expect(outdated.code).toBe("invalid_input");
     expect(outdated.details).toMatchObject({ reason: "preview_outdated" });
     expect(memory.read({ recordId: ids.investigation }).body).toBe(SECRET_PLAN);
@@ -137,8 +137,8 @@ describe("forget", () => {
     running.bootstrap();
     memory.manage({ action: "forget", confirmToken: preview(memory, [ids.investigation]).confirmToken, reason: "r", attribution: "user_direction" });
 
-    expect(catchMemchorError(() => memory.manage({ action: "restore", recordId: ids.investigation, reason: "r", attribution: "user_direction" })).code).toBe("lifecycle_conflict");
-    expect(catchMemchorError(() => preview(memory, [ids.investigation])).code).toBe("lifecycle_conflict");
+    expect(catchDebriefError(() => memory.manage({ action: "restore", recordId: ids.investigation, reason: "r", attribution: "user_direction" })).code).toBe("lifecycle_conflict");
+    expect(catchDebriefError(() => preview(memory, [ids.investigation])).code).toBe("lifecycle_conflict");
     expect(running.recall().corrections?.changes).toEqual([expect.objectContaining({ recordId: ids.investigation, action: "forget" })]);
   });
 

@@ -20,7 +20,7 @@ Placeholders, substituted by `tests/import/fixtures.ts`:
 
 | Directory | Claude Code version | Covers |
 |---|---|---|
-| `2.1.281/basic.jsonl` | 2.1.281 (installed when written) | user/assistant text, thinking, Bash/Read/image tool results, a Memchor echo, injected context, attachments, metadata lines, a secret in tool output |
+| `2.1.281/basic.jsonl` | 2.1.281 (installed when written) | user/assistant text, thinking, Bash/Read/image tool results, a Debrief echo, injected context, attachments, metadata lines, a secret in tool output |
 | `2.1.281/branches.jsonl` | 2.1.281 | a rewind fork (two children of one parent) and an inline sidechain |
 | `2.1.281/compaction.jsonl` | 2.1.281 | `compact_boundary` + `isCompactSummary` summary, `away_summary` |
 | `2.1.281/malformed.jsonl` | 2.1.281 | an unparseable line mid-file, an unknown entry type, a partial trailing line |

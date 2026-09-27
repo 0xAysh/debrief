@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { type ContextPack, openMemory, type Memory } from "../../src/memory.js";
-import { catchMemchorError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 
 function open(cwd: string, home: string, host = "claude-code"): Memory {
   const memory = openMemory({ cwd, host, home });
@@ -71,10 +71,10 @@ describe("correction", () => {
     for (const gone of [ids.claim, ids.decision, ids.restatement]) expect(afterRecall).not.toContain(gone);
 
     // Direct read: refused, pointing at the replacement.
-    const refused = catchMemchorError(() => memory.read({ recordId: ids.claim }));
+    const refused = catchDebriefError(() => memory.read({ recordId: ids.claim }));
     expect(refused.code).toBe("not_found");
     expect(refused.details).toMatchObject({ lifecycle: "corrected", replacementId: corrected.replacementId });
-    expect(catchMemchorError(() => memory.read({ recordId: ids.decision })).details).toMatchObject({ taint: "quarantined" });
+    expect(catchDebriefError(() => memory.read({ recordId: ids.decision })).details).toMatchObject({ taint: "quarantined" });
 
     // Link expansion: the related note no longer leads to the corrected claim.
     expect(memory.read({ recordId: ids.related }).links).toEqual([]);
@@ -86,7 +86,7 @@ describe("correction", () => {
     expect(pack.notice).toMatch(/checkpoint r1 .*quarantined/i);
 
     // New writes cannot cite what is no longer eligible.
-    expect(catchMemchorError(() => memory.record({ kind: "note", body: "x", attribution: "agent_inference", supportedBy: [ids.claim] })).code).toBe("not_found");
+    expect(catchDebriefError(() => memory.record({ kind: "note", body: "x", attribution: "agent_inference", supportedBy: [ids.claim] })).code).toBe("not_found");
 
     // A fresh session receives the corrected guidance.
     const fresh = open(repo, home, "codex");
@@ -147,7 +147,7 @@ describe("correction", () => {
     const input = { action: "correct", recordId: claim, body: "Redis is optional.", reason: "r", attribution: "user_direction", operationKey: "fix-redis" } as const;
     const first = memory.manage(input);
     expect(memory.manage(input)).toEqual({ ...first, replayed: true });
-    const again = catchMemchorError(() => memory.manage({ ...input, operationKey: "fix-redis-2" }));
+    const again = catchDebriefError(() => memory.manage({ ...input, operationKey: "fix-redis-2" }));
     expect(again.code).toBe("lifecycle_conflict");
     if (first.action !== "correct") throw new Error("unreachable");
     expect(again.details).toMatchObject({ lifecycle: "corrected", replacementId: first.replacementId });
@@ -156,12 +156,12 @@ describe("correction", () => {
   test("another workstream's record cannot be corrected, and a refused correction changes nothing", () => {
     const repo = initRepo();
     const home = tempDir();
-    const worktree = join(tempDir("memchor-wt-"), "wt");
+    const worktree = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "other", worktree);
     const mine = open(repo, home);
     const theirs = open(worktree, home).record({ kind: "note", body: "their claim", attribution: "agent_inference" });
     const before = recalled(mine);
-    expect(catchMemchorError(() => mine.manage({ action: "retract", recordId: theirs.recordId, reason: "r", attribution: "user_direction" })).code).toBe("scope_denied");
+    expect(catchDebriefError(() => mine.manage({ action: "retract", recordId: theirs.recordId, reason: "r", attribution: "user_direction" })).code).toBe("scope_denied");
     expect(recalled(mine)).toEqual(before);
   });
 });
@@ -191,8 +191,8 @@ describe("retraction, restore and supersession", () => {
     const memory = open(initRepo(), tempDir());
     const { claim, related } = redisScenario(memory);
     memory.manage({ action: "correct", recordId: claim, body: "Redis is optional.", reason: "r", attribution: "user_direction" });
-    expect(catchMemchorError(() => memory.manage({ action: "restore", recordId: claim, reason: "r", attribution: "user_direction" })).code).toBe("lifecycle_conflict");
-    expect(catchMemchorError(() => memory.manage({ action: "restore", recordId: related, reason: "r", attribution: "user_direction" })).code).toBe("lifecycle_conflict");
+    expect(catchDebriefError(() => memory.manage({ action: "restore", recordId: claim, reason: "r", attribution: "user_direction" })).code).toBe("lifecycle_conflict");
+    expect(catchDebriefError(() => memory.manage({ action: "restore", recordId: related, reason: "r", attribution: "user_direction" })).code).toBe("lifecycle_conflict");
   });
 
   test("superseding replaces an outdated claim: copies of it go, conclusions that rested on it stay", () => {
@@ -292,7 +292,7 @@ describe("inspection", () => {
       { action: "explode", recordId: claim },
       { action: "inspect", recordId: claim, v: 2 },
     ]) {
-      expect(catchMemchorError(() => memory.manage(bad as never)).code).toBe("invalid_input");
+      expect(catchDebriefError(() => memory.manage(bad as never)).code).toBe("invalid_input");
     }
   });
 });
@@ -315,7 +315,7 @@ describe("derived state stays consistent", () => {
     // The ledger append is the last step before COMMIT; a directory in its place makes it fail.
     mkdirSync(join(dirname(dbPath), "lifecycle.jsonl"));
     const before = recalled(memory);
-    const error = catchMemchorError(() => memory.manage({ action: "correct", recordId: ids.claim, body: "Redis is optional.", reason: "r", attribution: "user_direction" }));
+    const error = catchDebriefError(() => memory.manage({ action: "correct", recordId: ids.claim, body: "Redis is optional.", reason: "r", attribution: "user_direction" }));
     expect(error.code).toBe("storage_unavailable");
     expect(recalled(memory)).toEqual(before);
     const db = new Database(dbPath, { readonly: true });

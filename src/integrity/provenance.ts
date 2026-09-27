@@ -107,11 +107,11 @@ const MAX_DERIVATION_DEPTH = 16;
  * - A record that is `derived_from` or `supported_by` a visible record takes that record's
  *   root (derived_from first, then the earliest target): repeating or resting on a claim
  *   is not a second observation of it.
- * - Anything else is its own root. Memchor does not infer derivation from similar text;
+ * - Anything else is its own root. Debrief does not infer derivation from similar text;
  *   an uncited restatement cannot be told apart from an independent observation, so
- *   agents are told to cite instead of re-recording (and Memchor's own output in a
+ *   agents are told to cite instead of re-recording (and Debrief's own output in a
  *   transcript is never imported as a record at all). The one exception is verbatim: the
- *   importer links an agent's message that repeats memory Memchor echoed earlier in the
+ *   importer links an agent's message that repeats memory Debrief echoed earlier in the
  *   same transcript `derived_from` that record (`restatedEchoes` in import/reconcile.ts).
  *
  * Only visible targets are followed, so a root never discloses an out-of-scope record.

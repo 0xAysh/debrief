@@ -1,5 +1,5 @@
 /**
- * Verbatim restatement: the one text-based lineage signal Memchor uses. A text restates a
+ * Verbatim restatement: the one text-based lineage signal Debrief uses. A text restates a
  * record when it contains the record's whole body, or one of its sentences of at least
  * {@link MIN_RESTATED_CHARS} characters, ignoring case and whitespace. Paraphrases are never
  * matched: they cannot be told apart from new observations without guessing.
