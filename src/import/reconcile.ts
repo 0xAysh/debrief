@@ -4,9 +4,13 @@ import { relative, sep } from "node:path";
 import { ensureWorkspace, resolveWorkstream, type ScopeAmbiguity } from "../bootstrap/workstream-resolution.js";
 import { locateWorkspace, registerWorkspace, type WorkspaceLocation } from "../bootstrap/workspace-resolution.js";
 import { type ErrorCode, MemchorError } from "../errors.js";
-import { VISIBLE_SQL } from "../retrieval/eligibility.js";
+import { forgetTranscript, openWorkspaceDatabase } from "../integrity/lifecycle.js";
+import { isPrivateTranscript, linkTranscriptSessions } from "../integrity/private-session.js";
+import { quarantineLateSummary, suppressedEvent } from "../integrity/taints.js";
+import { restatable, restates } from "../integrity/restatement.js";
+import { IN_SCOPE_SQL } from "../retrieval/eligibility.js";
 import { type ExternalRef, IMPORT_CHOICES, type ImportChoice } from "../schemas.js";
-import { type Db, openDatabase, prepared, toStorageError, writeTransaction } from "../storage/database.js";
+import { type Db, prepared, toStorageError, writeTransaction } from "../storage/database.js";
 import { appendRecord } from "../storage/records.js";
 import { approves, type Consent, readConsent, writeConsent } from "./consent.js";
 import type { CompatibilityRow, ExclusionReason, NormalizedEvent, ToolKind, TranscriptAdapter, TranscriptFile } from "./normalized-event.js";
@@ -76,6 +80,8 @@ export interface ImportCounters {
   withheld: number;
   /** File reads/edits stored as references only (the file content was dropped). */
   fileContents: number;
+  /** New copies or versions of events whose claim was corrected, retracted or forgotten; skipped (see `memory_manage`). */
+  suppressed: number;
   rewrites: number;
   excluded: Partial<Record<ExclusionReason, number>>;
 }
@@ -347,7 +353,7 @@ export class TranscriptImporter {
     let db = this.others.get(location.workspaceId);
     if (db === undefined) {
       registerWorkspace(location);
-      db = openDatabase(location.dbPath, this.options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: this.options.busyTimeoutMs });
+      db = openWorkspaceDatabase(location.dbPath, this.options.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: this.options.busyTimeoutMs });
       this.others.set(location.workspaceId, db);
     }
     return db;
@@ -355,6 +361,8 @@ export class TranscriptImporter {
 
   private importTranscript(db: Db, entry: Discovered & { target: Target }, deadline: number): "done" | "deadline" | "contended" {
     const { file } = entry;
+    // A transcript of a session the user asked not to remember is never read again.
+    if (isPrivateTranscript(db, this.host, file.transcriptId)) return "done";
     const cursor = readCursor(db, this.host, file.transcriptId);
     if (cursor?.state === "quarantined") return "done";
     const held = this.held.get(file.transcriptId);
@@ -428,7 +436,18 @@ export class TranscriptImporter {
             echoed: new Map(),
             locate: (cwd) => this.locations.get(cwd) ?? null,
           };
-          const quarantine = applyEvents(batch, chunk.events);
+          const applied = applyEvents(batch, chunk.events);
+          if (applied !== null && "privateSessionId" in applied) {
+            // Memchor output in this transcript names a session the user asked not to remember:
+            // drop what this transcript brought in, and never read it again.
+            forgetTranscript(db, { host: this.host, transcriptId: file.transcriptId, privateSessionId: applied.privateSessionId, workstreamId: batch.workstreamId }, {
+              sessionId: batch.sessionId,
+              host: this.host,
+              attribution: "user_direction",
+              reason: "The transcript belongs to a session the user asked not to remember.",
+            });
+          }
+          const quarantine = applied !== null && "offset" in applied ? applied : null;
 
           let state: CursorRow["state"] = "active";
           let gap: ImportGap | null = null;
@@ -701,8 +720,8 @@ function workstreamsNamedAtStart(events: readonly NormalizedEvent[]): string[] {
   return [...named];
 }
 
-/** Applies events in order; returns where to quarantine the transcript, or null. */
-function applyEvents(batch: Batch, events: readonly NormalizedEvent[]): { offset: number; message: string; cwd?: string } | null {
+/** Applies events in order; returns where to quarantine the transcript, that it belongs to a private session, or null. */
+function applyEvents(batch: Batch, events: readonly NormalizedEvent[]): { offset: number; message: string; cwd?: string } | { privateSessionId: string } | null {
   const { db } = batch;
   const findVersions = prepared(db,
     "SELECT content_hash, record_id, disposition, meta FROM import_events WHERE host = ? AND transcript_id = ? AND branch = ? AND event_id = ?",
@@ -735,6 +754,13 @@ function applyEvents(batch: Batch, events: readonly NormalizedEvent[]): { offset
       if (same.disposition === "echo") rememberEcho(batch, event.branch, (JSON.parse(same.meta) as { references?: string[] }).references ?? []);
       continue;
     }
+    if (suppressedEvent(db, batch.host, event.eventId)) {
+      // A copy (a /branch transcript) or new version of an event whose claim was corrected,
+      // retracted or forgotten (for a forgotten tool result, its call too): importing it would
+      // resurrect that claim.
+      batch.counters.suppressed++;
+      continue;
+    }
     const previous = versions.find((v) => v.record_id !== null)?.record_id ?? null;
     if (versions.length > 0) batch.counters.conflicts++;
     const store = (disposition: "record" | "tool_call" | "echo", recordId: string | null, meta: object): void => {
@@ -754,6 +780,8 @@ function applyEvents(batch: Batch, events: readonly NormalizedEvent[]): { offset
         // Memchor's own output: keep which existing records it mentioned, never the text.
         const mentioned = [...new Set(event.text.match(RECORD_ID) ?? [])];
         const existing = mentioned.length === 0 ? [] : (prepared(db, "SELECT id FROM records WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(mentioned)) as { id: string }[]).map((r) => r.id);
+        const named = linkTranscriptSessions(db, batch.host, batch.transcriptId, event.text);
+        if (named.privateSessionId !== null) return { privateSessionId: named.privateSessionId };
         const workstreams = workstreamsBoundIn(event.text);
         const foreign = workstreams.length === 0 ? [] : (prepared(db, "SELECT id FROM workstreams WHERE id IN (SELECT value FROM json_each(?)) AND id <> ?").all(JSON.stringify(workstreams), batch.workstreamId) as { id: string }[]);
         if (foreign.length > 0) {
@@ -797,6 +825,10 @@ interface Draft {
   externalRefs: ExternalRef[];
 }
 
+/**
+ * Host summaries are the only imported `note`s (messages and tool results are `evidence`);
+ * lifecycle changes rely on that to find summaries without lineage (`HOST_SUMMARY_SQL`).
+ */
 function messageRecord(batch: Batch, event: Extract<NormalizedEvent, { type: "message" | "host_summary" }>): Draft {
   const summary = event.type === "host_summary";
   return {
@@ -855,26 +887,17 @@ function appendImported(batch: Batch, event: NormalizedEvent, previous: string |
     links: [...(previous === null ? [] : [{ recordId: previous, relation: "related_to" as const }]), ...derivedFrom.map((recordId) => ({ recordId, relation: "derived_from" as const }))],
     sourceId: batch.sourceId,
     createdAt: event.observedAt,
+    // Earlier versions and echoed records stay lineage targets after a correction, so the new
+    // record inherits their state instead of coming back as current guidance.
+    lineage: "inherit",
   });
+  // A summary written after a corrected event of this transcript may repeat it; it has no
+  // finer lineage, so it is quarantined rather than partly trusted.
+  if (event.type === "host_summary") quarantineLateSummary(batch.db, written.recordId);
   batch.counters.records++;
   return written.recordId;
 }
 
-/**
- * Shortest normalised text that counts as a restatement of echoed memory. A shorter sentence
- * ("Tests pass.", "Done.") recurs by itself, so containing it says nothing about copying.
- */
-const MIN_RESTATED_CHARS = 40;
-
-function normalizeForEcho(text: string): string {
-  return text.toLowerCase().replace(/\s+/gu, " ").trim();
-}
-
-/** The texts whose verbatim appearance marks a copy of a record: its whole body and each long-enough sentence. */
-function restatable(body: string): string[] {
-  const pieces = [body, ...body.split(/\n+|(?<=[.!?])\s+/u)].map(normalizeForEcho).filter((piece) => piece.length >= MIN_RESTATED_CHARS);
-  return [...new Set(pieces)];
-}
 
 /**
  * The records shown to the agent on `branch` earlier in this reconciliation pass, loaded once
@@ -897,14 +920,16 @@ function rememberEcho(batch: Batch, branch: string, recordIds: readonly string[]
   const echoed = echoesOn(batch, branch);
   const fresh = [...new Set(recordIds)].filter((id) => !echoed.has(id));
   if (fresh.length === 0) return;
-  const rows = prepared(batch.db, `SELECT r.id, r.body FROM records r WHERE r.id IN (SELECT value FROM json_each($ids)) AND ${VISIBLE_SQL}`)
+  // In scope, whatever its lifecycle: a restatement of memory corrected since it was echoed is
+  // still a copy of it, and inherits its state (see appendRecord) instead of coming back as new.
+  const rows = prepared(batch.db, `SELECT r.id, r.body FROM records r WHERE r.id IN (SELECT value FROM json_each($ids)) AND ${IN_SCOPE_SQL}`)
     .all({ ids: JSON.stringify(fresh), workstreamId: batch.workstreamId }) as { id: string; body: string }[];
   for (const row of rows) echoed.set(row.id, restatable(row.body));
 }
 
 /**
  * Records Memchor showed the agent earlier on this branch whose body, or one of whose
- * sentences of at least {@link MIN_RESTATED_CHARS} characters, `text` contains verbatim
+ * sentences of at least 40 characters (`MIN_RESTATED_CHARS`), `text` contains verbatim
  * (case and whitespace ignored). Such a text is a copy of that memory, so its record is
  * stored `derived_from` it and inherits its independent root: echoed memory must never come
  * back as independent corroboration (PRD §8.3, §17). The window is the rest of the branch,
@@ -915,8 +940,7 @@ function rememberEcho(batch: Batch, branch: string, recordIds: readonly string[]
 function restatedEchoes(batch: Batch, branch: string, text: string): string[] {
   const echoed = echoesOn(batch, branch);
   if (echoed.size === 0) return [];
-  const said = normalizeForEcho(text);
-  return [...echoed].filter(([, pieces]) => pieces.some((piece) => said.includes(piece))).map(([id]) => id);
+  return [...echoed].filter(([, pieces]) => restates(text, pieces)).map(([id]) => id);
 }
 
 function lookupCall(batch: Batch, callId: string): CallMeta | null {
@@ -1011,7 +1035,7 @@ function readCursors(db: Db, host: string): Map<string, CursorRow & { transcript
 }
 
 function emptyCounters(): ImportCounters {
-  return { events: 0, records: 0, replayed: 0, conflicts: 0, missing: 0, echoes: 0, echoReferences: 0, redactions: 0, clipped: 0, withheld: 0, fileContents: 0, rewrites: 0, excluded: {} };
+  return { events: 0, records: 0, replayed: 0, conflicts: 0, missing: 0, echoes: 0, echoReferences: 0, redactions: 0, clipped: 0, withheld: 0, fileContents: 0, suppressed: 0, rewrites: 0, excluded: {} };
 }
 
 function parseCounters(json: string): ImportCounters {

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { ZodError, type z } from "zod";
 import {
   bindScope,
@@ -13,6 +15,36 @@ import {
 import { headCommit, locateWorkspace, registerWorkspace, resolveHome, type WorkspaceLocation } from "./bootstrap/workspace-resolution.js";
 import { type ErrorCode, MemchorError } from "./errors.js";
 import { headCheckpointRecordId, headRevision, publishCheckpoint } from "./integrity/checkpoints.js";
+import {
+  type Affected,
+  changeClaim,
+  confirmationTargets,
+  confirmForget,
+  forgetSession,
+  type ForgetImpact,
+  type ForgetTarget,
+  openWorkspaceDatabase,
+  previewForget,
+  restoreClaim,
+  type RestoreResult,
+} from "./integrity/lifecycle.js";
+import { changesSince, type CorrectionNotice, type HistoryEntry, inspectRecord, lifecycleWatermark, type Related } from "./integrity/lifecycle-views.js";
+import { sessionIsPrivate } from "./integrity/private-session.js";
+import {
+  ensureGlobalSession,
+  locatePreference,
+  preferenceBlock,
+  type PreferenceBlock,
+  type PreferenceQuestion,
+  type PreferenceStores,
+  dropSessionCandidates,
+  type HostReply,
+  inferredChange,
+  proposePreference,
+  reaskAtSessionStart,
+  type PreferenceScope,
+  settleCandidate,
+} from "./integrity/preferences.js";
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { type ImportStatus, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
@@ -35,8 +67,17 @@ import {
   sealContinuation,
   usage,
 } from "./retrieval/context-pack.js";
-import { requireVisibleRecord, type RecordRow } from "./retrieval/eligibility.js";
-import { captureObservations, type CheckedRef, checkFreshness, freshnessFloor, type RecordFreshness, type StoredRef } from "./retrieval/freshness.js";
+import { eligibilityOf, type Lifecycle, requireVisibleRecord, type RecordRow, type Taint } from "./retrieval/eligibility.js";
+import {
+  captureObservations,
+  type CheckedRef,
+  checkFreshness,
+  type FreshnessSubject,
+  freshnessFloor,
+  type RecordFreshness,
+  type TestRunView,
+  worktreeFingerprint,
+} from "./retrieval/freshness.js";
 import { type Candidate, clipToBytes, loadCandidates, PAGE_CANDIDATES, rankSequence, rebuildSearchIndex, SEQUENCE_CAP, toFtsQuery } from "./retrieval/search.js";
 import {
   type Applicability,
@@ -48,6 +89,7 @@ import {
   type Freshness,
   LIMITS,
   type LinkRelation,
+  ManageInput,
   OPERATION_SCHEMAS,
   ReadInput,
   RecallInput,
@@ -60,7 +102,6 @@ import {
   checkIntegrity,
   type Db,
   type IntegrityReport,
-  openDatabase,
   openReadOnly,
   probeRuntime,
   type RuntimeReport,
@@ -71,11 +112,15 @@ import {
 import { appendRecord, recordFields } from "./storage/records.js";
 
 export type { ImportedSource, Citation } from "./integrity/provenance.js";
-export type { CheckedRef, FreshnessReason } from "./retrieval/freshness.js";
+export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
 export type { ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
 export type { CandidateSignal, ResolutionBasis, ScopeAmbiguity, WorkstreamCandidate } from "./bootstrap/workstream-resolution.js";
 export type { CheckpointSummary } from "./integrity/checkpoints.js";
+export type { Affected, ForgetImpact, ForgetTarget } from "./integrity/lifecycle.js";
+export type { CorrectionNotice, HistoryEntry, LifecycleChange, Related } from "./integrity/lifecycle-views.js";
+export type { ActivePreference, HostReply, PreferenceAnswer, PreferenceBlock, PreferenceQuestion, PreferenceScope } from "./integrity/preferences.js";
+export type { Lifecycle, Taint } from "./retrieval/eligibility.js";
 
 // ───────────────────────────── Public interface ─────────────────────────────
 
@@ -148,6 +193,11 @@ export interface PackItem {
   citations: Citation[];
   /** Each reference with its own freshness and reason (see `FreshnessReason`). */
   externalRefs: CheckedRef[];
+  /**
+   * The test/lint/build run this record reports, if any: `evidence` (captured tool output, or
+   * the agent's assertion) and whether it `applies` to the commit and working tree as they are now.
+   */
+  testRun: TestRunView | null;
   workspaceLevel: boolean;
   host: string;
   /** Memchor session that wrote (or imported) the record. */
@@ -224,6 +274,12 @@ export interface ContextPack {
   /** True when nothing eligible was found: an honest miss, not a reason to invent continuity. */
   empty: boolean;
   notice: string | null;
+  /**
+   * Set when memory in this scope was corrected, superseded, retracted, restored or forgotten
+   * since this session's previous pack: do not rely on the listed records any more, even if
+   * you read them earlier. Each change is reported once per session.
+   */
+  corrections: CorrectionNotice | null;
 }
 
 export interface BootstrapResult {
@@ -235,6 +291,19 @@ export interface BootstrapResult {
   import: ImportStatus;
   /** Same as `recall({ maxTokens, maxBytes })` after this bootstrap's import: head checkpoint plus the most recent eligible records. */
   context: ContextPack;
+  /**
+   * The user's confirmed preferences (this repository's, then global ones; ≤ 4 KB, `omitted`
+   * counts the rest), and unanswered preference questions from earlier sessions, asked once more.
+   */
+  preferences: PreferenceBlock;
+}
+
+/** What `record` returns for `kind: "preference"`: a question for the user, not a stored record. */
+export interface PreferenceRecordResult {
+  recordId: null;
+  kind: "preference";
+  preference: PreferenceQuestion;
+  replayed: false;
 }
 
 export interface RecordResult {
@@ -274,6 +343,7 @@ export interface ReadResult {
   warning: string | null;
   applicability: Applicability;
   externalRefs: CheckedRef[];
+  testRun: TestRunView | null;
   independentRoot: string;
   /** Links in both directions whose other end is visible in this scope. */
   links: { recordId: string; relation: LinkRelation; direction: "outgoing" | "incoming" }[];
@@ -286,7 +356,86 @@ export interface ReadResult {
   createdAt: string;
   /** The budget applies to `body` only. */
   budget: { maxTokens: number; maxBytes: number; usedTokens: number; usedBytes: number };
+  /** As in a pack: memory in scope that changed since this session last heard. */
+  corrections: CorrectionNotice | null;
 }
+
+/** One record as `memory_manage` inspect shows it, whatever its lifecycle. */
+export interface InspectedRecord {
+  recordId: string;
+  kind: RecordKind;
+  title: string | null;
+  /** Up to 4 KB of the body; `memory_read` pages through an eligible record's whole body. */
+  body: string;
+  truncated: boolean;
+  attribution: Attribution;
+  reviewState: ReviewState;
+  /** The claim's own state (see docs/architecture.md, "Memory lifecycle"). */
+  lifecycle: Lifecycle;
+  /** Whether it is current guidance: active and not tainted by another record. */
+  eligible: boolean;
+  /** Why an active record is still not current: the records it restates (invalidated) or rests on (quarantined). */
+  taints: { causeId: string; taint: Taint }[];
+  workspaceLevel: boolean;
+  host: string;
+  sessionId: string | null;
+  source: ImportedSource | null;
+  createdAt: string;
+  applicability: Applicability;
+  freshness: Freshness;
+  warning: string | null;
+  externalRefs: CheckedRef[];
+  testRun: TestRunView | null;
+}
+
+export type ManageResult =
+  | {
+      v: 1;
+      action: "inspect";
+      record: InspectedRecord;
+      /** Lifecycle changes of this record, oldest first (the last 20). */
+      history: HistoryEntry[];
+      /** The correction or new version that replaced it. */
+      replacement: { recordId: string; kind: RecordKind; excerpt: string; lifecycle: Lifecycle; eligible: boolean } | null;
+      /** What it rests on or restates. */
+      evidence: Related[];
+      /** Other versions of the same transcript event, and loosely related records. */
+      conflicts: Related[];
+      /** Known downstream derivations, with the taint this record put on each (null if none). */
+      derivations: (Related & { taint: Taint | null })[];
+      counts: { evidence: number; conflicts: number; derivations: number; history: number };
+    }
+  | { v: 1; action: "correct"; recordId: string; replacementId: string; affected: Affected; watermark: number; replayed: boolean }
+  | { v: 1; action: "supersede"; recordId: string; replacementId: string; affected: Affected; watermark: number; replayed: boolean }
+  | { v: 1; action: "retract"; recordId: string; affected: Affected; watermark: number; replayed: boolean }
+  | { v: 1; action: "restore"; recordId: string; affected: RestoreResult["affected"]; watermark: number; replayed: boolean }
+  | {
+      v: 1;
+      action: "forget_preview";
+      /** The records named, as they are now. */
+      targets: ForgetTarget[];
+      impact: ForgetImpact;
+      /** Pass to `forget` only after the user confirmed this impact; it is refused if the impact changes. */
+      confirmToken: string;
+      expiresAt: string;
+      notice: string;
+    }
+  | { v: 1; action: "forget"; forgotten: string[]; affected: Affected; watermark: number; replayed: boolean }
+  /** An agent-inferred change or removal of a preference: a question for the user, nothing applied. */
+  | { v: 1; action: "proposal"; preference: PreferenceQuestion; replayed: false }
+  | { v: 1; action: "answer_preference"; preference: PreferenceQuestion }
+  | {
+      v: 1;
+      action: "private_session";
+      sessionId: string;
+      /** It was already private; nothing more was done. */
+      alreadyPrivate: boolean;
+      /** What was forgotten: records this session wrote, and what was imported from its transcripts. */
+      forgotten: string[];
+      /** Transcripts of this session that will never be imported. */
+      transcripts: number;
+      notice: string;
+    };
 
 export interface StatusScope {
   workspaceId: string;
@@ -320,6 +469,8 @@ export interface StatusResult {
     schemaVersion: number | null;
     supportedSchemaVersion: number;
     journalMode: string | null;
+    /** Preferences the user confirmed for every repository (created on first use). */
+    globalDbPath: string;
   };
   /** What bootstrap (without `task` or `workstream`) would resolve, by the same rules, without binding anything. */
   scope: StatusScope | null;
@@ -369,14 +520,31 @@ export interface Memory {
    * alive; `done` is true once nothing approved remains. Each batch is one transaction.
    */
   continueImport(input?: ContinueImportInput): ImportStatus & { done: boolean };
-  /** Appends one attributed record with provenance links and external references. */
-  record(input: RecordInput): RecordResult;
+  /**
+   * Appends one attributed record with provenance links and external references. A
+   * `preference` is not stored: it becomes a question for the user (see `settlePreference`).
+   */
+  record(input: RecordInput & { kind: "preference" }): PreferenceRecordResult;
+  record(input: RecordInput & { kind: Exclude<RecordInput["kind"], "preference"> }): RecordResult;
+  record(input: RecordInput): RecordResult | PreferenceRecordResult;
+  /**
+   * Records what a host did with a preference question it put to the user directly (`asking`
+   * before it is shown, then the reply); the memory module decides what the reply means.
+   * Transports call it; it is not an agent tool (agents relay answers through `memory_manage`).
+   */
+  settlePreference(input: { candidateId: string; reply: HostReply }): PreferenceQuestion;
   /** Publishes the next checkpoint revision iff the head is still `expectedRevision`. */
   checkpoint(input: CheckpointInput): CheckpointResult;
   /** Returns a bounded, cited context pack: head checkpoint first, then ranked eligible records. */
   recall(input?: RecallInput): ContextPack;
   /** Returns one visible record's body slice within a budget, plus its in-scope links. */
   read(input: ReadInput): ReadResult;
+  /**
+   * Inspects, corrects, supersedes, retracts or restores one claim in this scope. Each change
+   * is one transaction that also takes every dependent out of (or back into) current guidance
+   * and records an attributed audit entry; see src/integrity/lifecycle.ts.
+   */
+  manage(input: ManageInput): ManageResult;
   /**
    * Reports runtime, storage and scope health. Strictly read-only: it never creates the
    * workspace, workstream, session or registry entry, never migrates, and does not
@@ -408,6 +576,13 @@ export function openMemory(options: OpenMemoryOptions): Memory {
 // ───────────────────────────── Implementation ─────────────────────────────
 
 const OPERATIONS = Object.keys(OPERATION_SCHEMAS);
+/** A result before `idempotent` adds `replayed` (distributes over union members). */
+type Unreplayed<T> = T extends unknown ? Omit<T, "replayed"> : never;
+const INSPECT_BODY_BYTES = 4_096;
+const PRIVATE_NOTICE =
+  "This session will not be remembered: what it stored was forgotten, its transcript will not be imported, and Memchor refuses its writes. Tell the user so in one line. Its content may still be in the host's own transcript files.";
+const FORGET_NOTICE =
+  "Nothing has been removed yet. Show the user the targets and the impact, and ask them to confirm explicitly; only then call memory_manage with action forget and this confirmToken. Forgetting cannot be undone. Records listed as invalidated or quarantined keep their own content (forget them too if the user wants). Host transcripts, loaded model contexts, exports and backups are not erased.";
 const DEFAULT_IMPORT_BUDGET_MS = 3_000;
 
 interface Bound {
@@ -424,6 +599,11 @@ class LocalMemory implements Memory {
   private hostSessionId: string | undefined;
   private bound: Bound | undefined;
   private closed = false;
+  /** The newest lifecycle change this session has been told about (the correction watermark). */
+  private seenLifecycle = 0;
+  /** Preferences the user said no to in this session: not asked again while it lasts. */
+  private readonly declinedPreferences = new Set<string>();
+  private globalDb: Db | undefined;
   /** Null for hosts without a transcript adapter. */
   private readonly importer: TranscriptImporter | null;
 
@@ -452,7 +632,10 @@ class LocalMemory implements Memory {
       const { db, scope, location } = this.bind({ task: parsed.task, workstream: parsed.workstream });
       const runtime = probeRuntime();
       const imported = this.importer === null ? unsupportedHostStatus(this.host) : this.importer.bootstrap({ location, db }, parsed.importChoice);
+      const stores = this.preferenceStores(db, scope);
+      const preferences = preferenceBlock(stores, reaskAtSessionStart(stores));
       return {
+        preferences,
         scope: scopeView(db, scope),
         created: { workspace: location.isNew, workstream: scope.createdWorkstream },
         runtime: { sqliteVersion: runtime.sqliteVersion, fts5: runtime.fts5, schemaVersion: SCHEMA_VERSION },
@@ -462,20 +645,29 @@ class LocalMemory implements Memory {
     });
   }
 
-  record(input: RecordInput): RecordResult {
-    return this.guard(() => {
+  record(input: RecordInput & { kind: "preference" }): PreferenceRecordResult;
+  record(input: RecordInput & { kind: Exclude<RecordInput["kind"], "preference"> }): RecordResult;
+  record(input: RecordInput): RecordResult | PreferenceRecordResult;
+  record(input: RecordInput): RecordResult | PreferenceRecordResult {
+    return this.guard((): RecordResult | PreferenceRecordResult => {
       const parsed = parse(RecordInput, input);
       const { db, scope } = this.bind();
+      this.refuseIfPrivate(db, scope);
+      if (parsed.kind === "preference") {
+        // A preference applies only once the user confirms it and says where (PRD §5.6).
+        return { recordId: null, kind: "preference", preference: proposePreference(this.preferenceStores(db, scope), parsed.body, this.declinedPreferences), replayed: false };
+      }
       if (!parsed.workspaceLevel) requireWorkstream(scope, "memory_record");
       const applicability = withHeadCommit(parsed.applicability, scope.worktree);
       // Observed outside the write transaction (Git and file reads must not hold the lock),
       // and not part of the idempotency hash, which covers only what the caller sent.
       const externalRefs = captureObservations(scope.worktree, parsed.externalRefs);
+      const ranAgainst = parsed.testRun === undefined ? null : worktreeFingerprint(scope.worktree);
       const links: Citation[] = [
         ...parsed.supportedBy.map((recordId) => ({ recordId, relation: "supported_by" as const })),
         ...parsed.links.map((link) => ({ recordId: link.to, relation: link.relation })),
       ];
-      return this.idempotent(db, scope, "record", parsed, (): Omit<RecordResult, "replayed"> => {
+      return this.idempotent(db, scope, "record", parsed, scope.workstreamId, (): Omit<RecordResult, "replayed"> => {
         const written = appendRecord(db, scope.workstreamId, {
           kind: parsed.kind,
           title: parsed.title ?? null,
@@ -485,7 +677,10 @@ class LocalMemory implements Memory {
           host: scope.host,
           attribution: parsed.attribution,
           reviewState: parsed.reviewState,
-          applicability,
+          applicability:
+            parsed.testRun === undefined || ranAgainst === null
+              ? applicability
+              : { ...applicability, testRun: { ...parsed.testRun, ...ranAgainst, evidence: capturedOutput(db, parsed.supportedBy, parsed.testRun) ? "captured" : "asserted" } },
           externalRefs,
           links,
         });
@@ -504,12 +699,13 @@ class LocalMemory implements Memory {
     return this.guard(() => {
       const parsed = parse(CheckpointInput, input);
       const { db, scope } = this.bind();
+      this.refuseIfPrivate(db, scope);
       requireWorkstream(scope, "memory_checkpoint");
       const applicability = withHeadCommit({}, scope.worktree);
       const externalRefs = captureObservations(scope.worktree, parsed.externalRefs);
       // Replay is checked before the revision compare, so retrying a checkpoint that
       // already succeeded returns its result instead of a spurious conflict.
-      return this.idempotent(db, scope, "checkpoint", parsed, () =>
+      return this.idempotent(db, scope, "checkpoint", parsed, scope.workstreamId, () =>
         publishCheckpoint(db, scope, parsed.expectedRevision, { ...parsed, externalRefs }, applicability),
       );
     });
@@ -548,9 +744,11 @@ class LocalMemory implements Memory {
         const end = offset + body.length;
         const nextOffset = end < row.body.length ? end : null;
         const revision = db.prepare("SELECT revision FROM checkpoints WHERE record_id = ?").get(row.id) as { revision: number } | undefined;
+        const corrections = changesSince(db, scope.workstreamId, this.seenLifecycle);
+        if (corrections !== null) this.seenLifecycle = Math.max(this.seenLifecycle, corrections.watermark);
         const source = importedFrom(db, [row.id]).get(row.id) ?? null;
         const fields = recordFields(row);
-        const checked = checkFreshness(scope.worktree, [{ recordId: row.id, refs: fields.externalRefs, imported: source !== null }]).get(row.id);
+        const checked = checkFreshness(scope.worktree, [freshnessSubject(row, source !== null)]).get(row.id);
         return {
           recordId: row.id,
           title: row.title,
@@ -563,6 +761,7 @@ class LocalMemory implements Memory {
           freshness: checked?.freshness ?? "unknown",
           warning: checked?.warning ?? null,
           externalRefs: checked?.externalRefs ?? [],
+          testRun: checked?.testRun ?? null,
           independentRoot: rootOf(independentRoots(db, scope.workstreamId, [row.id]), row.id),
           links: linksOf(db, scope.workstreamId, row.id),
           checkpointRevision: revision?.revision ?? null,
@@ -572,9 +771,120 @@ class LocalMemory implements Memory {
           contentHash: row.content_hash,
           createdAt: row.created_at,
           budget: { ...budget, ...usage(Buffer.byteLength(body, "utf8")) },
+          corrections,
         };
       })();
     });
+  }
+
+  settlePreference(input: { candidateId: string; reply: HostReply }): PreferenceQuestion {
+    return this.guard(() => {
+      const { db, scope } = this.bind();
+      this.refuseIfPrivate(db, scope);
+      return settleCandidate(this.preferenceStores(db, scope), input.candidateId, input.reply, this.declinedPreferences);
+    });
+  }
+
+  manage(input: ManageInput): ManageResult {
+    return this.guard(() => {
+      const parsed = parse(ManageInput, input);
+      const { db, scope } = this.bind();
+      const stores = this.preferenceStores(db, scope);
+      // ManageInput's refinement guarantees each action's required fields; `given` restates that for the compiler.
+      if (parsed.action === "private_session") {
+        const session = { sessionId: scope.sessionId, host: scope.host, hostSessionId: this.hostSessionId, workstreamId: scope.workstreamId };
+        const actor = { sessionId: scope.sessionId, host: scope.host, attribution: "user_direction" as const, reason: "The user asked not to remember this session." };
+        // Everything the session stored: memory and the questions it raised here, and any global preference it confirmed.
+        const marked = writeTransaction(db, () => {
+          const result = forgetSession(db, session, actor);
+          dropSessionCandidates(db, scope.sessionId);
+          return result;
+        });
+        const global = existsSync(this.globalDbPath()) ? stores.global() : null;
+        const globally = global === null ? [] : writeTransaction(global, () => forgetSession(global, { ...session, hostSessionId: undefined }, actor)).forgotten;
+        return { v: 1, action: "private_session", sessionId: scope.sessionId, ...marked, forgotten: [...marked.forgotten, ...globally], notice: PRIVATE_NOTICE };
+      }
+      if (parsed.action !== "inspect" && parsed.action !== "forget_preview") this.refuseIfPrivate(db, scope);
+      if (parsed.action === "answer_preference") {
+        const preference = settleCandidate(stores, given(parsed.candidateId), { relayed: given(parsed.answer) }, this.declinedPreferences);
+        return { v: 1, action: "answer_preference", preference };
+      }
+      const action = parsed.action;
+      // Global preferences live in global.sqlite; every other record in this workspace's database.
+      const named = parsed.recordId ?? parsed.recordIds?.[0] ?? (parsed.confirmToken === undefined ? undefined : confirmationTargets(parsed.confirmToken)[0]);
+      const located = named === undefined ? null : locatePreference(stores, named, existsSync(this.globalDbPath()));
+      return this.manageIn(located ?? { db, scope: "repo" }, scope, { ...parsed, action }, stores);
+    });
+  }
+
+  /** One lifecycle operation against the store that holds its record. */
+  private manageIn(
+    target: { db: Db; scope: PreferenceScope },
+    scope: BoundScope,
+    parsed: z.output<typeof ManageInput> & { action: Exclude<z.output<typeof ManageInput>["action"], "answer_preference" | "private_session"> },
+    stores: PreferenceStores,
+  ): ManageResult {
+    const { db } = target;
+    const action = parsed.action;
+    if (action === "inspect") return this.inspect(db, scope, given(parsed.recordId));
+    const key = { secret: scope.continuationSecret, workspaceId: scope.workspaceId, workstreamId: scope.workstreamId };
+    if (action === "forget_preview") {
+      const recordIds = given(parsed.recordIds);
+      const preview = db.transaction(() => previewForget(db, scope, key, recordIds))();
+      return { v: 1, action, ...preview, notice: FORGET_NOTICE };
+    }
+    const actor = { sessionId: scope.sessionId, host: scope.host, attribution: given(parsed.attribution), reason: given(parsed.reason) };
+    if (action === "correct" || action === "supersede" || action === "retract" || action === "restore") {
+      const proposal = inferredChange(stores, db, target.scope, { action, recordId: given(parsed.recordId), body: parsed.body, attribution: actor.attribution, reason: actor.reason });
+      if (proposal !== null) return { v: 1, action: "proposal", preference: proposal, replayed: false };
+    }
+    const applicability = target.scope === "global" ? {} : withHeadCommit({}, scope.worktree);
+    const own = { onlyChange: false };
+    // An operation key in global.sqlite belongs to no one workstream: the same change retried from another repository is the same request.
+    const result = this.idempotent(db, scope, "manage", parsed, target.scope === "global" ? "global" : scope.workstreamId, (): Unreplayed<Exclude<ManageResult, { action: "inspect" | "forget_preview" | "proposal" | "answer_preference" | "private_session" }>> => {
+      // Nothing in this scope changed since this session last heard: the change is news only to others.
+      own.onlyChange = target.scope === "repo" && changesSince(db, scope.workstreamId, this.seenLifecycle) === null;
+      if (target.scope === "global") ensureGlobalSession(db, stores.actor);
+      switch (action) {
+        case "restore":
+          return { v: 1, action, ...restoreClaim(db, scope, { recordId: given(parsed.recordId), actor }) };
+        case "forget":
+          return { v: 1, action, ...confirmForget(db, scope, key, { confirmToken: given(parsed.confirmToken), actor }) };
+        case "retract": {
+          const changed = changeClaim(db, scope, { action, recordId: given(parsed.recordId), applicability, actor });
+          return { v: 1, action, recordId: changed.recordId, affected: changed.affected, watermark: changed.watermark };
+        }
+        case "correct":
+        case "supersede": {
+          const changed = changeClaim(db, scope, { action, recordId: given(parsed.recordId), body: given(parsed.body), applicability, actor });
+          return { v: 1, action, ...changed, replacementId: given(changed.replacementId) };
+        }
+      }
+    });
+    if (!result.replayed && own.onlyChange) this.seenLifecycle = result.watermark;
+    return result;
+  }
+
+  /** A session the user asked not to remember writes nothing (it may still read). */
+  private refuseIfPrivate(db: Db, scope: BoundScope): void {
+    if (!sessionIsPrivate(db, { sessionId: scope.sessionId, host: scope.host, hostSessionId: this.hostSessionId })) return;
+    throw new MemchorError("session_private", "The user asked Memchor not to remember this session, so it stores nothing. Reads still work.", {
+      details: { sessionId: scope.sessionId },
+    });
+  }
+
+  /** The stores preference operations read and write for this session. */
+  private preferenceStores(db: Db, scope: BoundScope): PreferenceStores {
+    return {
+      repo: db,
+      global: () => (this.globalDb ??= openWorkspaceDatabase(this.globalDbPath(), this.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: this.busyTimeoutMs })),
+      workstreamId: scope.workstreamId,
+      actor: { sessionId: scope.sessionId, host: scope.host },
+    };
+  }
+
+  private globalDbPath(): string {
+    return join(this.home, "global.sqlite");
   }
 
   status(input: StatusInput = {}): StatusResult {
@@ -582,7 +892,7 @@ class LocalMemory implements Memory {
       parse(StatusInput, input);
       const result: StatusResult = {
         runtime: probeRuntime(),
-        storage: { home: this.home, dbPath: null, schemaVersion: null, supportedSchemaVersion: SCHEMA_VERSION, journalMode: null },
+        storage: { home: this.home, dbPath: null, schemaVersion: null, supportedSchemaVersion: SCHEMA_VERSION, journalMode: null, globalDbPath: this.globalDbPath() },
         scope: null,
         counts: null,
         problem: null,
@@ -678,6 +988,8 @@ class LocalMemory implements Memory {
 
   close(): void {
     this.closed = true;
+    this.globalDb?.close();
+    this.globalDb = undefined;
     this.importer?.close();
     this.bound?.db.close();
     this.bound = undefined;
@@ -701,9 +1013,11 @@ class LocalMemory implements Memory {
     }
     const location = locateWorkspace(this.cwd, this.home);
     registerWorkspace(location);
-    const db = openDatabase(location.dbPath, this.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: this.busyTimeoutMs });
+    const db = openWorkspaceDatabase(location.dbPath, this.busyTimeoutMs === undefined ? {} : { busyTimeoutMs: this.busyTimeoutMs });
     try {
       const scope = bindScope(db, location, { host: this.host, hostSessionId: this.hostSessionId }, hints);
+      // A new session starts from current memory; only later changes are news to it.
+      this.seenLifecycle = lifecycleWatermark(db);
       this.bound = { db, scope, location };
       return this.bound;
     } catch (error) {
@@ -729,6 +1043,50 @@ class LocalMemory implements Memory {
     });
   }
 
+  private inspect(db: Db, scope: BoundScope, recordId: string): ManageResult {
+    const found = db.transaction(() => {
+      const inspection = inspectRecord(db, scope.workstreamId, recordId);
+      return { inspection, source: importedFrom(db, [recordId]).get(recordId) ?? null };
+    })();
+    const { inspection, source } = found;
+    const row = inspection.row;
+    const fields = recordFields(row);
+    const checked = checkFreshness(scope.worktree, [freshnessSubject(row, source !== null)]).get(row.id);
+    const body = clipToBytes(row.body, INSPECT_BODY_BYTES);
+    return {
+      v: 1,
+      action: "inspect",
+      record: {
+        recordId: row.id,
+        kind: fields.kind,
+        title: row.title,
+        body,
+        truncated: body.length < row.body.length,
+        attribution: fields.attribution,
+        reviewState: fields.reviewState,
+        lifecycle: inspection.lifecycle,
+        eligible: inspection.eligible,
+        taints: inspection.taints,
+        workspaceLevel: fields.workspaceLevel,
+        host: row.host,
+        sessionId: row.session_id,
+        source,
+        createdAt: row.created_at,
+        applicability: fields.applicability,
+        freshness: checked?.freshness ?? "unknown",
+        warning: checked?.warning ?? null,
+        externalRefs: checked?.externalRefs ?? [],
+        testRun: checked?.testRun ?? null,
+      },
+      history: inspection.history,
+      replacement: inspection.replacement,
+      evidence: inspection.evidence,
+      conflicts: inspection.conflicts,
+      derivations: inspection.derivations,
+      counts: inspection.counts,
+    };
+  }
+
   /**
    * Runs a write under an optional operation key, in one IMMEDIATE transaction: the key
    * lookup, the write, and the operation row commit together, so a retry after a crash
@@ -741,13 +1099,14 @@ class LocalMemory implements Memory {
     scope: BoundScope,
     operation: string,
     parsed: { operationKey?: string | undefined },
+    hashScope: string,
     write: () => R,
   ): R & { replayed: boolean } {
     const { operationKey, ...request } = parsed;
     return writeTransaction(db, () => {
       if (operationKey === undefined) return { ...write(), replayed: false };
       const requestHash = createHash("sha256")
-        .update(canonicalJson({ operation, workstreamId: scope.workstreamId, request }))
+        .update(canonicalJson({ operation, workstreamId: hashScope, request }))
         .digest("hex");
       const stored = db.prepare("SELECT request_hash, result_json FROM operations WHERE key = ?").get(operationKey) as
         | { request_hash: string; result_json: string }
@@ -805,7 +1164,9 @@ class LocalMemory implements Memory {
         beyondCap = continued.beyondCap;
       }
       const view = scopeView(db, scope);
-      const checkpointRow = continued === null ? loadHeadCheckpoint(db, scope.workstreamId) : null;
+      const head = continued === null ? loadHeadCheckpoint(db, scope.workstreamId) : { row: null, withheld: null };
+      const checkpointRow = head.row;
+      const corrections = changesSince(db, scope.workstreamId, this.seenLifecycle);
       const window = sequence.slice(0, PAGE_CANDIDATES);
       const rows = loadCandidates(db, { workstreamId: scope.workstreamId, match, seqs: window });
       const citations = citationsFor(db, scope.workstreamId, [...rows.map((r) => r.id), ...(checkpointRow ? [checkpointRow.id] : [])]);
@@ -862,8 +1223,14 @@ class LocalMemory implements Memory {
         const truncated = omissions.length > 0 || page.checkpoint?.truncated === true;
         const empty = page.checkpoint === null && page.items.length === 0 && omissions.length === 0;
         let notice: string | null = null;
+        const withheld =
+          head.withheld === null
+            ? null
+            : `The head checkpoint r${view.headRevision} ${head.withheld === "quarantined" || head.withheld === "invalidated" ? `is ${head.withheld} (it rests on or repeats memory that is no longer current)` : `was ${head.withheld}`}, so it is not returned. Use what remains, then publish a new checkpoint with expectedRevision ${view.headRevision}.`;
         if (starved) {
           notice = "This budget is too small for even the pack's scope and envelope, so nothing was returned. Recall again with a larger maxBytes/maxTokens.";
+        } else if (empty && withheld !== null) {
+          notice = withheld;
         } else if (empty) {
           notice =
             continued === null && query === null
@@ -894,7 +1261,8 @@ class LocalMemory implements Memory {
               : null,
           budget: { ...budget, usedBytes: 0, usedTokens: 0 },
           empty,
-          notice: withScopeNotice(scope, notice, empty),
+          notice: withScopeNotice(scope, withheld !== null && notice !== withheld && !starved ? (notice === null ? withheld : `${withheld} ${notice}`) : notice, empty),
+          corrections,
         };
       };
       const plan = planPage(budget.maxBytes, assemble, (page) => remainingAfter(page).length);
@@ -903,26 +1271,29 @@ class LocalMemory implements Memory {
       // the smallest annotation freshness could produce; only that prefix is checked
       // against the live worktree; the second packs the prefix with the real annotations,
       // which can only shrink it, so no unchecked record is ever returned.
-      const refsOf = (row: RecordRow): StoredRef[] => recordFields(row).externalRefs;
+      const floorOf = (row: RecordRow): RecordFreshness => {
+        const fields = recordFields(row);
+        return freshnessFloor(fields.externalRefs, fields.testRun ?? undefined);
+      };
       const selection =
         plan === null
           ? EMPTY_PAGE
           : packPage(
               plan,
-              checkpointPackable(freshnessFloor(checkpointRow === null ? [] : refsOf(checkpointRow))),
-              itemPackables(groups.length, (row) => freshnessFloor(refsOf(row))),
+              checkpointPackable(checkpointRow === null ? freshnessFloor([]) : floorOf(checkpointRow)),
+              itemPackables(groups.length, floorOf),
             );
       const selected = groups.slice(0, selection.consumed).map((group) => group.representative);
       const checked = checkFreshness(scope.worktree, [
-        ...(checkpointRow === null ? [] : [{ recordId: checkpointRow.id, refs: refsOf(checkpointRow), imported: false }]),
-        ...selected.map((row) => ({ recordId: row.id, refs: refsOf(row), imported: sources.has(row.id) })),
+        ...(checkpointRow === null ? [] : [freshnessSubject(checkpointRow, false)]),
+        ...selected.map((row) => freshnessSubject(row, sources.has(row.id))),
       ]);
       const freshnessOf = (row: RecordRow): RecordFreshness => {
         const result = checked.get(row.id);
         if (result === undefined) throw new Error(`record ${row.id} was packed without a freshness check`);
         return result;
       };
-      return packWithinBudget(
+      const packed = packWithinBudget(
         budget.maxBytes,
         plan,
         checkpointRow === null ? null : checkpointPackable(freshnessOf(checkpointRow)),
@@ -930,6 +1301,8 @@ class LocalMemory implements Memory {
         assemble,
         (page) => remainingAfter(page).length,
       );
+      if (corrections !== null) this.seenLifecycle = Math.max(this.seenLifecycle, corrections.watermark);
+      return packed;
     })();
   }
 
@@ -982,6 +1355,7 @@ function itemPackable(
       applicability: fields.applicability,
       citations: citations.get(row.id) ?? [],
       externalRefs: freshness.externalRefs,
+      testRun: freshness.testRun,
       workspaceLevel: fields.workspaceLevel,
       host: row.host,
       sessionId: row.session_id,
@@ -992,6 +1366,31 @@ function itemPackable(
       copies,
     }),
   };
+}
+
+/** What freshness checks need of a stored record: its references and any test run it reports. */
+function freshnessSubject(row: RecordRow, imported: boolean): FreshnessSubject {
+  const fields = recordFields(row);
+  return { recordId: row.id, refs: fields.externalRefs, imported, testRun: fields.testRun ?? undefined };
+}
+
+/**
+ * Whether a test run's citations include the run itself as Memchor captured it: a tool result
+ * imported from the host's transcript whose call summary (the first line of its body) contains
+ * the command, and whose error flag (" (error)" in the title the importer writes) agrees with
+ * the outcome. Anything else, including unrelated captured output, leaves the run an assertion.
+ */
+function capturedOutput(db: Db, supportedBy: readonly string[], run: { command: string; outcome: "passed" | "failed" }): boolean {
+  if (supportedBy.length === 0) return false;
+  const rows = db
+    .prepare(
+      `SELECT r.title, r.body FROM records r JOIN import_events e ON e.record_id = r.id
+       WHERE r.id IN (SELECT value FROM json_each(?)) AND r.kind = 'evidence' AND r.attribution = 'direct_observation'`,
+    )
+    .all(JSON.stringify(supportedBy)) as { title: string | null; body: string }[];
+  const squash = (text: string): string => text.replace(/\s+/gu, " ").trim();
+  const command = squash(run.command);
+  return rows.some((row) => squash(row.body.split("\n", 1)[0] ?? "").includes(command) && (row.title?.includes(" (error):") ?? false) === (run.outcome === "failed"));
 }
 
 /**
@@ -1008,9 +1407,17 @@ function rootOf(roots: ReadonlyMap<string, string>, recordId: string): string {
 const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
 const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
 
-function loadHeadCheckpoint(db: Db, workstreamId: string): RecordRow | null {
+/**
+ * The head checkpoint, or why it is withheld: a head that was retracted, or that rests on or
+ * repeats memory that is no longer current, is not current guidance either.
+ */
+function loadHeadCheckpoint(db: Db, workstreamId: string): { row: RecordRow | null; withheld: Lifecycle | Taint | null } {
   const recordId = headCheckpointRecordId(db, workstreamId);
-  return recordId === null ? null : requireVisibleRecord(db, workstreamId, recordId);
+  if (recordId === null) return { row: null, withheld: null };
+  const row = db.prepare("SELECT * FROM records WHERE id = ?").get(recordId) as RecordRow;
+  const state = eligibilityOf(db, row);
+  if (state.eligible) return { row, withheld: null };
+  return { row: null, withheld: state.taint === null ? row.lifecycle : state.taint.taint };
 }
 
 function scopeView(db: Db, scope: BoundScope): Scope {
@@ -1042,6 +1449,12 @@ function withHeadCommit(applicability: Applicability, worktree: string): Applica
   if (applicability.commit !== undefined) return applicability;
   const commit = headCommit(worktree);
   return commit === null ? applicability : { ...applicability, commit };
+}
+
+/** A value a schema refinement already guaranteed; its absence is a bug, never an input error. */
+function given<T>(value: T | null | undefined): T {
+  if (value === undefined || value === null) throw new Error("a field the schema requires is missing after parsing");
+  return value;
 }
 
 function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {

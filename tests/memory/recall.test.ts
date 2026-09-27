@@ -58,7 +58,7 @@ describe("recall", () => {
     const theirs = open(worktree, home);
 
     const own = mine.record({ kind: "note", body: "flaky test in payments", attribution: "direct_observation" });
-    const shared = mine.record({ kind: "preference", body: "never mock payments in tests", attribution: "user_direction", workspaceLevel: true });
+    const shared = mine.record({ kind: "constraint", body: "never mock payments in tests", attribution: "user_direction", workspaceLevel: true });
     theirs.record({ kind: "note", body: "payments payments payments flaky flaky test", attribution: "direct_observation" });
 
     expect(mine.recall({ query: "payments flaky test" }).items.map((i) => i.recordId).sort()).toEqual([own.recordId, shared.recordId].sort());
@@ -73,13 +73,13 @@ describe("recall", () => {
     // More strong-matching retracted records than one page of candidates holds; an explicit
     // commit keeps the loop fast (it skips the per-record HEAD lookup).
     for (let i = 0; i < 210; i++) {
-      memory.record({
+      const { recordId } = memory.record({
         kind: "note",
         body: `redis redis redis cluster required ${i}`,
         attribution: "agent_inference",
-        reviewState: "retracted",
         applicability: { commit: "0000000" },
       });
+      memory.manage({ action: "retract", recordId, reason: "wrong", attribution: "user_direction" });
     }
     const eligible = memory.record({ kind: "decision", body: "redis was only an option", attribution: "user_direction" });
 
@@ -92,7 +92,8 @@ describe("recall", () => {
   test("citations never point at records the workstream cannot see", () => {
     const memory = open(initRepo(), tempDir());
     const evidence = memory.record({ kind: "evidence", body: "p99 latency 900ms", attribution: "direct_observation" });
-    const retracted = memory.record({ kind: "evidence", body: "p99 latency 20ms", attribution: "direct_observation", reviewState: "retracted" });
+    const retracted = memory.record({ kind: "evidence", body: "p99 latency 20ms", attribution: "direct_observation" });
+    memory.manage({ action: "retract", recordId: retracted.recordId, reason: "wrong", attribution: "user_direction" });
     expect(catchMemchorError(() => memory.record({ kind: "decision", body: "x", attribution: "agent_inference", supportedBy: [retracted.recordId] })).code).toBe("not_found");
     const decision = memory.record({ kind: "decision", body: "optimise the latency path", attribution: "agent_inference", supportedBy: [evidence.recordId] });
     expect(memory.recall({ query: "latency" }).items.find((i) => i.recordId === decision.recordId)?.citations).toEqual([
@@ -103,9 +104,9 @@ describe("recall", () => {
   test("kinds narrow the items; the head checkpoint is still returned first", () => {
     const memory = open(initRepo(), tempDir());
     memory.record({ kind: "note", body: "alpha note", attribution: "agent_inference" });
-    const pref = memory.record({ kind: "preference", body: "alpha preference", attribution: "user_direction" });
+    const pref = memory.record({ kind: "constraint", body: "alpha constraint", attribution: "user_direction" });
     memory.checkpoint({ expectedRevision: 0, goal: "alpha", status: "going" });
-    const pack = memory.recall({ query: "alpha", kinds: ["preference"] });
+    const pack = memory.recall({ query: "alpha", kinds: ["constraint"] });
     expect(pack.items.map((i) => i.recordId)).toEqual([pref.recordId]);
     expect(pack.checkpoint?.revision).toBe(1);
   });
