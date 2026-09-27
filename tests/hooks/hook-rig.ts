@@ -5,11 +5,12 @@ import { tempDir } from "../helpers.js";
 
 /**
  * A command hook for driven Claude Code hook tests: a tiny Node script that appends what the host
- * gave it (event, argv, stdin JSON, and the transcript at `transcript_path` as it stood when the
- * hook ran) to a JSON-lines log, then prints whatever stdout the test configured for that event.
+ * gave it (event, argv, stdin JSON, the transcripts at `transcript_path` and `agent_transcript_path`
+ * as they stood when the hook ran, and how many lines each of the session's sub-agent transcripts
+ * had) to a JSON-lines log, then prints whatever stdout the test configured for that event.
  * It notes its start in `<log>.started` first, so a hook killed mid-run still leaves a trace.
  */
-const HOOK_SCRIPT = `import { appendFileSync, existsSync, readFileSync } from "node:fs";
+const HOOK_SCRIPT = `import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 const [, , log, config, event] = process.argv;
 const started = Date.now();
 appendFileSync(log + ".started", JSON.stringify({ event, started }) + "\\n");
@@ -19,19 +20,22 @@ const outputs = existsSync(config) ? JSON.parse(readFileSync(config, "utf8")) : 
 const mine = outputs[event] ?? {};
 let payload = null;
 try { payload = JSON.parse(input); } catch {}
-const path = payload === null ? undefined : payload.transcript_path;
-let transcript = { exists: false, bytes: 0, lines: [] };
-if (typeof path === "string" && existsSync(path)) {
+const snapshot = (path) => {
+  if (typeof path !== "string" || !existsSync(path)) return { exists: false, bytes: 0, lines: [] };
   const text = readFileSync(path, "utf8");
-  transcript = { exists: true, bytes: Buffer.byteLength(text), lines: text.split("\\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return line; } }) };
-}
+  return { exists: true, bytes: Buffer.byteLength(text), lines: text.split("\\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return line; } }) };
+};
+const transcript = snapshot(payload?.transcript_path);
+const agentTranscript = payload?.agent_transcript_path === undefined ? undefined : snapshot(payload.agent_transcript_path);
+const subagentsDir = typeof payload?.transcript_path === "string" ? payload.transcript_path.replace(/\\.jsonl$/, "") + "/subagents" : null;
+const subagents = subagentsDir !== null && existsSync(subagentsDir) ? Object.fromEntries(readdirSync(subagentsDir).filter((f) => f.endsWith(".jsonl")).map((f) => [f, snapshot(subagentsDir + "/" + f).lines.length])) : {};
 if (mine.sleepMs) await new Promise((resolve) => setTimeout(resolve, mine.sleepMs));
-appendFileSync(log, JSON.stringify({ event, argv: process.argv.slice(2), payload, raw: payload === null ? input : undefined, transcript, started, finished: Date.now() }) + "\\n");
+appendFileSync(log, JSON.stringify({ event, argv: process.argv.slice(2), payload, raw: payload === null ? input : undefined, transcript, agentTranscript, subagents, started, finished: Date.now() }) + "\\n");
 const out = payload !== null && payload.stop_hook_active === true && mine.stdoutWhenActive !== undefined ? mine.stdoutWhenActive : mine.stdout;
 if (out) process.stdout.write(out);
 `;
 
-export type HookEvent = "SessionStart" | "UserPromptSubmit" | "Stop" | "PreToolUse";
+export type HookEvent = "SessionStart" | "UserPromptSubmit" | "Stop" | "PreToolUse" | "PostToolUse" | "SubagentStart" | "SubagentStop";
 
 export interface HookOutput {
   /** Printed on stdout, verbatim (JSON or plain text). */
@@ -58,6 +62,10 @@ export interface HookRecord {
   payload: Record<string, unknown> | null;
   raw?: string;
   transcript: { exists: boolean; bytes: number; lines: unknown[] };
+  /** The sub-agent's transcript (`agent_transcript_path`) as it stood when the hook ran, for SubagentStop. */
+  agentTranscript?: { exists: boolean; bytes: number; lines: unknown[] };
+  /** Line counts of the session's sub-agent transcripts (`<transcript_path minus .jsonl>/subagents/*.jsonl`) when the hook ran. */
+  subagents: Record<string, number>;
   started: number;
   finished: number;
 }

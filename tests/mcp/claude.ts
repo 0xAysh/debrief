@@ -182,17 +182,21 @@ export function mcpServerLog(sandbox: ClaudeSandbox, server: string): string {
 }
 
 export interface StubToolUse {
-  /** Tool name inside the Memchor namespace, e.g. "memory_bootstrap". */
+  /** Tool name inside the Memchor namespace, e.g. "memory_bootstrap"; with `builtin`, the host's own tool, e.g. "Agent". */
   tool: string;
+  builtin?: boolean;
   input: Record<string, unknown>;
-  /** Made only once a request contains this text (a later prompt); otherwise at the first request that offers the tool. */
-  when?: string;
+  /**
+   * Made only once a request contains this text (a later prompt), or satisfies this test (a
+   * sub-agent's request: see {@link firstUserText}); otherwise at the first request that offers the tool.
+   */
+  when?: string | ((request: Record<string, unknown>) => boolean);
 }
 
 /**
- * A localhost Messages API: while Memchor calls remain queued, each request that offers Memchor's
- * tools is answered with the next one as a `tool_use` (Claude Code names them
- * `mcp__memchor__<tool>`); once the queue is empty, and for any request without them, with a
+ * A localhost Messages API: while calls remain queued, each request that offers the next one's
+ * tool is answered with it as a `tool_use` (Claude Code names Memchor's `mcp__memchor__<tool>`);
+ * once the queue is empty, and for any request that does not offer it, with a
  * plain assistant message that ends the turn. `requests` keeps every Messages request body, in order.
  */
 export async function startStubMessages(script: { calls: StubToolUse[]; reply: string }): Promise<{ port: number; offeredTools: string[][]; requests: Record<string, unknown>[] }> {
@@ -208,18 +212,19 @@ export async function startStubMessages(script: { calls: StubToolUse[]; reply: s
         res.writeHead(200, { "content-type": "application/json" }).end("{}");
         return;
       }
-      const json = JSON.parse(body) as { model?: string; stream?: boolean; tools?: { name: string }[] };
+      const json = JSON.parse(body) as { model?: string; stream?: boolean; tools?: { name: string }[] } & Record<string, unknown>;
       state.requests.push(json);
       const tools = (json.tools ?? []).map((t) => t.name);
       state.offeredTools.push(tools);
       const head = queue[0];
-      const next = head !== undefined && tools.includes(`mcp__memchor__${head.tool}`) && (head.when === undefined || body.includes(head.when)) ? queue.shift() : undefined;
+      const name = (call: StubToolUse): string => (call.builtin === true ? call.tool : `mcp__memchor__${call.tool}`);
+      const next = head !== undefined && tools.includes(name(head)) && (head.when === undefined || (typeof head.when === "string" ? body.includes(head.when) : head.when(json))) ? queue.shift() : undefined;
       const usage = { input_tokens: 1, output_tokens: 1 };
       const stop = next === undefined ? "end_turn" : "tool_use";
       const block =
         next === undefined
           ? { type: "text", text: script.reply }
-          : { type: "tool_use", id: `toolu_stub_${n}`, name: `mcp__memchor__${next.tool}`, input: next.input };
+          : { type: "tool_use", id: `toolu_stub_${n}`, name: name(next), input: next.input };
       if (json.stream !== true) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ id: `msg_stub_${n}`, type: "message", role: "assistant", model: json.model, content: [block], stop_reason: stop, stop_sequence: null, usage }));
@@ -248,6 +253,17 @@ export async function startStubMessages(script: { calls: StubToolUse[]; reply: s
     server.close();
   });
   return state;
+}
+
+/**
+ * The text of a Messages request's first user message: the prompt that started the conversation,
+ * which for a sub-agent is the prompt its parent gave it (the parent's own requests carry that
+ * prompt only inside the Agent tool call).
+ */
+export function firstUserText(request: Record<string, unknown>): string {
+  const first = ((request["messages"] ?? []) as { role: string; content: unknown }[]).find((m) => m.role === "user");
+  if (first === undefined) return "";
+  return typeof first.content === "string" ? first.content : (first.content as { type: string; text?: string }[]).map((b) => (b.type === "text" ? (b.text ?? "") : "")).join("\n");
 }
 
 /** Tool calls and results a Claude Code session transcript recorded, in order. */
