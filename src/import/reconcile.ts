@@ -14,7 +14,7 @@ import { type Db, prepared, toStorageError, writeTransaction } from "../storage/
 import { appendRecord } from "../storage/records.js";
 import { approves, type Consent, readConsent, writeConsent } from "./consent.js";
 import type { CompatibilityRow, ExclusionReason, NormalizedEvent, ToolKind, TranscriptAdapter, TranscriptFile } from "./normalized-event.js";
-import { boundPassage, PASSAGE_LIMITS, redactSecrets, touchesSensitivePath } from "./privacy.js";
+import { boundPassage, PASSAGE_LIMITS, redactSecrets, removePrivate, touchesSensitivePath } from "./privacy.js";
 
 /**
  * Transcript import: approved host history → attributed evidence in the right workspace.
@@ -921,9 +921,9 @@ export function readToolResultTitle(title: string | null): { failed: boolean; su
   return { failed: title.slice(0, colon).endsWith(" (error)"), summary: title.slice(colon + 2) };
 }
 
-/** Redacts, then bounds; counts both. */
+/** Removes private spans, redacts, then bounds; counts redactions and clipping. */
 function passage(batch: Batch, text: string, maxBytes: number, count = true): string {
-  const redacted = redactSecrets(text);
+  const redacted = redactSecrets(removePrivate(text));
   batch.counters.redactions += redacted.redactions;
   const bounded = boundPassage(redacted.text.trim(), maxBytes);
   if (count && bounded.omittedBytes > 0) batch.counters.clipped++;

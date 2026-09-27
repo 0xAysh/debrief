@@ -39,6 +39,27 @@ const SECRET_ASSIGNMENT = /\b([A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?k
 
 const SENSITIVE_PATH = /(?:^|[\s/"'=])(?:\.env(?:\.[\w-]+)?|\.netrc|\.npmrc|\.pypirc|\.pgpass|id_(?:rsa|dsa|ecdsa|ed25519)|[\w.-]+\.(?:pem|key|p12|pfx|keystore)|credentials(?:\.json)?|\.aws\/credentials|\.ssh\/[\w.-]+|secrets?\.(?:ya?ml|json|toml))(?=$|[\s"'`;|&)])/i;
 
+/**
+ * `<private>…</private>`: text the user marked as not to be remembered. Without a closing tag
+ * the span runs to the end, so a mistyped or cut-off tag hides too much, never too little.
+ */
+const PRIVATE_SPAN = /<private>[\s\S]*?(?:<\/private>|$)/gi;
+
+/** Replaces each `<private>` span with `[private]`; runs before any other rule sees the text. */
+export function removePrivate(text: string): string {
+  return text.replace(PRIVATE_SPAN, "[private]");
+}
+
+/** {@link removePrivate} applied to every string in a JSON-shaped value, such as an agent's request. */
+export function removePrivateEverywhere(value: unknown): unknown {
+  if (typeof value === "string") return removePrivate(value);
+  if (Array.isArray(value)) return value.map(removePrivateEverywhere);
+  if (value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, removePrivateEverywhere(entry)]));
+  }
+  return value;
+}
+
 export function redactSecrets(text: string): { text: string; redactions: number } {
   let redactions = 0;
   let out = text;

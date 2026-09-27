@@ -51,6 +51,7 @@ import { PROTOCOL } from "./protocol.js";
 import { sessionDigest } from "./retrieval/digest.js";
 import { renderSessionStart, type SessionStart, unreadableSessionStart } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
+import { removePrivateEverywhere } from "./import/privacy.js";
 import { type CaptureResult, type CaptureSkip, type ImportStatus, readToolResultTitle, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
 import { type Citation, citationsFor, importedFrom, type ImportedSource, independentRoots, linksOf } from "./integrity/provenance.js";
 import {
@@ -1552,8 +1553,9 @@ function given<T>(value: T | null | undefined): T {
   return value;
 }
 
+/** Every operation's input, after the user's `<private>` spans are gone: nothing downstream sees them. */
 function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
-  return schema.parse(input);
+  return schema.parse(removePrivateEverywhere(input));
 }
 
 function invalidInput(error: ZodError): MemchorError {
