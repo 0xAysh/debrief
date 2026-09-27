@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { resolveHome } from "./bootstrap/workspace-resolution.js";
 import { MemchorError } from "./errors.js";
-import { HOOK_HOSTS, HOST_IDS, HOSTS, hostDescriptor, TRANSCRIPT_HOSTS } from "./hosts.js";
+import { HOOK_HOSTS, HOST_IDS, type HostId, HOSTS, hostDescriptor, type PluginFacts, TRANSCRIPT_HOSTS } from "./hosts.js";
 import { type ImportStatus, openMemory, type Memory } from "./memory.js";
 import { IMPORT_CHOICES, type ImportChoice, LIMITS } from "./schemas.js";
 import { assertEmbeddedRuntime } from "./storage/database.js";
@@ -15,6 +15,8 @@ import { hostStatus } from "./transports/status.js";
 
 const USAGE = `Usage:
   memchor status                                      Is Memchor installed and working here? (exit 1 when not)
+  memchor import [--set ${IMPORT_CHOICES.join("|")}]
+                                                      Import past sessions' transcripts, as the user chose (--set records the choice)
   memchor mcp [--host ${HOST_IDS.join("|")}]
                                                       Serve MCP over stdio (started by the agent host)
   memchor hook stop --host ${HOOK_HOSTS.join("|")}
@@ -62,6 +64,11 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(outcome.stdout);
     process.stderr.write(outcome.stderr);
     return 0;
+  }
+  if (command === "import") {
+    const { values } = parseArgs({ args: argv.slice(1), options: { set: { type: "string" } }, strict: true });
+    if (values.set !== undefined && !IMPORT_CHOICES.includes(values.set as ImportChoice)) return usage(`--set must be one of ${IMPORT_CHOICES.join(", ")}`);
+    return importHistory(values.set as ImportChoice | undefined);
   }
   if (command === "status") {
     if (argv.length > 1) return usage(`unknown status argument ${argv.slice(1).join(" ")}`);
@@ -155,16 +162,64 @@ function diag(memory: Memory, subcommand: string, values: { query?: string | und
   }
 }
 
+/** The hosts `memchor status` and `memchor import` act for: those Memchor installs into as a plugin. */
+function installedHosts(): { host: HostId; facts: PluginFacts; displayName: string }[] {
+  return HOST_IDS.flatMap((host) => {
+    const facts = HOSTS[host].plugin;
+    const transcripts = HOSTS[host].transcripts;
+    return facts === null || transcripts === null ? [] : [{ host, facts, displayName: transcripts({}).displayName }];
+  });
+}
+
+/**
+ * Each host's history imported to completion, under the user's choice (`choice` records it
+ * first). Without a choice it puts the question and imports nothing; exit 1 then.
+ */
+function importHistory(choice: ImportChoice | undefined): number {
+  let unanswered = false;
+  for (const { host, displayName } of installedHosts()) {
+    const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined) });
+    try {
+      let status: ImportStatus = memory.bootstrap(choice === undefined ? {} : { importChoice: choice }).import;
+      while (status.state === "in_progress" && status.problem === null) {
+        const step = memory.continueImport({ maxMs: 1_000 });
+        status = step;
+        if (step.done) break;
+      }
+      const lines = [`memchor import · ${displayName}`];
+      const row = (label: string, value: string): void => {
+        lines.push(`  ${label.padEnd(13)}${value}`);
+      };
+      if (status.state === "consent_required") {
+        unanswered = true;
+        // The question as the agent would put it, without the lines addressed to the agent.
+        lines.push(...(status.question ?? "").split("\n").filter((line) => !/^\d\. |^Ask the user/.test(line)), `Answer with memchor import --set ${IMPORT_CHOICES.join("|")}`);
+      } else if (status.state === "declined") {
+        row("choice", "none: no transcripts are imported");
+      } else {
+        row("choice", status.consent?.choice ?? status.state);
+        const own = status.currentProject;
+        if (own !== null) row("this project", `${own.complete} of ${own.transcripts} transcripts imported, ${own.counters.records} records`);
+        if (status.backfill !== null && status.backfill.projects > 0) row("other", `${status.backfill.projects} projects, ${status.backfill.transcripts} transcripts${status.backfill.reconciled ? "" : " (still importing)"}`);
+        if (status.gaps.length > 0) row("gaps", status.gaps.map((g) => g.message).join(" · "));
+        if (status.problem !== null) row("problem", `${status.problem.code}: ${status.problem.message}`);
+      }
+      process.stdout.write(lines.join("\n") + "\n");
+      if (status.problem !== null) unanswered = true;
+    } finally {
+      memory.close();
+    }
+  }
+  return unanswered ? 1 : 0;
+}
+
 /** Each host Memchor installs into as a plugin, checked from this directory; exit 1 when any has a problem. */
 async function status(): Promise<number> {
   let problems = 0;
-  for (const host of HOST_IDS) {
-    const facts = HOSTS[host].plugin;
-    const transcripts = HOSTS[host].transcripts;
-    if (facts === null || transcripts === null) continue;
+  for (const { host, facts, displayName } of installedHosts()) {
     const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined) });
     try {
-      const report = await hostStatus({ displayName: transcripts({}).displayName, host, facts, paths: {}, status: memory.status(), cwd: process.cwd(), env: process.env });
+      const report = await hostStatus({ displayName, host, facts, paths: {}, status: memory.status(), cwd: process.cwd(), env: process.env });
       process.stdout.write(report.text);
       problems += report.problems;
     } finally {
