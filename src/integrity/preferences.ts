@@ -394,20 +394,24 @@ export const PREFERENCE_HINT =
 
 /**
  * Wording that states a standing rule rather than a one-off request: "from now on", "going
- * forward", "in future", "I prefer", "remember to", or "always"/"never" opening a clause as an
- * instruction ("Never commit to main", "please always…"), not describing ("the build always
- * fails"). Code blocks are not the user's wording. A hint, never a decision: the agent judges.
+ * forward", "I prefer", and at the start of a clause "in future", "remember to", or
+ * "always"/"never" as an instruction ("Never commit to main", "please always…"), not
+ * describing ("the build always fails", "did you remember to…", "never mind"). Code blocks
+ * are not the user's wording. A hint, never a decision: the agent judges.
  */
 export function statesLastingPreference(prompt: string): boolean {
   const wording = prompt.replace(/```[\s\S]*?(?:```|$)/g, " ");
   return LASTING_WORDING.some((pattern) => pattern.test(wording));
 }
 
+/** The start of a sentence or clause: wording there instructs, the same words mid-sentence describe. */
+const CLAUSE = String.raw`(?:^|[.!?;:]\s+|\n\s*)`;
+
 const LASTING_WORDING: readonly RegExp[] = [
   /\bfrom now on\b/i,
   /\bgoing forward\b/i,
-  /\bin (?:the )?future\b/i,
+  new RegExp(String.raw`${CLAUSE}in (?:the )?future\b`, "i"),
   /\bI(?: would|'d)? prefer\b/i,
-  /\bremember to\b/i,
-  /(?:^|[.!?;:]\s+|\n\s*|\b(?:please|you should|you must|we should|we must)\s+)(?:always|never)\s+\w/i,
+  new RegExp(String.raw`${CLAUSE}(?:please\s+)?remember to\b`, "i"),
+  new RegExp(String.raw`(?:${CLAUSE}|\b(?:please|you should|you must|we should|we must)\s+)(?:always|never)(?!\s+mind\b)\s+\w`, "i"),
 ];

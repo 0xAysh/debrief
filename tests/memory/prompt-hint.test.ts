@@ -31,6 +31,10 @@ describe("promptHint: one line for the agent when a prompt states a lasting pref
     "Fix the retry loop in the gateway client.",
     "What does this do?\n```sh\n# Always run lint first\nnpm run lint\n```",
     "<private>From now on use yarn.</private> Fix the build.",
+    "Never mind, fix the retry loop instead.",
+    "Did you remember to push the branch?",
+    "This breaks in the future when the key rotates.",
+    "What would you prefer here, a map or a switch?",
   ];
 
   test.each(lasting)("hints on %j", (prompt) => {
