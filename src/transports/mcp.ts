@@ -6,14 +6,13 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { sessionOfCall, sessionOfServer } from "../bootstrap/host-sessions.js";
+import { resolveHome } from "../bootstrap/workspace-resolution.js";
 import { MemchorError } from "../errors.js";
-import { hostDescriptor } from "../hosts.js";
 import type { HostReply, Memory, PreferenceQuestion } from "../memory.js";
 import { openMemory } from "../memory.js";
-import { LIMITS, OPERATION_SCHEMAS, type OperationName } from "../schemas.js";
+import { OPERATION_SCHEMAS, type OperationName } from "../schemas.js";
 import { PROTOCOL } from "../protocol.js";
-import { toolCallSession } from "../bootstrap/host-sessions.js";
-import { resolveHome } from "../bootstrap/workspace-resolution.js";
 
 /**
  * Thin MCP adapter over the memory module. It holds no memory policy: it forwards raw
@@ -75,28 +74,6 @@ const TOOL_LIST = (Object.keys(OPERATION_SCHEMAS) as OperationName[]).map((name)
 
 const isOperation = (name: string): name is OperationName => Object.hasOwn(OPERATION_SCHEMAS, name);
 
-/**
- * The host's own session id for a `tools/call`, by what its descriptor names (src/hosts.ts): the
- * session id in `_meta`; else the session its PreToolUse hook noted for the call id in `_meta`;
- * else the environment variable. An id longer than a host session id may be is ignored rather
- * than cut: a prefix is a different identity, and two threads sharing one would be bound as one session.
- */
-function hostSession(host: string | undefined, meta: Record<string, unknown> | undefined, env: NodeJS.ProcessEnv, home: string): string | undefined {
-  const descriptor = hostDescriptor(host);
-  if (descriptor === null) return undefined;
-  const fromMeta = descriptor.sessionMetaKey === null ? undefined : validSessionId(meta?.[descriptor.sessionMetaKey]);
-  if (fromMeta !== undefined) return fromMeta;
-  const toolUseId = descriptor.toolUseMetaKey === null ? undefined : validSessionId(meta?.[descriptor.toolUseMetaKey]);
-  const noted = toolUseId === undefined || host === undefined ? undefined : toolCallSession(home, host, toolUseId);
-  return noted ?? (descriptor.sessionEnv === null ? undefined : validSessionId(env[descriptor.sessionEnv]));
-}
-
-function validSessionId(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const id = value.trim();
-  return id !== "" && id.length <= LIMITS.hostSessionIdChars ? id : undefined;
-}
-
 /** One background import step, and the pause between steps that lets requests through. */
 const BACKFILL_STEP_MS = 200;
 const BACKFILL_PAUSE_MS = 25;
@@ -130,23 +107,28 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
   const server = new Server({ name: "memchor", version: "0.0.0" }, { capabilities: { tools: {} }, instructions: PROTOCOL });
   let memory: Memory | undefined;
   let memorySession: string | undefined;
-  // The Memory opens on the first call, so a session id the host sends with it is known before
-  // bootstrap binds the session. A call from another host session (Claude Code after `/clear`)
-  // closes it and opens a Memory for that session; a call naming no session keeps the current one.
-  const getMemory = (hostSessionId: string | undefined): Memory => {
-    if (memory !== undefined && hostSessionId !== undefined && hostSessionId !== memorySession) {
+  // The Memory opens on the first call, so a session the call names is known before bootstrap
+  // binds the session; without one, the session the host started the server with. A call from
+  // another host session (Claude Code after `/clear`) closes it and opens a Memory for that
+  // session; a call naming no session keeps the current one.
+  const getMemory = (meta: Record<string, unknown> | undefined): Memory => {
+    const host = options.host ?? server.getClientVersion()?.name ?? "unknown";
+    const named = sessionOfCall(host, meta, home);
+    if (memory !== undefined && named !== undefined && named !== memorySession) {
       if (backfill !== undefined) clearTimeout(backfill);
       backfill = undefined;
       memory.close();
       memory = undefined;
     }
-    if (memory === undefined) memorySession = hostSessionId;
-    memory ??= openMemory({
-      cwd: options.cwd,
-      host: options.host ?? server.getClientVersion()?.name ?? "unknown",
-      ...(options.home === undefined ? {} : { home: options.home }),
-      ...(hostSessionId === undefined ? {} : { hostSessionId }),
-    });
+    if (memory === undefined) {
+      memorySession = named ?? sessionOfServer(host, options.env ?? process.env);
+      memory = openMemory({
+        cwd: options.cwd,
+        host,
+        ...(options.home === undefined ? {} : { home: options.home }),
+        ...(memorySession === undefined ? {} : { hostSessionId: memorySession }),
+      });
+    }
     return memory;
   };
 
@@ -244,7 +226,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     if (!isOperation(name)) throw new McpError(ErrorCode.InvalidParams, `Unknown tool ${name}`);
     const spec = TOOLS[name];
     try {
-      const memory = getMemory(hostSession(options.host, request.params._meta, options.env ?? process.env, home));
+      const memory = getMemory(request.params._meta);
       const result = spec.run(memory, request.params.arguments ?? {}) as Record<string, unknown>;
       if (name === "memory_bootstrap" && (result["import"] as { state?: unknown } | undefined)?.state === "in_progress") {
         failures = 0;

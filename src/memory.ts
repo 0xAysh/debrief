@@ -12,7 +12,7 @@ import {
   type ScopeAmbiguity,
   type ScopeHints,
 } from "./bootstrap/workstream-resolution.js";
-import { noteToolCallSession } from "./bootstrap/host-sessions.js";
+import { noteToolCall } from "./bootstrap/host-sessions.js";
 import { headCommit, locateWorkspace, registerWorkspace, resolveHome, type WorkspaceLocation } from "./bootstrap/workspace-resolution.js";
 import { type ErrorCode, MemchorError } from "./errors.js";
 import { checkpointNudge, headCheckpointRecordId, headRevision, publishCheckpoint } from "./integrity/checkpoints.js";
@@ -875,9 +875,7 @@ class LocalMemory implements Memory {
       const parsed = parse(ApproveToolInput, input);
       const operation = hostDescriptor(this.host)?.memchorTool?.exec(parsed.tool)?.[1];
       // Every Memchor call, approved here or not: the MCP server learns from this which session made it.
-      if (operation !== undefined && parsed.toolUseId !== undefined && parsed.hostSessionId !== undefined) {
-        noteToolCallSession(this.home, { host: this.host, toolUseId: parsed.toolUseId, hostSessionId: parsed.hostSessionId });
-      }
+      if (operation !== undefined && parsed.call !== undefined) noteToolCall(this.home, this.host, parsed.call);
       const args: Record<string, unknown> = typeof parsed.input === "object" && parsed.input !== null ? (parsed.input as Record<string, unknown>) : {};
       if (operation === undefined || !readOnlyCall(operation, args)) return null;
       if (operation !== "memory_recall") return { notice: null };

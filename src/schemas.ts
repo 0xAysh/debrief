@@ -347,8 +347,7 @@ export const ApproveToolInput = z.strictObject({
   tool: z.string().min(1).max(256),
   input: z.unknown(),
   /** The host's id for this call and the session making it (Claude Code's `tool_use_id` and `session_id`), noted for the MCP server. */
-  toolUseId: z.string().min(1).max(LIMITS.hostSessionIdChars).optional(),
-  hostSessionId: z.string().min(1).max(LIMITS.hostSessionIdChars).optional(),
+  call: z.strictObject({ toolUseId: z.string().min(1).max(LIMITS.hostSessionIdChars), hostSessionId: z.string().min(1).max(LIMITS.hostSessionIdChars) }).optional(),
 });
 export type ApproveToolInput = z.input<typeof ApproveToolInput>;
 

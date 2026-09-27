@@ -30,7 +30,7 @@ export interface HostDescriptor {
   sessionMetaKey: string | null;
   /**
    * The environment variable through which the host names its session to the MCP servers it
-   * starts, or null. Read once, when the server opens its memory; `sessionMetaKey` wins when both are set.
+   * starts, or null. Only for the server's first session: a session a call names (`sessionMetaKey`, `toolUseMetaKey`) wins.
    */
   sessionEnv: string | null;
   /**

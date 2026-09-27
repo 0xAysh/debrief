@@ -252,40 +252,47 @@ describe.skipIf(SKIP !== null)(`Memchor's hooks in the real Claude Code ${CLAUDE
     expect(after.status().hookFailures).toEqual([]);
   }, 120_000);
 
-  test("resume, compact and clear: the model's next request carries the checkpoint again, still without a tool call", async () => {
+  test("resume, compact and clear: the model's next request carries the checkpoint as it is then, still without a tool call", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
     const memchorHome = tempDir();
-    const setup = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    const memory = openMemory({ cwd: repo, home: memchorHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
     onCleanup(() => {
-      setup.close();
+      memory.close();
     });
-    setup.bootstrap({ importChoice: "current_project" });
-    setup.checkpoint({ expectedRevision: 0, goal: "Stop double charges", status: "Key drafted", nextSteps: ["SYNTHETIC-NEXT wire the idempotency key into charge()"] });
-    setup.close();
+    memory.bootstrap({ importChoice: "current_project" });
+    let revision = 0;
+    // A new revision before each event, so a request can only carry it if that event's SessionStart delivered it (not history).
+    const checkpoint = (next: string): void => {
+      revision = memory.checkpoint({ expectedRevision: revision, goal: "Stop double charges", status: "Key drafted", nextSteps: [next] }).revision;
+    };
     const stub = await startStubMessages({ calls: [], reply: "SYNTHETIC-REPLY ok." });
     const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" });
-    const carried = (marker: string): boolean => {
+    const carried = (marker: string, next: string): boolean => {
       const request = JSON.stringify(stub.requests.find((r) => JSON.stringify(r).includes(marker)) ?? {});
-      return request.includes("SessionStart hook additional context: ") && request.includes("SYNTHETIC-NEXT wire the idempotency key into charge()");
+      return request.includes("SessionStart hook additional context: ") && request.includes(next);
     };
 
+    checkpoint("SYNTHETIC-NEXT-STARTUP");
     const session = claudeStream(env, repo, "--settings", hooksSettings(memchorHome));
     const first = await session.send("SYNTHETIC-FIRST where were we?");
+    checkpoint("SYNTHETIC-NEXT-COMPACT");
     await session.send("/compact");
     await session.send("SYNTHETIC-AFTER-COMPACT go on");
+    checkpoint("SYNTHETIC-NEXT-CLEAR");
     await session.send("/clear");
     const cleared = await session.send("SYNTHETIC-AFTER-CLEAR go on");
     const ended = await session.end();
     expect(ended.code, ended.stderr).toBe(0);
     expect(cleared["session_id"]).not.toBe(first["session_id"]);
-    expect(carried("SYNTHETIC-FIRST")).toBe(true);
-    expect(carried("SYNTHETIC-AFTER-COMPACT")).toBe(true);
-    expect(carried("SYNTHETIC-AFTER-CLEAR")).toBe(true);
+    expect(carried("SYNTHETIC-FIRST", "SYNTHETIC-NEXT-STARTUP")).toBe(true);
+    expect(carried("SYNTHETIC-AFTER-COMPACT", "SYNTHETIC-NEXT-COMPACT")).toBe(true);
+    expect(carried("SYNTHETIC-AFTER-CLEAR", "SYNTHETIC-NEXT-CLEAR")).toBe(true);
 
+    checkpoint("SYNTHETIC-NEXT-RESUME");
     const resumed = await claudeAsync(env, repo, "-p", "--resume", String(first["session_id"]), "SYNTHETIC-RESUMED go on", "--output-format", "json", "--settings", hooksSettings(memchorHome));
     expect(resumed.code, resumed.stderr).toBe(0);
-    expect(carried("SYNTHETIC-RESUMED")).toBe(true);
+    expect(carried("SYNTHETIC-RESUMED", "SYNTHETIC-NEXT-RESUME")).toBe(true);
     expect(stub.offeredTools.flat().filter((t) => t.startsWith("mcp__"))).toEqual([]);
   }, 180_000);
 
