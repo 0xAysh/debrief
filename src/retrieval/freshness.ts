@@ -378,6 +378,7 @@ class Checker {
   private locateCited(path: string, ref: StoredRef, content: Buffer): Verdict | null {
     if (ref.lines === undefined || ref.citedHash === undefined || ref.citedBytes === undefined || !HASH.test(ref.citedHash)) return null;
     const [start, end] = ref.lines;
+    if (end < start) return null;
     let lines = this.lines.get(path);
     if (lines === undefined) {
       lines = new Lines(content);
