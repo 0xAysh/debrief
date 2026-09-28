@@ -479,4 +479,106 @@ describe("cited lines", () => {
     // Recall shows the pointer and its label, not Debrief's fingerprints.
     expect(recallItem(memory, recordId).externalRefs[0]).not.toHaveProperty("citedHash");
   });
+
+  test("cited text found twice at recall falls back to the whole-file rule, never current", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+    writeFile(repo, "src/payments.ts", `${charge}\n${refund}\n${charge}`);
+
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "changed" });
+  });
+
+  test("cited text already duplicated when written gets no fingerprint: an edit to either copy is stale", () => {
+    const repo = initRepo();
+    writeFile(repo, "src/payments.ts", `${charge}\n${refund}\n${charge}`);
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "payments");
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+
+    writeFile(repo, "src/payments.ts", `${charge}\n${refund}\nexport function charge2() {\n  return retry(3);\n}\n`);
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "changed" });
+    writeFile(repo, "src/payments.ts", `export function charge() {\n  return retry(5);\n}\n\n${refund}\n${charge}`);
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "changed" });
+  });
+
+  test("known limit, a false current: cited lines copied elsewhere and then edited in place read as moved to the copy", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+    writeFile(repo, "src/payments.ts", `export function charge() {\n  return retry(5);\n}\n\n${refund}\n${charge}`);
+
+    // Text is identity: Debrief cannot tell this from a move. Changing this label must be deliberate.
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "current", reason: "lines_moved", linesNow: [9, 11] });
+  });
+
+  test("a search the recall's hashing budget cannot finish is unknown, not a verdict", () => {
+    const repo = repoWithPayments();
+    // Every line the same length, so every window of the cited range must be hashed to rule it out.
+    const rows = Array.from({ length: 2_000 }, (_, i) => `row ${String(i).padStart(6, "0")};`);
+    writeFile(repo, "src/rows.ts", `${rows.join("\n")}\n`);
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "rows");
+    const memory = open(repo, tempDir());
+    const { recordId } = memory.record({
+      kind: "evidence",
+      body: "rows 100-149 are the seed rows",
+      attribution: "direct_observation",
+      externalRefs: [{ kind: "code", locator: "src/rows.ts", lines: [100, 149] }],
+    });
+    // Untracked files the checkpoint cites: checked first at recall, and hashed (Git cannot vouch
+    // for them), they leave the budget just large enough to hash rows.ts but not to search it.
+    const mib = 1024 * 1024;
+    const big = Array.from({ length: 8 }, (_, i) => {
+      writeFile(repo, `data/big-${i}.bin`, "x".repeat(i < 7 ? mib : mib - 30_000));
+      return { kind: "code" as const, locator: `data/big-${i}.bin` };
+    });
+    memory.checkpoint({ expectedRevision: 0, goal: "seed data", status: "reading the fixtures", externalRefs: big });
+    writeFile(repo, "src/rows.ts", `${rows.join("\n")}\nrow end;\n`);
+
+    const recall = memory.recall({ maxTokens: 8_000 });
+    expect(recall.checkpoint?.externalRefs.every((ref) => ref.reason === "unchanged")).toBe(true);
+    expect(recall.items.find((i) => i.recordId === recordId)?.externalRefs[0]).toMatchObject({ freshness: "unknown", reason: "check_limit" });
+  });
+
+  test("trailing whitespace or indentation changed inside the cited lines is stale", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+
+    writeFile(repo, "src/payments.ts", `export function charge() {  \n  return retry(3);\n}\n\n${refund}`);
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "lines_changed" });
+    writeFile(repo, "src/payments.ts", `export function charge() {\n    return retry(3);\n}\n\n${refund}`);
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "lines_changed" });
+  });
+
+  test("line endings converted to CRLF, with the final newline removed or added, leave the cited lines current", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+    const edited = `${charge}\nexport function refund(key) {\n  return once(key);\n}`;
+
+    writeFile(repo, "src/payments.ts", edited.replaceAll("\n", "\r\n"));
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "current", reason: "changed_elsewhere" });
+    writeFile(repo, "src/payments.ts", `${edited.replaceAll("\n", "\r\n")}\r\n`);
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "current", reason: "changed_elsewhere" });
+  });
+
+  test("a lone carriage return at the end of the file is part of the last line", () => {
+    const repo = initRepo();
+    writeFile(repo, "src/payments.ts", `${refund}${charge}`);
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "payments");
+    const memory = open(repo, tempDir());
+    const { recordId } = memory.record({
+      kind: "evidence",
+      body: "charge() retries three times",
+      attribution: "direct_observation",
+      externalRefs: [{ kind: "code", locator: "src/payments.ts", lines: [4, 6] }],
+    });
+
+    writeFile(repo, "src/payments.ts", `\n${refund}${charge.trimEnd()}\r`);
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "lines_changed" });
+  });
 });
