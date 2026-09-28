@@ -59,11 +59,11 @@ function atVersionZero(setup = ""): string {
 }
 
 describe("migrations", () => {
-  test("this build introduces schema version 6", () => {
-    expect(SCHEMA_VERSION).toBe(6);
+  test("this build introduces schema version 7", () => {
+    expect(SCHEMA_VERSION).toBe(7);
   });
 
-  test.each([1, 2, 3, 4, 5])("a version-%i database upgrades to version 6: every session is non-private, and there are no preference questions", (from) => {
+  test.each([1, 2, 3, 4, 5])("a version-%i database upgrades through version 6: every session is non-private, and there are no preference questions", (from) => {
     const path = join(tempDir(), "memory.sqlite");
     const old = new Database(path);
     old.pragma("foreign_keys = ON");
@@ -75,7 +75,7 @@ describe("migrations", () => {
 
     const db = openDatabase(path);
     try {
-      expect(db.pragma("user_version", { simple: true })).toBe(6);
+      expect(db.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
       expect(db.prepare("SELECT id, private FROM sessions").all()).toEqual([{ id: "ses_1", private: 0 }]);
       expect(db.prepare("SELECT count(*) AS n FROM preference_candidates").get()).toEqual({ n: 0 });
       // A new preference names no target; a proposed change or removal always does.
@@ -370,6 +370,45 @@ describe("migrations", () => {
       expect(() => db.prepare("INSERT INTO worktree_bindings VALUES ('/x', 'wst_missing', 'now')").run()).toThrow(/FOREIGN KEY/);
     } finally {
       db.close();
+    }
+  });
+
+  test("a version-6 (0.1.0) database gets identifier search without re-import, the same as diag reindex gives", () => {
+    const repo = initRepo();
+    const home = tempDir();
+    const first = openMemory({ cwd: repo, host: "codex", home });
+    const identifier = first.record({ kind: "note", body: "recall freezes its order in rankSequence()", attribution: "agent_inference" }).recordId;
+    const words = first.record({ kind: "note", body: "each sequence has a rank", attribution: "agent_inference" }).recordId;
+    const dbPath = first.status().storage.dbPath ?? "";
+    first.close();
+    // Put the projection back as 0.1.0 wrote it: chunks without terms, chunks_fts over text alone.
+    const raw = new Database(dbPath);
+    raw.exec(`DROP TABLE chunks_fts;
+      ALTER TABLE chunks DROP COLUMN terms;
+      CREATE VIRTUAL TABLE chunks_fts USING fts5 (text, content = 'chunks', content_rowid = 'id', tokenize = 'porter unicode61 remove_diacritics 2');
+      INSERT INTO chunks_fts (chunks_fts) VALUES ('rebuild');
+      PRAGMA user_version = 6;`);
+    expect(raw.prepare(`SELECT count(*) AS n FROM chunks_fts WHERE chunks_fts MATCH '"rank" AND "sequence"'`).get()).toEqual({ n: 1 });
+    raw.close();
+
+    const upgraded = openMemory({ cwd: repo, host: "codex", home });
+    try {
+      const ids = (): string[] => upgraded.recall({ query: "rank sequence" }).items.map((item) => item.recordId);
+      expect(ids().sort()).toEqual([identifier, words].sort());
+      const projection = (): unknown[] => {
+        const db = new Database(dbPath, { readonly: true });
+        try {
+          return db.prepare("SELECT record_id, ordinal, field, text, terms FROM chunks ORDER BY record_id, ordinal").all();
+        } finally {
+          db.close();
+        }
+      };
+      const migrated = { order: ids(), chunks: projection() };
+      expect(upgraded.rebuildSearchIndex()).toEqual({ records: 2, chunks: 2 });
+      expect({ order: ids(), chunks: projection() }).toEqual(migrated);
+      expect(upgraded.checkIntegrity()).toMatchObject({ ok: true });
+    } finally {
+      upgraded.close();
     }
   });
 

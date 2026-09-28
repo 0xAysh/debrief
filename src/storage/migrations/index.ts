@@ -6,13 +6,23 @@ import * as importSourceFingerprint from "./0003-import-source-fingerprint.js";
 import * as scopeResolution from "./0004-scope-resolution.js";
 import * as lifecycle from "./0005-lifecycle.js";
 import * as preferences from "./0006-preferences-private-sessions.js";
+import * as identifierTerms from "./0007-identifier-terms.js";
 
 /**
  * Ordered schema migrations. Entry `i` upgrades `PRAGMA user_version` from `i` to `i + 1`.
  * Append only: a shipped migration is never edited, because databases in the field
- * have already applied it.
+ * have already applied it. A step is SQL, or a function for one that needs code SQL cannot
+ * express (regenerating the derived search projection).
  */
-const MIGRATIONS: readonly string[] = [initial.sql, transcriptImport.sql, importSourceFingerprint.sql, scopeResolution.sql, lifecycle.sql, preferences.sql];
+const MIGRATIONS: readonly (string | ((db: BetterSqlite3.Database) => void))[] = [
+  initial.sql,
+  transcriptImport.sql,
+  importSourceFingerprint.sql,
+  scopeResolution.sql,
+  lifecycle.sql,
+  preferences.sql,
+  identifierTerms.migrate,
+];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
@@ -44,7 +54,8 @@ export function migrate(db: BetterSqlite3.Database): void {
           if (current > SCHEMA_VERSION) throw newerSchema(current);
           const step = MIGRATIONS[current];
           if (step === undefined) return false;
-          db.exec(step);
+          if (typeof step === "string") db.exec(step);
+          else step(db);
           const violations = db.pragma("foreign_key_check") as unknown[];
           if (violations.length > 0) throw new Error(`Migration to schema version ${current + 1} would leave ${violations.length} dangling references`);
           db.pragma(`user_version = ${current + 1}`);

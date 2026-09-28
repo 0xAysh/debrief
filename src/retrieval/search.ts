@@ -10,6 +10,14 @@ import { RECALL_ELIGIBLE_SQL, type RecordRow, VISIBLE_SQL } from "./eligibility.
  * {@link rebuildSearchIndex} can always regenerate it and ranking stays identical.
  * `chunks_fts` is an external-content FTS5 table over `chunks`; the two are only ever
  * written together inside the caller's write transaction.
+ *
+ * FTS5's unicode61 tokenizer already splits `rank_sequence` and `src/retrieval/search.ts`
+ * into their words, but keeps `rankSequence` whole. Each chunk therefore also indexes the
+ * words inside its camelCase and PascalCase identifiers ({@link identifierTerms}) in a
+ * second column, `terms`, so "rank sequence" finds `rankSequence`. The words go in the same
+ * row rather than extra rows, so the row count is unchanged and a chunk without such
+ * identifiers indexes exactly what it did before. (bm25 counts a row's tokens across both
+ * columns, so a chunk with identifiers is a little longer to it, and the average moves with it.)
  */
 
 const CHUNK_BYTES = 1_000;
@@ -27,23 +35,47 @@ interface IndexableRecord {
 type ChunkField = "title" | "body" | "refs";
 
 /** Title, body (split at whitespace into ≤1000-byte chunks) and reference locators, in that order. */
-function chunksFor(record: IndexableRecord): { field: ChunkField; text: string }[] {
-  const chunks: { field: ChunkField; text: string }[] = [];
-  if (record.title !== null) chunks.push({ field: "title", text: record.title });
-  for (const text of splitText(record.body, CHUNK_BYTES)) chunks.push({ field: "body", text });
-  const refs = record.externalRefs.map((ref) => [ref.locator, ref.path].filter(Boolean).join(" ")).join("\n");
-  if (refs !== "") chunks.push({ field: "refs", text: refs });
-  return chunks;
+function chunksFor(record: IndexableRecord): { field: ChunkField; text: string; terms: string }[] {
+  const texts: { field: ChunkField; text: string }[] = [];
+  if (record.title !== null) texts.push({ field: "title", text: record.title });
+  for (const text of splitText(record.body, CHUNK_BYTES)) texts.push({ field: "body", text });
+  const refs = refsText(record.externalRefs);
+  if (refs !== "") texts.push({ field: "refs", text: refs });
+  return texts.map((chunk) => ({ ...chunk, terms: identifierTerms(chunk.text) }));
+}
+
+const refsText = (refs: readonly ExternalRef[]): string => refs.map((ref) => [ref.locator, ref.path].filter(Boolean).join(" ")).join("\n");
+
+/** Where a word starts inside a camelCase or PascalCase identifier (`rank|Sequence`, `HTTP|Server`). */
+const CASE_BOUNDARY = /(?<=\p{Ll})(?=\p{Lu})|(?<=\p{Lu})(?=\p{Lu}\p{Ll})/u;
+
+/** The words of one token split at its case boundaries; a single element when it has none. */
+export function splitIdentifier(token: string): string[] {
+  return token.split(CASE_BOUNDARY);
+}
+
+/**
+ * The words inside the camelCase / PascalCase identifiers of `text`, space-separated
+ * (`rankSequence(HTTPServer)` → "rank Sequence HTTP Server"); "" when there are none.
+ * Tokens are cut where unicode61 cuts them, so snake_case and paths need nothing here.
+ */
+export function identifierTerms(text: string): string {
+  const words: string[] = [];
+  for (const token of text.match(/[\p{L}\p{N}]+/gu) ?? []) {
+    const parts = splitIdentifier(token);
+    if (parts.length > 1) words.push(...parts);
+  }
+  return words.join(" ");
 }
 
 /** Adds a record's chunks to the projection. Call inside the transaction that inserts the record. */
 export function indexRecord(db: Db, record: IndexableRecord): void {
   requireTransaction(db, "indexRecord");
-  const insertChunk = prepared(db, "INSERT INTO chunks (record_id, ordinal, field, text) VALUES (?, ?, ?, ?)");
-  const insertFts = prepared(db, "INSERT INTO chunks_fts (rowid, text) VALUES (?, ?)");
+  const insertChunk = prepared(db, "INSERT INTO chunks (record_id, ordinal, field, text, terms) VALUES (?, ?, ?, ?, ?)");
+  const insertFts = prepared(db, "INSERT INTO chunks_fts (rowid, text, terms) VALUES (?, ?, ?)");
   chunksFor(record).forEach((chunk, ordinal) => {
-    const { lastInsertRowid } = insertChunk.run(record.id, ordinal, chunk.field, chunk.text);
-    insertFts.run(lastInsertRowid, chunk.text);
+    const { lastInsertRowid } = insertChunk.run(record.id, ordinal, chunk.field, chunk.text, chunk.terms);
+    insertFts.run(lastInsertRowid, chunk.text, chunk.terms);
   });
 }
 
@@ -71,10 +103,21 @@ export function rebuildSearchIndex(db: Db): { records: number; chunks: number } 
 /**
  * Turns free text into a safe FTS5 expression: every term is double-quoted (so FTS
  * operators, column filters and syntax errors cannot be injected) and terms are OR-ed,
- * letting bm25 rank records that match more and rarer terms first.
+ * letting bm25 rank records that match more and rarer terms first. An identifier also
+ * searches for its words (`rankSequence` → "ranksequence" OR "rank" OR "sequence"), which the
+ * `terms` column matches in records that only use the identifier.
  */
 export function toFtsQuery(query: string): string {
-  const terms = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].slice(0, MAX_QUERY_TERMS);
+  // Lowercased before tokenizing, as the words themselves always were (lowercasing can add a
+  // combining mark that splits a token); an identifier's words follow it.
+  const terms = [
+    ...new Set(
+      (query.match(/[\p{L}\p{N}]+/gu) ?? []).flatMap((token) => {
+        const parts = splitIdentifier(token);
+        return [token, ...(parts.length > 1 ? parts : [])].flatMap((word) => word.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+      }),
+    ),
+  ].slice(0, MAX_QUERY_TERMS);
   if (terms.length === 0) {
     throw new DebriefError("invalid_input", "The query contains no searchable words.", { details: { query } });
   }
@@ -92,12 +135,48 @@ export interface Candidate extends RecordRow {
  */
 export const SEQUENCE_CAP = 500;
 
+/**
+ * What a phrase is matched against: a record's title, body and reference locators (its
+ * `refs` chunk, not the JSON, whose keys would match every phrase like "kind"), lowercased.
+ * SQLite's lower() folds only ASCII; phrases go through it too, so both sides fold alike.
+ */
+const VERBATIM_TEXT_SQL = `lower(coalesce(r.title, '') || char(10) || r.body || char(10) ||
+  coalesce((SELECT c.text FROM chunks c WHERE c.record_id = r.id AND c.field = 'refs'), ''))`;
+
+/** {@link VERBATIM_TEXT_SQL} in JavaScript: which of `phrases` a record contains, folding case as SQLite does. */
+export function phrasesContained(record: Pick<RecordRow, "title" | "body" | "external_refs">, phrases: readonly string[]): string[] {
+  const refs = refsText(JSON.parse(record.external_refs) as ExternalRef[]);
+  const text = asciiLower(`${record.title ?? ""}\n${record.body}\n${refs}`);
+  return phrases.filter((phrase) => text.includes(asciiLower(phrase)));
+}
+
+const asciiLower = (text: string): string => text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+/** julianday() compares instants whatever the timestamp's form (host transcripts differ in precision). */
+const IN_WINDOW_SQL = `(($from IS NULL OR julianday(r.created_at) >= julianday($from)) AND ($to IS NULL OR julianday(r.created_at) < julianday($to)))`;
+
 export interface RankRequest {
   workstreamId: string;
   /** Already converted with {@link toFtsQuery}; null lists recent records instead. */
   match: string | null;
   kinds: readonly string[] | null;
+  /** Quoted phrases and identifiers from the query (see `parseQuery`); none leaves bm25 order alone. */
+  phrases?: readonly string[];
+  /** The `created_at` range the query names (ISO bounds, either open); null names none. */
+  window?: { from: string | null; to: string | null } | null;
+  /** The query asks how things stand now: the newest relevant record leads. */
+  current?: boolean;
 }
+
+/**
+ * How close to the best match a record must be for time or recency to lift it: bm25 at least
+ * this fraction of the best record's. They reorder the relevant records; they never lift a
+ * record that matched a single common word above the answer.
+ */
+const RELEVANT_FRACTION = 0.5;
+
+/** Why a record ranked where it did beyond bm25, as bits (a continuation carries them compactly). */
+export const RANKED_BY = { phrase: 1, window: 2, newest: 4 } as const;
 
 /**
  * The frozen order of a recall sequence: record `seq`s in a total, deterministic order
@@ -108,13 +187,26 @@ export interface RankRequest {
  *
  * Order with a query: bm25 of the best-matching chunk, then newest first, then seq.
  * Order without a query: newest first, then seq.
+ *
+ * What the query asks for beyond its words (`parseQuery`) comes before that order, in tiers:
+ * 1. records containing more of its phrases verbatim (case-insensitively, in the title, body
+ *    or reference locators);
+ * 2. relevant records (see {@link RELEVANT_FRACTION}) created inside its time window;
+ * 3. when it asks about now, relevant records newest first.
+ *
+ * `rankedBy` holds the {@link RANKED_BY} bits of each sequenced record a tier lifted.
  */
-export function rankSequence(db: Db, request: RankRequest): { seqs: number[]; total: number } {
+export function rankSequence(db: Db, request: RankRequest): { seqs: number[]; total: number; rankedBy: Map<number, number> } {
+  const phrases = request.phrases ?? [];
+  const window = request.window ?? null;
+  const current = request.current ?? false;
   const params = {
     workstreamId: request.workstreamId,
     kinds: request.kinds === null ? null : JSON.stringify(request.kinds),
     match: request.match,
     cap: SEQUENCE_CAP,
+    ...(phrases.length === 0 ? {} : { phrases: JSON.stringify(phrases) }),
+    ...(window === null ? {} : { from: window.from, to: window.to }),
   };
   const filters = `${RECALL_ELIGIBLE_SQL} AND ($kinds IS NULL OR r.kind IN (SELECT value FROM json_each($kinds)))`;
   const ranked =
@@ -129,11 +221,32 @@ export function rankSequence(db: Db, request: RankRequest): { seqs: number[]; to
          hits AS (SELECT record_id, min(rank) AS rank FROM chunk_hits GROUP BY record_id)
          SELECT r.seq AS seq, r.created_at AS created_at, h.rank AS rank
          FROM hits h JOIN records r ON r.id = h.record_id WHERE ${filters}`;
-  const seqs = (
-    db.prepare(`SELECT seq FROM (${ranked}) ORDER BY rank, created_at DESC, seq DESC LIMIT $cap`).all(params) as { seq: number }[]
-  ).map((row) => row.seq);
   const { total } = db.prepare(`SELECT count(*) AS total FROM (${ranked})`).get(params) as { total: number };
-  return { seqs, total };
+  // A query asking nothing beyond its words runs the plain statement, so it ranks exactly as it always did.
+  if (phrases.length === 0 && window === null && !current) {
+    const rows = db.prepare(`SELECT seq FROM (${ranked}) ORDER BY rank, created_at DESC, seq DESC LIMIT $cap`).all(params) as { seq: number }[];
+    return { seqs: rows.map((row) => row.seq), total, rankedBy: new Map() };
+  }
+  const rows = db
+    .prepare(
+      `SELECT seq, verbatim > 0 AS phrase, relevant AND in_window AS windowed, relevant AND ${current ? 1 : 0} AS newest FROM (
+         SELECT q.seq, q.rank, q.created_at,
+           ${phrases.length === 0 ? "0" : `(SELECT count(*) FROM json_each($phrases) p WHERE instr(${VERBATIM_TEXT_SQL}, lower(p.value)) > 0)`} AS verbatim,
+           ${window === null ? "0" : IN_WINDOW_SQL} AS in_window,
+           -- bm25 is negative, lower is better: within RELEVANT_FRACTION of the best is at most that fraction of it.
+           q.rank <= ${RELEVANT_FRACTION} * min(q.rank) OVER () AS relevant
+         FROM (${ranked}) q JOIN records r ON r.seq = q.seq
+       )
+       ORDER BY verbatim DESC, windowed DESC, newest DESC, CASE WHEN newest THEN created_at END DESC, rank, created_at DESC, seq DESC
+       LIMIT $cap`,
+    )
+    .all(params) as { seq: number; phrase: number; windowed: number; newest: number }[];
+  const rankedBy = new Map<number, number>();
+  for (const row of rows) {
+    const bits = (row.phrase ? RANKED_BY.phrase : 0) | (row.windowed ? RANKED_BY.window : 0) | (row.newest ? RANKED_BY.newest : 0);
+    if (bits !== 0) rankedBy.set(row.seq, bits);
+  }
+  return { seqs: rows.map((row) => row.seq), total, rankedBy };
 }
 
 /**

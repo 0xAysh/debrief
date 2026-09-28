@@ -559,9 +559,13 @@ function effectsOnEvents(db: Db, entry: LedgerEntry, records: readonly string[])
  */
 function removePayload(db: Db, records: readonly string[], events: readonly { host: string; eventId: string }[]): void {
   const ids = JSON.stringify(records);
-  const chunks = prepared(db, "SELECT id, text FROM chunks WHERE record_id IN (SELECT value FROM json_each(?))").all(ids) as { id: number; text: string }[];
-  const unindex = prepared(db, "INSERT INTO chunks_fts (chunks_fts, rowid, text) VALUES ('delete', ?, ?)");
-  for (const chunk of chunks) unindex.run(chunk.id, chunk.text);
+  const chunks = prepared(db, "SELECT id, text, terms FROM chunks WHERE record_id IN (SELECT value FROM json_each(?))").all(ids) as {
+    id: number;
+    text: string;
+    terms: string;
+  }[];
+  const unindex = prepared(db, "INSERT INTO chunks_fts (chunks_fts, rowid, text, terms) VALUES ('delete', ?, ?, ?)");
+  for (const chunk of chunks) unindex.run(chunk.id, chunk.text, chunk.terms);
   prepared(db, "DELETE FROM chunks WHERE record_id IN (SELECT value FROM json_each(?))").run(ids);
   // Rewrites the index without the deleted entries, instead of leaving them in older segments.
   if (chunks.length > 0) db.exec("INSERT INTO chunks_fts (chunks_fts) VALUES ('optimize')");
