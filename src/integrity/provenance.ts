@@ -118,10 +118,12 @@ const MAX_DERIVATION_DEPTH = 16;
  */
 export function independentRoots(db: Db, workstreamId: string, recordIds: readonly string[]): Map<string, string> {
   const parent = new Map<string, string>();
+  // The id list drives the lookup (CROSS JOIN fixes the join order): left to the planner, it walked
+  // every record in scope and searched the list for each, which grew with the workspace.
   const outgoing = prepared(
     db,
-    `SELECT l.from_id, l.to_id FROM links l JOIN records r ON r.id = l.to_id
-     WHERE l.from_id IN (SELECT value FROM json_each($ids)) AND l.relation IN (SELECT value FROM json_each($relations)) AND ${VISIBLE_SQL}
+    `SELECT l.from_id, l.to_id FROM json_each($ids) f CROSS JOIN links l ON l.from_id = f.value JOIN records r ON r.id = l.to_id
+     WHERE l.relation IN (SELECT value FROM json_each($relations)) AND ${VISIBLE_SQL}
      ORDER BY l.from_id, CASE l.relation WHEN 'derived_from' THEN 0 ELSE 1 END, r.seq`,
   );
   let frontier = [...new Set(recordIds)];

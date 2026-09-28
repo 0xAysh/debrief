@@ -15,8 +15,9 @@ import type { ExternalRef, Freshness } from "../schemas.js";
  *   each local code reference it notes the worktree's commit, whether the file was dirty,
  *   a bounded SHA-256 of the file and, when the reference cites `lines`, a SHA-256 of
  *   those lines' text (never the content itself).
- * - {@link checkFreshness} runs at recall/read time for the selected records only, and
- *   labels every reference current / stale / unknown with a reason.
+ * - {@link checkFreshness} runs at recall/read time for the selected records only (on a
+ *   query's page 1, also the records trust compares, in rank order; see `retrieval/trust.ts`),
+ *   and labels every reference current / stale / unknown with a reason.
  *
  * Why these signals, and how much each is trusted:
  * - **The file hash is authoritative when it matches.** Equal bytes mean the observation
@@ -69,9 +70,10 @@ import type { ExternalRef, Freshness } from "../schemas.js";
  * {@link FRESHNESS_LIMITS.totalBytes} hashed bytes per call (searching for cited lines
  * draws on the same budget, and hashes only windows of the cited byte length), files over
  * {@link FRESHNESS_LIMITS.fileBytes} are never read, results are cached per call, and Git
- * runs at most twice per call (one path-limited `git status`, one `cat-file` only when a
+ * runs at most twice per call (one `git status` limited to the paths of references observed
+ * clean, only when there are some, one `cat-file` only when a
  * caller-supplied commit must be checked), plus one working-tree `git status` only when a
- * selected record carries a test run. There is no repository-wide scan otherwise.
+ * checked record carries a test run. There is no repository-wide scan otherwise.
  */
 
 export const FRESHNESS_LIMITS = {
@@ -285,14 +287,16 @@ class Checker {
 
   constructor(worktree: string, subjects: readonly FreshnessSubject[]) {
     this.worktree = worktree;
-    // Resolve every checkable path first so Git runs once for all of them.
+    // Resolve every checkable path first so Git runs once for all of them. Git's state only
+    // serves the clean-at-commit shortcut, which only a reference observed clean can take, so
+    // references that never can (imported, caller-pinned, observed dirty) cost no `git status`.
     const paths = new Set<string>();
     const pinned = new Set<string>();
     let budget: number = FRESHNESS_LIMITS.refsPerCheck;
     for (const subject of subjects) {
       for (const ref of subject.refs) {
         if (!isLocalFile(ref) || budget-- <= 0) continue;
-        const path = worktreePath(worktree, ref.path ?? ref.locator);
+        const path = ref.dirty === false ? worktreePath(worktree, ref.path ?? ref.locator) : null;
         if (path !== null) paths.add(path);
         if (ref.commit !== undefined && ref.observedHash === undefined && ref.dirty === undefined) pinned.add(ref.commit);
       }

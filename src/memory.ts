@@ -89,8 +89,22 @@ import {
 } from "./retrieval/freshness.js";
 import { asIndexLine } from "./retrieval/label.js";
 import { explainRank, parseQuery } from "./retrieval/query.js";
-import { type Candidate, clipToBytes, loadCandidates, PAGE_CANDIDATES, phrasesContained, rankSequence, rebuildSearchIndex, SEQUENCE_CAP, toFtsQuery } from "./retrieval/search.js";
+import {
+  type Candidate,
+  clipToBytes,
+  loadCandidates,
+  loadRanked,
+  PAGE_CANDIDATES,
+  phrasesContained,
+  RANKED_BY,
+  type RankedSequence,
+  rankSequence,
+  rebuildSearchIndex,
+  SEQUENCE_CAP,
+  toFtsQuery,
+} from "./retrieval/search.js";
 import { fitTimeline, sessionNeighbours, type Timeline, timelineLine } from "./retrieval/timeline.js";
+import { orderByTrust, type TrustFacts, type TrustReason } from "./retrieval/trust.js";
 import {
   type Applicability,
   type Attribution,
@@ -210,7 +224,8 @@ export interface PackItem {
   /**
    * Why the item ranked where it did, when more than keyword relevance decided: it contains a
    * quoted phrase or identifier from the query (`exact "rankSequence"`), falls in the time the
-   * query names (`created last week`), or is the newest relevant record for a question about now.
+   * query names (`created last week`), is the newest relevant record for a question about now,
+   * or trust placed it above an equally relevant record, saying what decided (`trusted: current, captured`).
    */
   why?: string;
   attribution: Attribution;
@@ -1467,10 +1482,15 @@ class LocalMemory implements Memory {
     const budget = effectiveBudget(parsed);
 
     return db.transaction((): ContextPack<C, I> => {
+      const head = continued === null ? loadHeadCheckpoint(db, scope.workstreamId) : { row: null, withheld: null };
+      const checkpointRow = head.row;
       let sequence: number[];
       let beyondCap: number;
       // Frozen with the order: a later page explains its items as page 1 ranked them.
       let rankedBy: ReadonlyMap<number, number>;
+      let trusted: ReadonlyMap<number, TrustReason>;
+      // Page 1's freshness check of the records trust compared (and the checkpoint), reused for its labels.
+      let trustChecked: ReadonlyMap<string, RecordFreshness> = new Map();
       if (continued === null) {
         const ranked = rankSequence(db, {
           workstreamId: scope.workstreamId,
@@ -1480,21 +1500,23 @@ class LocalMemory implements Memory {
           window: intent?.window ?? null,
           current: intent?.current ?? false,
         });
-        sequence = ranked.seqs;
+        const trust = match === null ? null : rankByTrust(db, scope, ranked, checkpointRow);
+        sequence = trust?.seqs ?? ranked.seqs;
         beyondCap = ranked.total - ranked.seqs.length;
-        rankedBy = ranked.rankedBy;
+        trusted = trust?.lifted ?? new Map();
+        rankedBy = trust === null ? ranked.rankedBy : withTrustBits(ranked.rankedBy, trust.lifted);
+        trustChecked = trust?.checked ?? trustChecked;
       } else {
         sequence = continued.remaining;
         beyondCap = continued.beyondCap;
         rankedBy = continued.rankedBy;
+        trusted = continued.trusted;
       }
       const whyOf = (row: Candidate): string | undefined => {
         const bits = rankedBy.get(row.seq) ?? 0;
-        return intent === null || bits === 0 ? undefined : explainRank(bits, intent, phrasesContained(row, intent.phrases));
+        return intent === null || bits === 0 ? undefined : explainRank(bits, intent, phrasesContained(row, intent.phrases), trusted.get(row.seq));
       };
       const view = scopeView(db, scope);
-      const head = continued === null ? loadHeadCheckpoint(db, scope.workstreamId) : { row: null, withheld: null };
-      const checkpointRow = head.row;
       const corrections = changesSince(db, scope.workstreamId, this.seenLifecycle);
       const window = sequence.slice(0, PAGE_CANDIDATES);
       const rows = loadCandidates(db, { workstreamId: scope.workstreamId, match, seqs: window });
@@ -1587,6 +1609,7 @@ class LocalMemory implements Memory {
                   remaining: carried,
                   beyondCap: uncarried,
                   rankedBy,
+                  trusted,
                 })
               : null,
           budget: { ...budget, usedBytes: 0, usedTokens: 0 },
@@ -1614,12 +1637,16 @@ class LocalMemory implements Memory {
               itemPackables(groups.length, floorOf),
             );
       const selected = groups.slice(0, selection.consumed).map((group) => group.representative);
-      const checked = checkFreshness(scope.worktree, [
-        ...(checkpointRow === null ? [] : [freshnessSubject(checkpointRow, false)]),
-        ...selected.map((row) => freshnessSubject(row, sources.has(row.id))),
-      ]);
+      // What trust already checked on page 1 is not checked again, unless the check's budget ran
+      // out before one of its references: the label then gets a check of its own, as it always did.
+      const reused = (row: RecordRow): boolean => trustChecked.get(row.id)?.externalRefs.every((ref) => ref.reason !== "check_limit") ?? false;
+      const unchecked = [
+        ...(checkpointRow === null || reused(checkpointRow) ? [] : [freshnessSubject(checkpointRow, false)]),
+        ...selected.filter((row) => !reused(row)).map((row) => freshnessSubject(row, sources.has(row.id))),
+      ];
+      const live = unchecked.length === 0 ? new Map<string, RecordFreshness>() : checkFreshness(scope.worktree, unchecked);
       const freshnessOf = (row: RecordRow): RecordFreshness => {
-        const result = checked.get(row.id);
+        const result = live.get(row.id) ?? trustChecked.get(row.id);
         if (result === undefined) throw new Error(`record ${row.id} was packed without a freshness check`);
         return result;
       };
@@ -1715,6 +1742,68 @@ function itemPackable(
       copies,
     }),
   };
+}
+
+/**
+ * Page 1's trust order (see `retrieval/trust.ts`): the records of every band of two or more are
+ * checked for freshness once, in rank order, so the check's budget goes to the most relevant
+ * first (references past it are unknown / `check_limit`), then reordered by trust inside their
+ * bands. The head checkpoint is checked first in the same call, as the pack's own check does, so
+ * page 1's labels reuse this result instead of checking again. Corroboration counts the distinct
+ * roots stating each claim among these records. Null when no band holds two records: there is
+ * nothing to reorder, and the pack checks freshness exactly as before.
+ */
+function rankByTrust(
+  db: Db,
+  scope: BoundScope,
+  ranked: RankedSequence,
+  checkpointRow: RecordRow | null,
+): { seqs: number[]; lifted: Map<number, TrustReason>; checked: Map<string, RecordFreshness> } | null {
+  const sizes = new Map<number, number>();
+  for (const band of ranked.bands) sizes.set(band, (sizes.get(band) ?? 0) + 1);
+  const compared = ranked.seqs.filter((_seq, i) => (sizes.get(ranked.bands[i] ?? -1) ?? 0) > 1);
+  if (compared.length === 0) return null;
+  const rows = loadRanked(db, compared);
+  const imported = importedFrom(db, rows.map((row) => row.id));
+  const checked = checkFreshness(scope.worktree, [
+    ...(checkpointRow === null ? [] : [freshnessSubject(checkpointRow, false)]),
+    ...rows.map((row) => freshnessSubject(row, imported.has(row.id))),
+  ]);
+  // Roots matter only where a claim is stated more than once: alone, it has one root.
+  const claims = new Map<string, RecordRow[]>();
+  for (const row of rows) {
+    const claim = normalizeClaim(row.body);
+    claims.set(claim, [...(claims.get(claim) ?? []), row]);
+  }
+  const repeated = [...claims.values()].filter((stating) => stating.length > 1).flat();
+  const roots = independentRoots(db, scope.workstreamId, repeated.map((row) => row.id));
+  const claimRoots = new Map<string, Set<string>>();
+  for (const row of repeated) {
+    const claim = normalizeClaim(row.body);
+    claimRoots.set(claim, (claimRoots.get(claim) ?? new Set<string>()).add(rootOf(roots, row.id)));
+  }
+  const facts = new Map(
+    rows.map((row): [number, TrustFacts] => {
+      const fields = recordFields(row);
+      return [
+        row.seq,
+        {
+          freshness: checked.get(row.id)?.freshness ?? "unknown",
+          evidence: fields.testRun?.evidence ?? "none",
+          attribution: fields.attribution,
+          roots: claimRoots.get(normalizeClaim(row.body))?.size ?? 1,
+        },
+      ];
+    }),
+  );
+  return { ...orderByTrust(ranked.seqs, ranked.bands, (seq) => facts.get(seq)), checked };
+}
+
+/** The tiers' reasons plus the trust bit of every record trust lifted. */
+function withTrustBits(rankedBy: ReadonlyMap<number, number>, lifted: ReadonlyMap<number, TrustReason>): Map<number, number> {
+  const bits = new Map(rankedBy);
+  for (const seq of lifted.keys()) bits.set(seq, (bits.get(seq) ?? 0) | RANKED_BY.trust);
+  return bits;
 }
 
 /** What freshness checks need of a stored record: its references and any test run it reports. */

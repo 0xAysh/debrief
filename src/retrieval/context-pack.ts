@@ -1,7 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { DebriefError } from "../errors.js";
 import { estimateTokens } from "../schemas.js";
-import { clipToBytes } from "./search.js";
+import { clipToBytes, RANKED_BY } from "./search.js";
+import { decodeTrust, encodeTrust, type TrustReason } from "./trust.js";
 
 /**
  * Budgeted packing and continuation tokens for recall.
@@ -19,7 +20,8 @@ export const ITEM_EXCERPT_BYTES = 1_000;
 
 /**
  * A continuation may take at most this fraction (1/n) of the budget. Tokens carry their
- * sequence (≤ 500 seqs, ~2.5 KB; a character more per seq when they carry rank reasons) and
+ * sequence (≤ 500 seqs, ~2.5 KB; a character more per seq when they carry rank reasons, and two
+ * more per record trust lifted) and
  * are paid for in the agent's context like any other bytes, so a small budget carries a
  * shorter sequence rather than a token bigger than its entries.
  */
@@ -36,6 +38,8 @@ export interface ContinuationState {
   beyondCap: number;
   /** Why page 1 ranked each remaining record where it did (`RANKED_BY` bits); absent seqs had none. */
   rankedBy: ReadonlyMap<number, number>;
+  /** What decided, on page 1, the place of each remaining record trust lifted (exactly those with the `RANKED_BY.trust` bit). */
+  trusted: ReadonlyMap<number, TrustReason>;
 }
 
 /**
@@ -49,6 +53,11 @@ export interface ContinuationState {
 export function sealContinuation(secret: Buffer, state: ContinuationState): string {
   // One base-36 digit per remaining seq, and only when some record has a reason, so a plain query's token is unchanged.
   const reasons = state.remaining.some((seq) => state.rankedBy.has(seq)) ? state.remaining.map((seq) => (state.rankedBy.get(seq) ?? 0).toString(36)).join("") : null;
+  // Two digits per record trust lifted, in sequence order; which records they belong to is in `w`.
+  const trust = state.remaining.flatMap((seq) => {
+    const reason = state.trusted.get(seq);
+    return reason === undefined ? [] : [encodeTrust(reason)];
+  });
   const payload = Buffer.from(
     JSON.stringify({
       v: 3,
@@ -57,6 +66,7 @@ export function sealContinuation(secret: Buffer, state: ContinuationState): stri
       r: state.remaining.map((seq) => seq.toString(36)).join(","),
       x: state.beyondCap,
       ...(reasons === null ? {} : { w: reasons }),
+      ...(trust.length === 0 ? {} : { t: trust.join("") }),
     }),
   ).toString("base64url");
   return `${payload}.${sign(secret, state, payload)}`;
@@ -80,13 +90,20 @@ export function openContinuation(secret: Buffer, token: string, scope: { workspa
     r: string;
     x: number;
     w?: string;
+    t?: string;
   };
   if (state.v !== 3) throw invalid("unsupported version");
   const remaining = state.r === "" ? [] : state.r.split(",").map((seq) => parseInt(seq, 36));
   const rankedBy = new Map<number, number>();
+  const trusted = new Map<number, TrustReason>();
+  let trust = 0;
   remaining.forEach((seq, i) => {
     const bits = parseInt(state.w?.[i] ?? "0", 36);
     if (bits > 0) rankedBy.set(seq, bits);
+    if ((bits & RANKED_BY.trust) === 0) return;
+    const reason = decodeTrust(state.t?.slice(trust, trust + 2) ?? "");
+    trust += 2;
+    if (reason !== null) trusted.set(seq, reason);
   });
   return {
     workspaceId: scope.workspaceId,
@@ -96,6 +113,7 @@ export function openContinuation(secret: Buffer, token: string, scope: { workspa
     remaining,
     beyondCap: state.x,
     rankedBy,
+    trusted,
   };
 }
 

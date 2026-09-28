@@ -175,14 +175,17 @@ export interface RankRequest {
  */
 const RELEVANT_FRACTION = 0.5;
 /**
- * The same for "now", which reorders only records about as relevant as the best: with a
- * looser band, a newer record on a neighbouring topic displaced the answer (LongMemEval_S
- * knowledge-update R@1 fell from 97.2 to 90.3 at 0.5; 0.9 matched plain bm25).
+ * How close two records must be to count as about equally relevant: bm25 at least this fraction
+ * of the better one's. Anything that reorders by something other than relevance does so only
+ * this close: "now" puts the newest of the records close to the best first, and trust reorders
+ * inside bands this close to their leader (see {@link rankSequence}). With a looser band a newer
+ * record on a neighbouring topic displaced the answer (#58: LongMemEval_S knowledge-update R@1
+ * fell from 97.2 to 90.3 at 0.5; 0.9 matched plain bm25).
  */
-const CURRENT_FRACTION = 0.9;
+const CLOSE_FRACTION = 0.9;
 
 /** Why a record ranked where it did beyond bm25, as bits (a continuation carries them compactly). */
-export const RANKED_BY = { phrase: 1, window: 2, newest: 4 } as const;
+export const RANKED_BY = { phrase: 1, window: 2, newest: 4, trust: 8 } as const;
 
 /**
  * The frozen order of a recall sequence: record `seq`s in a total, deterministic order
@@ -198,11 +201,18 @@ export const RANKED_BY = { phrase: 1, window: 2, newest: 4 } as const;
  * 1. records containing more of its phrases verbatim (case-insensitively, in the title, body
  *    or reference locators);
  * 2. relevant records (see {@link RELEVANT_FRACTION}) created inside its time window;
- * 3. when it asks about now, records close to the best (see {@link CURRENT_FRACTION}) newest first.
+ * 3. when it asks about now, records close to the best (see {@link CLOSE_FRACTION}) newest first.
  *
  * `rankedBy` holds the {@link RANKED_BY} bits of each sequenced record a tier lifted.
+ *
+ * `bands` groups the records that are about equally relevant, for trust (`orderByTrust`) to
+ * reorder, one band id per sequenced record: walking each tier's records in bm25 order, a band
+ * ends where a record's bm25 is no longer {@link CLOSE_FRACTION} of its first record's. So trust
+ * decides among records that answer about as well, all the way down the list, and never lifts a
+ * weaker match over a clearly better one. Records the "now" tier ordered newest first, and every
+ * record of a recall without a query (a recent list), are bands of their own: nothing reorders them.
  */
-export function rankSequence(db: Db, request: RankRequest): { seqs: number[]; total: number; rankedBy: Map<number, number> } {
+export function rankSequence(db: Db, request: RankRequest): RankedSequence {
   const phrases = request.phrases ?? [];
   const window = request.window ?? null;
   const current = request.current ?? false;
@@ -230,30 +240,60 @@ export function rankSequence(db: Db, request: RankRequest): { seqs: number[]; to
   const { total } = db.prepare(`SELECT count(*) AS total FROM (${ranked})`).get(params) as { total: number };
   // A query asking nothing beyond its words runs the plain statement, so it ranks exactly as it always did.
   if (phrases.length === 0 && window === null && !current) {
-    const rows = db.prepare(`SELECT seq FROM (${ranked}) ORDER BY rank, created_at DESC, seq DESC LIMIT $cap`).all(params) as { seq: number }[];
-    return { seqs: rows.map((row) => row.seq), total, rankedBy: new Map() };
+    const rows = db.prepare(`SELECT seq, rank FROM (${ranked}) ORDER BY rank, created_at DESC, seq DESC LIMIT $cap`).all(params) as { seq: number; rank: number }[];
+    const bands = relevanceBands(rows.map((row) => ({ rank: row.rank, tier: request.match === null ? null : "" })));
+    return { seqs: rows.map((row) => row.seq), total, rankedBy: new Map(), bands };
   }
   const rows = db
     .prepare(
-      `SELECT seq, verbatim > 0 AS phrase, relevant AND in_window AS windowed, close AND ${current ? 1 : 0} AS newest FROM (
+      `SELECT seq, rank, verbatim, verbatim > 0 AS phrase, relevant AND in_window AS windowed, close AND ${current ? 1 : 0} AS newest FROM (
          SELECT q.seq, q.rank, q.created_at,
            ${phrases.length === 0 ? "0" : `(SELECT count(*) FROM json_each($phrases) p WHERE instr(${VERBATIM_TEXT_SQL}, lower(p.value)) > 0)`} AS verbatim,
            ${window === null ? "0" : IN_WINDOW_SQL} AS in_window,
            -- bm25 is negative, lower is better: within RELEVANT_FRACTION of the best is at most that fraction of it.
            q.rank <= ${RELEVANT_FRACTION} * min(q.rank) OVER () AS relevant,
-           q.rank <= ${CURRENT_FRACTION} * min(q.rank) OVER () AS close
+           q.rank <= ${CLOSE_FRACTION} * min(q.rank) OVER () AS close
          FROM (${ranked}) q JOIN records r ON r.seq = q.seq
        )
        ORDER BY verbatim DESC, windowed DESC, newest DESC, CASE WHEN newest THEN created_at END DESC, rank, created_at DESC, seq DESC
        LIMIT $cap`,
     )
-    .all(params) as { seq: number; phrase: number; windowed: number; newest: number }[];
+    .all(params) as { seq: number; rank: number; verbatim: number; phrase: number; windowed: number; newest: number }[];
   const rankedBy = new Map<number, number>();
   for (const row of rows) {
     const bits = (row.phrase ? RANKED_BY.phrase : 0) | (row.windowed ? RANKED_BY.window : 0) | (row.newest ? RANKED_BY.newest : 0);
     if (bits !== 0) rankedBy.set(row.seq, bits);
   }
-  return { seqs: rows.map((row) => row.seq), total, rankedBy };
+  const tiers = rows.map((row) => ({ rank: row.rank, tier: request.match === null || row.newest ? null : `${row.verbatim}/${row.windowed}` }));
+  return { seqs: rows.map((row) => row.seq), total, rankedBy, bands: relevanceBands(tiers) };
+}
+
+export interface RankedSequence {
+  seqs: number[];
+  total: number;
+  rankedBy: Map<number, number>;
+  /** The band of each record in `seqs` (see {@link rankSequence}); band ids ascend along the sequence. */
+  bands: number[];
+}
+
+/**
+ * Greedy relevance bands over records in rank order: a band starts at a new tier, or where a
+ * record's bm25 falls short of {@link CLOSE_FRACTION} of the band's first (best) record's. bm25
+ * is negative and lower is better, so "at least that fraction" is `rank <= fraction * leader`, as
+ * in the "now" tier. A record with a null tier is a band of its own.
+ */
+function relevanceBands(rows: readonly { rank: number; tier: string | null }[]): number[] {
+  let band = -1;
+  let leader = 0;
+  let tier: string | null = null;
+  return rows.map((row) => {
+    if (band === -1 || row.tier === null || row.tier !== tier || row.rank > CLOSE_FRACTION * leader) {
+      band++;
+      leader = row.rank;
+      tier = row.tier;
+    }
+    return band;
+  });
 }
 
 /**
@@ -285,6 +325,19 @@ export function loadCandidates(db: Db, request: { workstreamId: string; match: s
        WHERE ${VISIBLE_SQL} ORDER BY w.pos`,
     )
     .all(params) as Candidate[];
+}
+
+/**
+ * The records with the given seqs, in the given order, as stored. Unlike {@link loadCandidates} it
+ * re-applies no eligibility: it is for records {@link rankSequence} returned in this same
+ * transaction. The seq list drives the lookup (primary key), so hundreds of seqs cost no scan of
+ * the workstream, which is what joining them against eligibility's scope index did.
+ */
+export function loadRanked(db: Db, seqs: readonly number[]): RecordRow[] {
+  if (seqs.length === 0) return [];
+  return db
+    .prepare(`SELECT r.* FROM json_each(?) w CROSS JOIN records r ON r.seq = CAST(w.value AS INTEGER) ORDER BY w.key`)
+    .all(JSON.stringify(seqs)) as RecordRow[];
 }
 
 function splitText(text: string, maxBytes: number): string[] {
