@@ -88,6 +88,7 @@ import {
   worktreeFingerprint,
 } from "./retrieval/freshness.js";
 import { asIndexLine } from "./retrieval/label.js";
+import { fitTimeline, sessionNeighbours, type Timeline, timelineLine } from "./retrieval/timeline.js";
 import { explainRank, parseQuery } from "./retrieval/query.js";
 import { type Candidate, clipToBytes, loadCandidates, PAGE_CANDIDATES, phrasesContained, rankSequence, rebuildSearchIndex, SEQUENCE_CAP, toFtsQuery } from "./retrieval/search.js";
 import {
@@ -395,10 +396,18 @@ export interface ReadResult {
   source: ImportedSource | null;
   contentHash: string;
   createdAt: string;
-  /** The budget applies to `body` only. */
+  /**
+   * The budget covers `body` and, with `around`, the timeline's lines: `usedBytes` is their UTF-8
+   * length. The timeline fills it first (nearest lines first); the body gets the rest.
+   */
   budget: { maxTokens: number; maxBytes: number; usedTokens: number; usedBytes: number };
   /** As in a pack: memory in scope that changed since this session last heard. */
   corrections: CorrectionNotice | null;
+  /**
+   * Only with `around`: this record's session just before and after it, as index lines (see
+   * src/retrieval/timeline.ts). `omitted` counts neighbours whose lines the budget left out.
+   */
+  timeline?: Timeline;
 }
 
 /** One record as `memory_manage` inspect shows it, whatever its lifecycle. */
@@ -994,15 +1003,27 @@ class LocalMemory implements Memory {
         }
         const offset = isLowSurrogate(row.body.charCodeAt(parsed.offset)) && isHighSurrogate(row.body.charCodeAt(parsed.offset - 1)) ? parsed.offset - 1 : parsed.offset;
         const budget = effectiveBudget(parsed);
-        const body = clipToBytes(row.body.slice(offset), budget.maxBytes);
+        const neighbours = parsed.around === undefined ? null : sessionNeighbours(db, scope.workstreamId, row, parsed.around);
+        const others = neighbours === null ? [] : [...neighbours.before, ...neighbours.after];
+        const sources = importedFrom(db, [row.id, ...others.map((other) => other.id)]);
+        // One check for the record and its neighbours: each timeline line carries live freshness too.
+        const freshness = checkFreshness(scope.worktree, [row, ...others].map((subject) => freshnessSubject(subject, sources.has(subject.id))));
+        const lineOf = (other: RecordRow): string => {
+          const checked = freshness.get(other.id);
+          if (checked === undefined) throw new Error(`timeline record ${other.id} was not freshness-checked`);
+          return timelineLine(other, checked.freshness, sources.get(other.id) ?? null);
+        };
+        // The timeline fills the budget first; the body takes what it leaves and continues via nextOffset.
+        const fitted = neighbours === null ? null : fitTimeline({ before: neighbours.before.map(lineOf), after: neighbours.after.map(lineOf) }, budget.maxBytes);
+        const body = clipToBytes(row.body.slice(offset), budget.maxBytes - (fitted?.usedBytes ?? 0));
         const end = offset + body.length;
         const nextOffset = end < row.body.length ? end : null;
         const revision = db.prepare("SELECT revision FROM checkpoints WHERE record_id = ?").get(row.id) as { revision: number } | undefined;
         const corrections = changesSince(db, scope.workstreamId, this.seenLifecycle);
         if (corrections !== null) this.seenLifecycle = Math.max(this.seenLifecycle, corrections.watermark);
-        const source = importedFrom(db, [row.id]).get(row.id) ?? null;
+        const source = sources.get(row.id) ?? null;
         const fields = recordFields(row);
-        const checked = checkFreshness(scope.worktree, [freshnessSubject(row, source !== null)]).get(row.id);
+        const checked = freshness.get(row.id);
         return {
           recordId: row.id,
           title: row.title,
@@ -1024,8 +1045,9 @@ class LocalMemory implements Memory {
           source,
           contentHash: row.content_hash,
           createdAt: row.created_at,
-          budget: { ...budget, ...usage(Buffer.byteLength(body, "utf8")) },
+          budget: { ...budget, ...usage(Buffer.byteLength(body, "utf8") + (fitted?.usedBytes ?? 0)) },
           corrections,
+          ...(fitted === null ? {} : { timeline: fitted.timeline }),
         };
       })();
     });
