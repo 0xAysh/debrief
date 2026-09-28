@@ -60,7 +60,7 @@ sequenceDiagram
 | [Memory module interface](#memory-module-interface) | every method and its contract |
 | [Scope](#scope) | repository → workspace, worktree → workstream, ambiguity |
 | [Storage and invariants](#storage-and-invariants) | tables, eligibility, what reads what |
-| [Transaction ordering](#transaction-ordering) | writes, reads, budgets, continuations, durability |
+| [Transaction ordering](#transaction-ordering) | writes, reads, ranking, budgets, continuations, durability |
 | [Recall applicability](#recall-applicability) | freshness, test results, independent roots |
 | [Transcript import](#transcript-import) | consent, adapters, Claude Code and Codex formats, privacy, batches, scope |
 | [Memory lifecycle](#memory-lifecycle) | correct, supersede, retract, restore, forget; taints; the ledger |
@@ -89,7 +89,7 @@ The adapters contain no memory policy. Host differences outside the transcript f
 | `record({kind, body, attribution, …})` | Appends one record with its links and search chunks; `operationKey` makes it idempotent. `kind: "preference"` stores nothing: it returns a question for the user (see [Preferences](#preferences)) |
 | `settlePreference({candidateId, outcome})` | What happened when a preference question was put to the user directly: their answer, `cancelled`, or `unavailable`. Transports call it; it is not an agent tool |
 | `checkpoint({expectedRevision, goal, status, …})` | Appends revision `expectedRevision + 1` only if the head still equals `expectedRevision` |
-| `recall({query?, kinds?, maxTokens?, maxBytes?, continuation?})` | A bounded pack: head checkpoint first, then ranked eligible items, each with live freshness, provenance, independent root and corroboration (see [Recall applicability](#recall-applicability)), plus `corrections` when memory in scope changed since this session's previous pack |
+| `recall({query?, kinds?, maxTokens?, maxBytes?, continuation?})` | A bounded pack: head checkpoint first, then ranked eligible items (see [Ranking](#transaction-ordering)), each with a `why` when more than keyword relevance placed it, live freshness, provenance, independent root and corroboration (see [Recall applicability](#recall-applicability)), plus `corrections` when memory in scope changed since this session's previous pack |
 | `read({recordId, maxTokens?, maxBytes?, offset?})` | A slice of one visible record's body, with its visible links, live freshness and independent root. Offsets count UTF-16 code units; an offset inside a surrogate pair snaps back to that code point's start. A record that is no longer current is `not_found` with its `lifecycle`, `replacementId` or `taint` |
 | `manage({v?, action, recordId?, recordIds?, confirmToken?, body?, reason?, attribution?, operationKey?})` | `inspect` \| `correct` \| `supersede` \| `retract` \| `restore` one in-scope claim, or `forget_preview` then `forget` (see [Memory lifecycle](#memory-lifecycle)). Each change is one transaction; the result lists what it took out of (or back into) current guidance |
 | `status()` | Runtime, storage, recent `hookFailures`, the scope bootstrap *would* resolve (`workstreamId`, `resolvedBy`, `taskKey`, or the `ambiguity` it would ask), and counts. It runs the same resolution rules as bootstrap without their writes (`previewWorkstream`); after a repository move it reports no resolution until bootstrap re-points the bindings, and none while a schema migration is pending (the next bootstrap migrates). Strictly read-only: no registry entry, rows or migrations. Never throws for scope or storage problems |
@@ -150,7 +150,7 @@ The agent shows `question`, then calls `bootstrap({workstream})`. That choice be
 | `checkpoints` | Revision history | `PRIMARY KEY (workstream_id, revision)` backs the CAS |
 | `operations` | Idempotency keys | The hash covers operation + workstream + normalised input |
 | `worktree_bindings`, `sessions` | Scope binding | One workstream per worktree path; `sessions.workstream_id NULL` (v4) = a workspace-level session awaiting a choice |
-| `chunks`, `chunks_fts` | **Derived** search projection | A pure function of `records`; rebuildable |
+| `chunks`, `chunks_fts` | **Derived** search projection: chunk text, and (v7) `terms`, the words inside its camelCase identifiers | A pure function of `records`; rebuildable |
 | `sources` | One row per imported transcript | `records.source_id` points here |
 | `preference_candidates` (v6) | Preference questions the user has not answered | Never records: nothing here is recalled, read or injected |
 | `transcript_sessions`, `private_transcripts` (v6) | Which sessions a transcript's Debrief output named; transcripts never imported again | No foreign keys: markers outlive what they name |
@@ -180,9 +180,31 @@ Every write is one `BEGIN IMMEDIATE` transaction, so it never upgrades from read
 
 **Reads.** Recall reads in one deferred transaction, so the head, candidates and citations share a snapshot. Scope and eligibility sit in the WHERE clause, ahead of bm25 ranking. Ties are broken by `created_at DESC, seq DESC`. Query words are individually quoted, so FTS syntax cannot be injected.
 
+**Ranking** (`src/retrieval/query.ts`, `rankSequence`) reads what a query asks for beyond its words, with fixed rules and no model, and applies it as tiers ahead of bm25:
+
+```text
+query ─ parseQuery(query, now) ─┬─ words ───────── toFtsQuery ── chunks_fts MATCH (text, terms) ── bm25 per record
+                                ├─ phrases ─┐
+                                ├─ window ──┼─ ORDER BY  1. verbatim phrases contained (more first)
+                                └─ now? ────┘            2. relevant AND created in the window
+                                                         3. relevant, newest first (a question about now)
+                                                         4. bm25, created_at DESC, seq DESC  (the order before #52)
+relevant = bm25 within half of the best record's
+```
+
+| The query has | Example | Effect | `why` |
+|---|---|---|---|
+| a camelCase identifier | `rankSequence` | also searches its words (`rank`, `sequence`), which the `terms` column matches in records that only say `rankSequence`; lifts records containing it verbatim | `exact "rankSequence"` |
+| snake_case, a path or file name | `rank_sequence`, `retrieval/freshness`, `freshness.ts` | unicode61 already splits these; lifts records containing it verbatim | `exact "freshness.ts"` |
+| a quoted phrase | `"exponential backoff"` | lifts records containing it verbatim (ASCII case-folded, in the title, body or reference locators) | `exact "exponential backoff"` |
+| a time | `yesterday`, `last week`, `in August`, `before 2026-09-01`, `since …`, `last 3 days` | a `created_at` window in local time relative to now; relevant records inside it come first, the rest still follow; the expression and question filler are not searched | `created last week` |
+| a question about now | `now`, `currently`, `latest`, `these days` | relevant records newest first | `newest first: asks about now` |
+
+A query with none of these runs the plain statement, so it ranks exactly as before. Two caveats. A plain word that also occurs inside an identifier (`index` in `rebuildSearchIndex`) now finds that record too, and records with identifiers are a little longer to bm25, so orders in such workspaces can shift slightly. Time is a boost, never a filter: a sense of when something happened is often a little off, and a filter would lose the answer. Recall's clock is `openMemory({ now })` (the system clock by default; tests set it, and `record` stamps with it too).
+
 **Budgets.** The budget covers the whole pack as the client receives it: the UTF-8 length of its JSON, including `scope` (and any ambiguity question), omissions, notice, continuation and the `budget` object. `usedBytes` is that exact length, and the effective budget is `min(maxBytes, 4 × maxTokens)`. Tokens are estimated as `ceil(bytes / 4)`. The bootstrap pack is `recall({ maxTokens, maxBytes })` and has the same budget (2,000 tokens / 8,000 bytes by default; bootstrap accepts both, validated as for recall). The envelope is measured first; the continuation may take at most a quarter of the budget, and entries fill the rest (the entry that leads a page may use the continuation's share, which then carries less). Each entry is measured with its fixed metadata (warning, per-reference freshness, citations, provenance, copies) before its body, so under pressure the body is cut, and a cut body ends with an explicit `[… cut by Debrief …; memory_read …]` marker. Warnings and citations are never dropped: an entry whose metadata alone exceeds what the envelope leaves is left out and listed by id in `omissions` (`exceeds_budget`), at most 5 per page (fewer when the budget cannot also hold the continuation), the rest on later pages; what did not fit is counted as `budget` and reachable through `continuation`. The guarantee: every pack is at most the effective budget, with one exception. A budget that cannot hold the envelope (scope is never cut), or the envelope with the one oversized id a page must list to advance, gets a "starved" pack: no entries, no continuation, every match counted as `candidate_limit`, and a notice saying the budget is too small. That pack is the envelope alone and may be larger than the budget. Any budget that holds it makes progress: each page returns an entry or reports one as `exceeds_budget`, and what its continuation cannot carry is counted as `candidate_limit`.
 
-**Continuations** freeze the sequence. Page 1 ranks up to 500 eligible records, and the token carries the unreturned `seq`s in rank order, as many as fit in its share of the budget. The token is HMAC-signed with a per-workspace secret over the workspace, workstream and payload (so it need not carry the ids) and is bound to the query and kinds. Later pages load records by `seq` and re-check scope and eligibility, without re-ranking. So writes between pages, which shift bm25 statistics, can neither reorder nor inject records, and no record a continuation carries is skipped or repeated. Matches beyond the cap, and those a small budget's continuation cannot carry, are reported as `candidate_limit`. This design keeps recall read-only, with no server-side snapshot table to expire.
+**Continuations** freeze the sequence. Page 1 ranks up to 500 eligible records, and the token carries the unreturned `seq`s in rank order, as many as fit in its share of the budget. The token is HMAC-signed with a per-workspace secret over the workspace, workstream and payload (so it need not carry the ids) and is bound to the query and kinds. Later pages load records by `seq` and re-check scope and eligibility, without re-ranking; the token also carries each record's ranking reasons (one digit per `seq`, only when a tier fired), so a later page, even one read on another day, says `why` as page 1 ranked it. So writes between pages, which shift bm25 statistics, can neither reorder nor inject records, and no record a continuation carries is skipped or repeated. Matches beyond the cap, and those a small budget's continuation cannot carry, are reported as `candidate_limit`. This design keeps recall read-only, with no server-side snapshot table to expire.
 
 **Ranking caveat.** bm25's corpus statistics (IDF, average length) are computed by FTS5 over *all* chunks, including retracted and other-workstream records. Ineligible rows can therefore change scores, but never eligibility: they are filtered in the WHERE clause and cannot be returned, cited or counted.
 
@@ -513,7 +535,7 @@ At open, Debrief requires embedded SQLite ≥ 3.51.3, the release with the fix f
 `src/storage/migrations/` holds an append-only ordered list, and `PRAGMA user_version` is the applied count:
 
 - Each step runs in its own `BEGIN IMMEDIATE` transaction together with the version bump, so a failed step leaves the previous version intact.
-- Steps run with foreign keys off, as SQLite's documented table-rebuild procedure requires. v4 rebuilds `sessions` to make `workstream_id` nullable. v5 adds `records.lifecycle` and the `taints`, `lifecycle_events` and `suppressions` tables. v6 adds `preference_candidates`, `sessions.private`, `transcript_sessions` and `private_transcripts`. Each step runs `foreign_key_check` before committing, and rolls back on any violation.
+- Steps run with foreign keys off, as SQLite's documented table-rebuild procedure requires. v4 rebuilds `sessions` to make `workstream_id` nullable. v5 adds `records.lifecycle` and the `taints`, `lifecycle_events` and `suppressions` tables. v6 adds `preference_candidates`, `sessions.private`, `transcript_sessions` and `private_transcripts`. v7 adds `chunks.terms`, recreates `chunks_fts` over `text` and `terms`, and regenerates the projection with the code `diag reindex` runs (a step may be a function when SQL cannot compute it). Each step runs `foreign_key_check` before committing, and rolls back on any violation.
 - Concurrent openers serialise, and the second finds nothing to do.
 - A database newer than the build fails closed before any pragma changes it.
 - A shipped migration is never edited.
