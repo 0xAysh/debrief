@@ -10,6 +10,10 @@
 - **Trust.** Among memories that answer a query about equally well, the one that can be trusted more comes first: current above unknown above stale, a test run Debrief captured above one the agent only reported, what was observed or said by the user above the agent's inference, and a claim several independent sources make above one made once (copies never count). Relevance still leads: a stale memory that answers the question better, or is the only answer, still comes back, labelled. Recall without a query (the recent list, session start) is not reordered, and later pages keep the first page's order.
 - **Why.** A recalled item says, in a short `why`, when one of these rules placed it (`trusted: current, captured`). Queries without identifiers, quotes or time words, among memories trust cannot tell apart, rank as before.
 
+### Faster recall
+
+- Independent roots are looked up by record instead of by scanning every record in scope, and a freshness check runs `git status` only for references that can use it (never for imported ones). Together they more than pay for trust ranking: a first page with it is faster than one without it was.
+
 ### Compact recall
 
 - **`memory_recall` with `mode: "compact"`** returns one line per hit (id, date, kind, attribution, host, freshness and a short excerpt), several times as many hits per budget as a full pack. The agent surveys the index, then reads the few records that matter with `memory_read`. Full packs stay the default.
