@@ -76,6 +76,7 @@ import {
   sealContinuation,
   usage,
 } from "./retrieval/context-pack.js";
+import { asIndexLine } from "./retrieval/label.js";
 import { eligibilityOf, type Lifecycle, requireVisibleRecord, type RecordRow, type Taint } from "./retrieval/eligibility.js";
 import {
   captureObservations,
@@ -286,11 +287,11 @@ export interface Omission {
   recordIds?: string[];
 }
 
-export interface ContextPack {
+export interface ContextPack<C = PackCheckpoint, I = PackItem> {
   scope: Scope;
   /** The head checkpoint, first page only; null when none exists or on continuation pages. */
-  checkpoint: PackCheckpoint | null;
-  items: PackItem[];
+  checkpoint: C | null;
+  items: I[];
   omissions: Omission[];
   /** True when eligible content was left out of this pack. */
   truncated: boolean;
@@ -312,6 +313,12 @@ export interface ContextPack {
    */
   corrections: CorrectionNotice | null;
 }
+
+/**
+ * `recall({ mode: "compact" })`: the same pack (sequence, budget, continuation, omissions, notice),
+ * with each entry as one index line (see `asIndexLine` in src/retrieval/label.ts).
+ */
+export type CompactPack = ContextPack<string, string>;
 
 export interface BootstrapResult {
   scope: Scope;
@@ -625,8 +632,12 @@ export interface Memory {
   settlePreference(input: { candidateId: string; reply: HostReply }): PreferenceQuestion;
   /** Publishes the next checkpoint revision iff the head is still `expectedRevision`. */
   checkpoint(input: CheckpointInput): CheckpointResult;
-  /** Returns a bounded, cited context pack: head checkpoint first, then ranked eligible records. */
-  recall(input?: RecallInput): ContextPack;
+  /**
+   * Returns a bounded, cited context pack: head checkpoint first, then ranked eligible records.
+   * With `mode: "compact"`, one index line per entry instead; a continuation serves either mode.
+   */
+  recall(input?: RecallInput & { mode?: "full" }): ContextPack;
+  recall(input: RecallInput & { mode: "compact" }): CompactPack;
   /** Returns one visible record's body slice within a budget, plus its in-scope links. */
   read(input: ReadInput): ReadResult;
   /**
@@ -744,7 +755,7 @@ class LocalMemory implements Memory {
         created: { workspace: location.isNew, workstream: scope.createdWorkstream },
         runtime: { sqliteVersion: runtime.sqliteVersion, fts5: runtime.fts5, schemaVersion: SCHEMA_VERSION },
         import: imported,
-        context: this.pack(db, scope, parse(RecallInput, { ...(parsed.maxTokens === undefined ? {} : { maxTokens: parsed.maxTokens }), ...(parsed.maxBytes === undefined ? {} : { maxBytes: parsed.maxBytes }) })),
+        context: this.pack(db, scope, parse(RecallInput, { ...(parsed.maxTokens === undefined ? {} : { maxTokens: parsed.maxTokens }), ...(parsed.maxBytes === undefined ? {} : { maxBytes: parsed.maxBytes }) }), FULL_ENTRIES),
       };
     });
   }
@@ -894,7 +905,7 @@ class LocalMemory implements Memory {
         const { db, scope, location } = this.bind();
         // No pending questions: re-asking one marks it asked in this session, and a sub-agent cannot ask the user.
         const preferences = preferenceBlock(this.preferenceStores(db, scope), []);
-        const pack = this.pack(db, scope, parse(RecallInput, { maxBytes: START_PACK_BYTES }));
+        const pack = this.pack(db, scope, parse(RecallInput, { maxBytes: START_PACK_BYTES }), FULL_ENTRIES);
         return renderSubagentStart({ scope: scopeView(db, scope), pack, preferences, newWorkspace: location.isNew, now: new Date() });
       } catch (error) {
         if (!(error instanceof DebriefError)) throw error;
@@ -960,11 +971,13 @@ class LocalMemory implements Memory {
     });
   }
 
-  recall(input: RecallInput = {}): ContextPack {
+  recall(input?: RecallInput & { mode?: "full" }): ContextPack;
+  recall(input: RecallInput & { mode: "compact" }): CompactPack;
+  recall(input: RecallInput = {}): ContextPack | CompactPack {
     return this.guard(() => {
       const parsed = parse(RecallInput, input);
       const { db, scope } = this.bind();
-      return this.pack(db, scope, parsed);
+      return parsed.mode === "compact" ? this.pack(db, scope, parsed, INDEX_ENTRIES) : this.pack(db, scope, parsed, FULL_ENTRIES);
     });
   }
 
@@ -1414,7 +1427,7 @@ class LocalMemory implements Memory {
    * scope and eligibility, so concurrent writes (which shift bm25 statistics) can neither
    * reorder nor inject records into an in-flight sequence.
    */
-  private pack(db: Db, scope: BoundScope, parsed: z.output<typeof RecallInput>): ContextPack {
+  private pack<C, I>(db: Db, scope: BoundScope, parsed: z.output<typeof RecallInput>, entries: Entries<C, I>): ContextPack<C, I> {
     const kinds = parsed.kinds === undefined ? null : [...new Set(parsed.kinds)].sort();
     let continued: ContinuationState | null = null;
     if (parsed.continuation !== undefined) {
@@ -1431,7 +1444,7 @@ class LocalMemory implements Memory {
     const match = intent === null || intent.words === null ? null : toFtsQuery(intent.words);
     const budget = effectiveBudget(parsed);
 
-    return db.transaction((): ContextPack => {
+    return db.transaction((): ContextPack<C, I> => {
       let sequence: number[];
       let beyondCap: number;
       // Frozen with the order: a later page explains its items as page 1 ranked them.
@@ -1473,10 +1486,10 @@ class LocalMemory implements Memory {
         (a, b) => a.created_at < b.created_at || (a.created_at === b.created_at && a.seq < b.seq),
       );
 
-      const checkpointPackable = (freshness: RecordFreshness): Packable<PackCheckpoint> | null =>
+      const checkpointPackable = (freshness: RecordFreshness): Packable<C> | null =>
         checkpointRow === null
           ? null
-          : {
+          : entries.checkpoint({
               recordId: checkpointRow.id,
               source: checkpointRow.body,
               maxExcerptBytes: LIMITS.bodyBytes,
@@ -1493,20 +1506,20 @@ class LocalMemory implements Memory {
                 sessionId: checkpointRow.session_id,
                 createdAt: checkpointRow.created_at,
               }),
-            };
-      const itemPackables = (count: number, freshnessOf: (row: Candidate) => RecordFreshness): Packable<PackItem>[] =>
-        groups.slice(0, count).map((group) => itemPackable(group, freshnessOf(group.representative), citations, sources, roots, whyOf(group.representative)));
+            });
+      const itemPackables = (count: number, freshnessOf: (row: Candidate) => RecordFreshness): Packable<I>[] =>
+        groups.slice(0, count).map((group) => entries.item(itemPackable(group, freshnessOf(group.representative), citations, sources, roots, whyOf(group.representative))));
 
       // Resume at the first unconsumed group. Copies folded into a returned item leave the
       // sequence with it; records dropped as ineligible leave it too.
       const loaded = new Set(rows.map((row) => row.seq));
       const windowed = new Set(window);
-      const remainingAfter = (page: PackedPage<PackCheckpoint, PackItem>): number[] => {
+      const remainingAfter = (page: PackedPage<C, I>): number[] => {
         const consumed = new Set(groups.slice(0, page.consumed).flatMap((group) => [group.representative, ...group.copies].map((row) => row.seq)));
         return sequence.filter((seq) => (windowed.has(seq) ? loaded.has(seq) && !consumed.has(seq) : true));
       };
       // The whole pack for a page: the budget covers all of it (see context-pack.ts).
-      const assemble = (page: PackedPage<PackCheckpoint, PackItem>, carry: number, starved: boolean): ContextPack => {
+      const assemble = (page: PackedPage<C, I>, carry: number, starved: boolean): ContextPack<C, I> => {
         const remaining = remainingAfter(page);
         const carried = remaining.slice(0, carry);
         const uncarried = beyondCap + remaining.length - carried.length;
@@ -1514,7 +1527,7 @@ class LocalMemory implements Memory {
         if (page.oversized.length > 0) omissions.push({ reason: "exceeds_budget", count: page.oversized.length, recordIds: page.oversized });
         if (carried.length > 0) omissions.push({ reason: "budget", count: carried.length });
         if (uncarried > 0) omissions.push({ reason: "candidate_limit", count: uncarried });
-        const truncated = omissions.length > 0 || page.checkpoint?.truncated === true;
+        const truncated = omissions.length > 0 || (page.checkpoint !== null && entries.cut(page.checkpoint));
         const empty = page.checkpoint === null && page.items.length === 0 && omissions.length === 0;
         let notice: string | null = null;
         const withheld =
@@ -1534,7 +1547,7 @@ class LocalMemory implements Memory {
           notice =
             uncarried > 0 && carried.length === 0
               ? `${uncarried} more eligible record${uncarried === 1 ? "" : "s"} match than this sequence carries (at most ${SEQUENCE_CAP} are sequenced, fewer when a small budget limits the continuation). Refine the query, or recall with a larger budget.`
-              : "Budget reached before all eligible memory was returned. Pass `continuation` for more, or read a recordId to expand it.";
+              : `Budget reached before all eligible memory was returned. Pass \`continuation\`${entries.continueWith} for more, or read a recordId to expand it.`;
         }
         return {
           scope: view,
@@ -1611,6 +1624,20 @@ class LocalMemory implements Memory {
     }
   }
 }
+
+/** How a pack renders its entries: cited objects (the default), or index lines (`mode: "compact"`). */
+interface Entries<C, I> {
+  checkpoint: (entry: Packable<PackCheckpoint>) => Packable<C>;
+  item: (entry: Packable<PackItem>) => Packable<I>;
+  /** Whether a packed checkpoint lost part of its body (the pack then counts as truncated). */
+  cut: (checkpoint: C) => boolean;
+  /** What a continuation call must repeat to stay in this mode (for the pack's notice). */
+  continueWith: string;
+}
+
+const FULL_ENTRIES: Entries<PackCheckpoint, PackItem> = { checkpoint: (entry) => entry, item: (entry) => entry, cut: (checkpoint) => checkpoint.truncated, continueWith: "" };
+/** An index line is a pointer to its record, never a clipped copy of it: nothing counts as cut. */
+const INDEX_ENTRIES: Entries<string, string> = { checkpoint: asIndexLine, item: asIndexLine, cut: () => false, continueWith: ' with mode "compact"' };
 
 /**
  * One pack entry per claim group. Everything but the excerpt (freshness, warning,
