@@ -34,9 +34,10 @@ import type { ExternalRef, Freshness } from "../schemas.js";
  *   without changing the code; trailing whitespace and indentation stay significant, because
  *   they can carry meaning (Python, YAML, Markdown line breaks, string literals) and a false
  *   `current` costs more than a false `stale`. The fingerprint is taken only when it names
- *   one place: a range that is inverted, past the end, whitespace-only, or whose text occurs
- *   more than once in the file keeps the whole-file rule (otherwise an edit to the cited copy
- *   would find another and read as current). At check time, text found more than once also
+ *   one place: a range that is past the end, whitespace-only, or whose text occurs more than
+ *   once in the file, or that fills the write's hashing budget, keeps the whole-file rule
+ *   (otherwise an edit to the cited copy would find another and read as current). An inverted
+ *   range is `invalid_input` at the schema; the check here is defence in depth. At check time, text found more than once also
  *   falls back to the whole-file verdict, and a search the hashing budget cannot finish is
  *   `unknown` / `check_limit`. References without `lines`, and references stored before this
  *   (no `citedHash`), keep the whole-file rule. Known limits, both false `current`s: the

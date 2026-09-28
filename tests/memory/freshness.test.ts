@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory, type PackItem } from "../../src/memory.js";
-import { git, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 import { claudeConfigDir, installTranscript } from "../import/fixtures.js";
 
 function open(cwd: string, home: string, host = "claude-code"): Memory {
@@ -580,5 +580,60 @@ describe("cited lines", () => {
 
     writeFile(repo, "src/payments.ts", `\n${refund}${charge.trimEnd()}\r`);
     expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "lines_changed" });
+  });
+
+  function recordLines(memory: Memory, lines: [number, number]): string {
+    return memory.record({
+      kind: "evidence",
+      body: "payments.ts at the cited lines",
+      attribution: "direct_observation",
+      externalRefs: [{ kind: "code", locator: "src/payments.ts", lines }],
+    }).recordId;
+  }
+
+  test("a range of only whitespace gets no fingerprint and keeps the whole-file rule", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordLines(memory, [4, 4]);
+    writeFile(repo, "src/payments.ts", `export function charge() {\n  return retry(5);\n}\n\n${refund}`);
+
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "changed" });
+  });
+
+  test("a range past the end of the file gets no fingerprint and keeps the whole-file rule", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordLines(memory, [6, 20]);
+    writeFile(repo, "src/payments.ts", `export function charge() {\n  return retry(5);\n}\n\n${refund}`);
+
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "changed" });
+  });
+
+  test("an inverted range is invalid input", () => {
+    const memory = open(repoWithPayments(), tempDir());
+    const error = catchDebriefError(() => recordLines(memory, [5, 3]));
+    expect(error.code).toBe("invalid_input");
+    expect(error.message).toMatch(/lines.*end.*start/i);
+  });
+
+  test("references after a write's hashing budget is spent get no cited-lines fingerprint and keep the whole-file rule", () => {
+    const repo = repoWithPayments();
+    const mib = 1024 * 1024;
+    const payments = Buffer.byteLength(`${charge}\n${refund}`);
+    // Untracked, so hashed: they leave the write enough budget to hash payments.ts, not to fingerprint its lines.
+    const big = Array.from({ length: 8 }, (_, i) => {
+      writeFile(repo, `data/big-${i}.bin`, "x".repeat(i < 7 ? mib : mib - payments - 10));
+      return { kind: "code" as const, locator: `data/big-${i}.bin` };
+    });
+    const memory = open(repo, tempDir());
+    const { recordId } = memory.record({
+      kind: "evidence",
+      body: "the fixtures and charge()",
+      attribution: "direct_observation",
+      externalRefs: [...big, { kind: "code", locator: "src/payments.ts", lines: [1, 3] }],
+    });
+    writeFile(repo, "src/payments.ts", `${charge}\nexport function refund(key) {\n  return once(key);\n}\n`);
+
+    expect(recallItem(memory, recordId).externalRefs[8]).toMatchObject({ freshness: "stale", reason: "changed" });
   });
 });

@@ -192,7 +192,7 @@ Every write is one `BEGIN IMMEDIATE` transaction, so it never upgrades from read
 
 Memory is knowledge *about* the repository; the repository stays the source of truth (PRD §11). Recall therefore labels what it returns instead of vouching for it.
 
-**Freshness** (`src/retrieval/freshness.ts`). When an agent writes a record or checkpoint with a local code reference that pins nothing (`commit` and `observedHash` omitted), Debrief observes the file itself, outside the write transaction: the worktree's HEAD, whether the file was dirty, and the SHA-256 of the whole file (≤ 1 MiB), stamped `observedAt`. When the reference cites `lines: [start, end]`, it also stores the SHA-256 of those lines' text and its byte length (`citedHash`, `citedBytes`). The content is never stored. At recall and read, each returned reference is labelled:
+**Freshness** (`src/retrieval/freshness.ts`). When an agent writes a record or checkpoint with a local code reference that pins nothing (`commit` and `observedHash` omitted), Debrief observes the file itself, outside the write transaction: the worktree's HEAD, whether the file was dirty, and the SHA-256 of the whole file (≤ 1 MiB), stamped `observedAt`. When the reference cites `lines: [start, end]` (1-based, inclusive; `end < start` is refused as `invalid_input`), it also stores the SHA-256 of those lines' text and its byte length (`citedHash`, `citedBytes`). The content is never stored. At recall and read, each returned reference is labelled:
 
 | Reference | Label | Why |
 |---|---|---|
