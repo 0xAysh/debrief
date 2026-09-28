@@ -125,7 +125,54 @@ describe("recall ranking: trust among equally relevant records", () => {
       { independentRoots: 1, records: 2 },
     ]);
   });
+
+  test("T7: relevance leads: a clearly better stale match stays above a weak current one, and a stale only answer comes back labelled", () => {
+    const repo = repoWith("src/alpha.ts", "src/bravo.ts");
+    const memory = open(repo);
+    const better = cites(memory, "the queue worker drains each shard, and the worker drains it again on retry", "src/bravo.ts");
+    const weak = cites(memory, "the queue is long on mondays, and nobody minds it much", "src/alpha.ts");
+    writeFile(repo, "src/bravo.ts", "export const bravo = 2;\n");
+
+    const items = recall(memory, "queue worker drains");
+    expect(items.map((item) => [item.recordId, item.freshness])).toEqual([
+      [better, "stale"],
+      [weak, "current"],
+    ]);
+
+    const [only] = recall(memory, "worker drains retry");
+    expect(recall(memory, "worker drains retry")).toHaveLength(1);
+    expect(only).toMatchObject({ recordId: better, freshness: "stale" });
+    expect(only?.warning).toMatch(/read the current file/i);
+  });
+
+  test("T8: page 1 freezes the trust order: a file restored between pages changes the labels, not the order or the why", () => {
+    const repo = repoWith("src/alpha.ts", "src/bravo.ts");
+    const memory = open(repo);
+    const best = memory.record({ kind: "note", body: "queue worker drains, queue worker drains", attribution: "direct_observation" }).recordId;
+    const current = cites(memory, EQUAL[0] ?? "", "src/alpha.ts");
+    const stale = cites(memory, EQUAL[1] ?? "", "src/bravo.ts");
+    const original = "export const src_bravo_ts = 1;\n";
+    writeFile(repo, "src/bravo.ts", "export const bravo = 2;\n");
+
+    const first = memory.recall({ query: "queue worker drains", maxBytes: PAGE_OF_ONE });
+    expect(first.items.map((item) => item.recordId)).toEqual([best]);
+    writeFile(repo, "src/bravo.ts", original);
+    const second = memory.recall({ continuation: first.continuation ?? "", maxTokens: 8_000 });
+
+    expect(second.items.map((item) => item.recordId)).toEqual([current, stale]);
+    expect(second.items.map((item) => item.freshness)).toEqual(["current", "current"]);
+    expect(second.items.map((item) => item.why)).toEqual(["trusted: current", undefined]);
+    // Ranked afresh, both are current and bm25's tie-break puts the newer first, with no trust reason.
+    expect(recall(memory, "queue worker drains").map((item) => [item.recordId, item.why])).toEqual([
+      [best, undefined],
+      [stale, undefined],
+      [current, undefined],
+    ]);
+  });
 });
+
+/** A budget whose page holds the envelope, a continuation and one short item. */
+const PAGE_OF_ONE = 2_000;
 
 /**
  * A repository whose Claude Code transcript (the `basic.jsonl` fixture) is imported, so a record can
