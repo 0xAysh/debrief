@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
 import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
-import { codexThreadId } from "../import/fixtures.js";
+import { claudeConfigDir, claudeDelegatedTurn, codexThreadId, installSubagent, installTranscript } from "../import/fixtures.js";
 
 /** One clock for every session a test opens, a minute per tick, so records interleave in a known order. */
 function clock(): { now: () => Date; tick: () => void } {
@@ -226,5 +226,41 @@ describe("a timeline around a read record", () => {
     // The same labels a read of each neighbour shows.
     expect(memory.read({ recordId: drain }).freshness).toBe("stale");
     expect(memory.read({ recordId: retry }).freshness).toBe("current");
+  });
+
+  test("imported records follow the transcript's time, not insert order: a sub-agent's work sits inside the turn that delegated it", () => {
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const home = tempDir();
+    const config = claudeConfigDir();
+    const setup = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config });
+    setup.bootstrap({ importChoice: "current_project" });
+    setup.close();
+    const session = "e0d00000-0000-4000-8000-0000000000d9";
+    const agentId = "a400000000000000d9";
+    const at = new Date(Date.now() - 60_000);
+    // The parent's turn: prompt at +0, the Agent call at +200, its hand-back at +300, the reply at +500.
+    const turn = claudeDelegatedTurn({ cwd: repo, sessionId: session, n: 1, at, prompt: "SYNTHETIC-PROMPT check the retry budget", agentId, subagentPrompt: "SYNTHETIC-DELEGATED find the retry budget", report: "SYNTHETIC-REPORT three attempts" });
+    const parent = installTranscript(config, "", { cwd: repo, sessionId: session, content: turn.lines });
+    // The sub-agent ran inside it (+150 … +650), and is imported after the parent's transcript.
+    installSubagent(config, { cwd: repo, sessionId: session, agentId, toolUseId: turn.toolUseId, at: new Date(at.getTime() + 150), prompt: "SYNTHETIC-DELEGATED find the retry budget", command: "grep -rn budget src", output: "SYNTHETIC-FINDING retry.ts sets 3", report: "SYNTHETIC-REPORT three attempts" });
+    const memory = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config });
+    onCleanup(() => {
+      memory.close();
+    });
+    expect(memory.endTurn({ transcriptPath: parent.path }).failure).toBeNull();
+
+    // Every eligible record the import wrote, copies included, in the transcript's time order.
+    const pack = memory.recall({ maxTokens: 8_000 });
+    const imported = pack.items.flatMap((item) => [item, ...item.copies]).filter((entry) => entry.source?.transcriptId.startsWith(session));
+    const byTime = [...imported].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    expect(new Set(byTime.map((entry) => entry.createdAt)).size).toBe(byTime.length);
+    // In time order: the parent's prompt, the sub-agent's prompt, the parent's reply, then the sub-agent's command and report.
+    expect(byTime.map((entry) => entry.source?.agentType ?? "parent")).toEqual(["parent", "general-purpose", "parent", "general-purpose", "general-purpose"]);
+    const ids = byTime.map((entry) => entry.recordId);
+
+    // Inserted after the parent's whole transcript, the sub-agent's prompt still comes before the parent's reply.
+    const timeline = memory.read({ recordId: ids[2] ?? "", around: 10 }).timeline;
+    expect(timeline?.before.map(idOf)).toEqual(ids.slice(0, 2));
+    expect(timeline?.after.map(idOf)).toEqual(ids.slice(3));
   });
 });
