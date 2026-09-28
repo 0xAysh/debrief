@@ -10,18 +10,17 @@ import { RANKED_BY, splitIdentifier } from "./search.js";
  *   window of `created_at`, read in local time against `now`. Relevant records from the
  *   window rank first; the rest still follow, because the agent's sense of when something
  *   happened is often a little off, and a boost cannot lose the answer the way a filter can.
- *   The expression is not searched as words ("week" is not a topic).
  * - **Now:** "what do we use now for…", "currently", "latest" ask for the current state. Of
- *   the relevant records, the newest comes first: a later decision replaces an earlier one.
+ *   records about equally relevant, the newest comes first: a later decision replaces an
+ *   earlier one.
  *
- * A query that names a time or asks about now is read for its topic: question filler ("what
- * did we…") is not searched, since it would match records at random.
- *
- * A query with none of these parses to its words alone, and ranks exactly as plain keyword
- * search did.
+ * The words searched are always the query's own (a record may itself say "last week"), so
+ * these rules only reorder what keyword search finds. The one exception is a query that is
+ * only a time and question filler ("what did we do yesterday?"): searching "what did we do"
+ * would match records at random, so it lists recent records, the time asked for first.
  */
 export interface ParsedQuery {
-  /** The text left to search as words (see `toFtsQuery`); null when the query asks only for a time. */
+  /** The text to search as words (see `toFtsQuery`): the query itself, or null when it asks only for a time. */
   words: string | null;
   /** Quoted phrases and identifiers, as written, deduplicated case-insensitively. */
   phrases: string[];
@@ -126,17 +125,16 @@ export function parseQuery(query: string, now: Date): ParsedQuery {
     }
   }
   const current = CURRENT.test(words);
-  if (current) words = words.replace(CURRENT_ALL, " ");
   const phrases = phrasesIn(words);
-  if (labels.length === 0 && !current) return { words, phrases, window: null, current: false };
-  // "what did we do yesterday" asks only for a time: its filler would match records at random.
-  const topical = words.replace(/[\p{L}\p{N}]+/gu, (word) => (FILLER.has(word.toLowerCase()) ? " " : word));
+  if (labels.length === 0 && !current) return { words: query, phrases, window: null, current: false };
+  // "what did we do yesterday" asks only for a time: searching its filler would match records at random.
+  const topical = words.replace(CURRENT_ALL, " ").replace(/[\p{L}\p{N}]+/gu, (word) => (FILLER.has(word.toLowerCase()) ? " " : word));
   const label = labels
     .sort((a, b) => a.at - b.at)
     .map((l) => l.text)
     .join(", ");
   return {
-    words: /[\p{L}\p{N}]/u.test(topical) ? topical : null,
+    words: /[\p{L}\p{N}]/u.test(topical) ? query : null,
     phrases,
     window: labels.length === 0 ? null : { from: from?.toISOString() ?? null, to: to?.toISOString() ?? null, label },
     current,
@@ -148,7 +146,7 @@ const CURRENT_WORDS = String.raw`\b(?:right now|now|currently|current|nowadays|t
 const CURRENT = new RegExp(CURRENT_WORDS, "iu");
 const CURRENT_ALL = new RegExp(CURRENT_WORDS, "giu");
 
-/** Question filler dropped from a query that names a time or asks about now (only then, so plain queries rank as before). */
+/** Question filler: a query that names a time or asks about now with nothing but these left asks only for the time. */
 const FILLER = new Set(
   (
     "what when which who why how did do does done doing we i you they us our me my the a an is are was were be been " +

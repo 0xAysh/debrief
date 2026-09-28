@@ -43,9 +43,13 @@ describe("recall ranking: plain queries", () => {
     const names = new Map(Object.entries(NOTES).map(([name, body]) => [note(memory, body), name]));
     const order = (query: string): (string | undefined)[] => ranked(memory, query).map((id) => names.get(id));
     expect(MAIN_ORDERS.map(([query]) => [query, order(query)])).toEqual(MAIN_ORDERS);
-    // Words that also occur inside an identifier now find it too; what main found keeps its order.
-    // (main: ["migration", "wal"])
-    expect(order("database index rebuild")).toEqual(["migration", "index", "wal"]);
+  });
+
+  test("a plain word that occurs inside an identifier now finds it too, and what main found keeps its order", () => {
+    const memory = open(initRepo(), tempDir());
+    const names = new Map(Object.entries(NOTES).map(([name, body]) => [note(memory, body), name]));
+    // main: ["migration", "wal"]
+    expect(ranked(memory, "database index rebuild").map((id) => names.get(id))).toEqual(["migration", "index", "wal"]);
   });
 });
 
@@ -152,11 +156,11 @@ describe("recall ranking: time", () => {
       note(memory, topic);
     }
     at(new Date(2026, 6, 1, 12));
-    const oldest = note(memory, "bundling: we use webpack for bundling");
+    const oldest = note(memory, "we use webpack for bundling");
     at(new Date(2026, 7, 1, 12));
-    const middle = note(memory, "for bundling we use rollup");
+    const middle = note(memory, "we use rollup for bundling here");
     at(new Date(2026, 8, 20, 12));
-    const newest = note(memory, "we use esbuild for bundling the CLI and the plugin, one file each");
+    const newest = note(memory, "we use esbuild for bundling here");
     at(new Date(2026, 8, 25, 12));
     const unrelated = note(memory, "we use pnpm for installs");
     at(new Date(2026, 8, 27, 12));

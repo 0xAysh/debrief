@@ -189,7 +189,7 @@ query ─ parseQuery(query, now) ─┬─ words ───────── toF
                                 └─ now? ────┘            2. relevant AND created in the window
                                                          3. relevant, newest first (a question about now)
                                                          4. bm25, created_at DESC, seq DESC  (the order before #52)
-relevant = bm25 within half of the best record's
+relevant = bm25 within half of the best record's; close = within 90%
 ```
 
 | The query has | Example | Effect | `why` |
@@ -197,8 +197,8 @@ relevant = bm25 within half of the best record's
 | a camelCase identifier | `rankSequence` | also searches its words (`rank`, `sequence`), which the `terms` column matches in records that only say `rankSequence`; lifts records containing it verbatim | `exact "rankSequence"` |
 | snake_case, a path or file name | `rank_sequence`, `retrieval/freshness`, `freshness.ts` | unicode61 already splits these; lifts records containing it verbatim | `exact "freshness.ts"` |
 | a quoted phrase | `"exponential backoff"` | lifts records containing it verbatim (ASCII case-folded, in the title, body or reference locators) | `exact "exponential backoff"` |
-| a time | `yesterday`, `last week`, `in August`, `before 2026-09-01`, `since …`, `last 3 days` | a `created_at` window in local time relative to now; relevant records inside it come first, the rest still follow; the expression and question filler are not searched | `created last week` |
-| a question about now | `now`, `currently`, `latest`, `these days` | relevant records newest first | `newest first: asks about now` |
+| a time | `yesterday`, `last week`, `in August`, `before 2026-09-01`, `since …`, `last 3 days` | a `created_at` window in local time relative to now; relevant records inside it come first, the rest still follow; a query that is only a time and question filler lists recent records | `created last week` |
+| a question about now | `now`, `currently`, `latest`, `these days` | records about as relevant as the best (bm25 within 90%) newest first | `newest first: asks about now` |
 
 A query with none of these runs the plain statement, so it ranks exactly as before. Two caveats. A plain word that also occurs inside an identifier (`index` in `rebuildSearchIndex`) now finds that record too, and records with identifiers are a little longer to bm25, so orders in such workspaces can shift slightly. Time is a boost, never a filter: a sense of when something happened is often a little off, and a filter would lose the answer. Recall's clock is `openMemory({ now })` (the system clock by default; tests set it, and `record` stamps with it too).
 

@@ -169,11 +169,17 @@ export interface RankRequest {
 }
 
 /**
- * How close to the best match a record must be for time or recency to lift it: bm25 at least
- * this fraction of the best record's. They reorder the relevant records; they never lift a
+ * How close to the best match a record must be for a named time to lift it: bm25 at least
+ * this fraction of the best record's. Time reorders the relevant records; it never lifts a
  * record that matched a single common word above the answer.
  */
 const RELEVANT_FRACTION = 0.5;
+/**
+ * The same for "now", which reorders only records about as relevant as the best: with a
+ * looser band, a newer record on a neighbouring topic displaced the answer (LongMemEval_S
+ * knowledge-update R@1 fell from 97.2 to 90.3 at 0.5; 0.9 matched plain bm25).
+ */
+const CURRENT_FRACTION = 0.9;
 
 /** Why a record ranked where it did beyond bm25, as bits (a continuation carries them compactly). */
 export const RANKED_BY = { phrase: 1, window: 2, newest: 4 } as const;
@@ -192,7 +198,7 @@ export const RANKED_BY = { phrase: 1, window: 2, newest: 4 } as const;
  * 1. records containing more of its phrases verbatim (case-insensitively, in the title, body
  *    or reference locators);
  * 2. relevant records (see {@link RELEVANT_FRACTION}) created inside its time window;
- * 3. when it asks about now, relevant records newest first.
+ * 3. when it asks about now, records close to the best (see {@link CURRENT_FRACTION}) newest first.
  *
  * `rankedBy` holds the {@link RANKED_BY} bits of each sequenced record a tier lifted.
  */
@@ -229,12 +235,13 @@ export function rankSequence(db: Db, request: RankRequest): { seqs: number[]; to
   }
   const rows = db
     .prepare(
-      `SELECT seq, verbatim > 0 AS phrase, relevant AND in_window AS windowed, relevant AND ${current ? 1 : 0} AS newest FROM (
+      `SELECT seq, verbatim > 0 AS phrase, relevant AND in_window AS windowed, close AND ${current ? 1 : 0} AS newest FROM (
          SELECT q.seq, q.rank, q.created_at,
            ${phrases.length === 0 ? "0" : `(SELECT count(*) FROM json_each($phrases) p WHERE instr(${VERBATIM_TEXT_SQL}, lower(p.value)) > 0)`} AS verbatim,
            ${window === null ? "0" : IN_WINDOW_SQL} AS in_window,
            -- bm25 is negative, lower is better: within RELEVANT_FRACTION of the best is at most that fraction of it.
-           q.rank <= ${RELEVANT_FRACTION} * min(q.rank) OVER () AS relevant
+           q.rank <= ${RELEVANT_FRACTION} * min(q.rank) OVER () AS relevant,
+           q.rank <= ${CURRENT_FRACTION} * min(q.rank) OVER () AS close
          FROM (${ranked}) q JOIN records r ON r.seq = q.seq
        )
        ORDER BY verbatim DESC, windowed DESC, newest DESC, CASE WHEN newest THEN created_at END DESC, rank, created_at DESC, seq DESC
