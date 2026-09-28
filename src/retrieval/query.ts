@@ -16,7 +16,8 @@ import { describeTrust, type TrustReason } from "./trust.js";
  *   earlier one.
  *
  * The words searched are always the query's own (a record may itself say "last week"), so
- * these rules only reorder what keyword search finds. The one exception is a query that is
+ * these rules only reorder what keyword search finds. After them, trust (`retrieval/trust.ts`)
+ * orders records the query's words match about equally well; that needs no reading of the query. The one exception is a query that is
  * only a time and question filler ("what did we do yesterday?"): searching "what did we do"
  * would match records at random, so it lists recent records, the time asked for first.
  */

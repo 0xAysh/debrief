@@ -222,7 +222,8 @@ export interface PackItem {
   /**
    * Why the item ranked where it did, when more than keyword relevance decided: it contains a
    * quoted phrase or identifier from the query (`exact "rankSequence"`), falls in the time the
-   * query names (`created last week`), or is the newest relevant record for a question about now.
+   * query names (`created last week`), is the newest relevant record for a question about now,
+   * or trust placed it above an equally relevant record, saying what decided (`trusted: current, captured`).
    */
   why?: string;
   attribution: Attribution;

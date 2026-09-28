@@ -20,7 +20,8 @@ export const ITEM_EXCERPT_BYTES = 1_000;
 
 /**
  * A continuation may take at most this fraction (1/n) of the budget. Tokens carry their
- * sequence (≤ 500 seqs, ~2.5 KB; a character more per seq when they carry rank reasons) and
+ * sequence (≤ 500 seqs, ~2.5 KB; a character more per seq when they carry rank reasons, and two
+ * more per record trust lifted) and
  * are paid for in the agent's context like any other bytes, so a small budget carries a
  * shorter sequence rather than a token bigger than its entries.
  */
