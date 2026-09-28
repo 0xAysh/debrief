@@ -78,6 +78,53 @@ describe("recall ranking: trust among equally relevant records", () => {
       ["asserted", "current"],
     ]);
   });
+
+  test("T4: of two runs against another state (both stale), the captured one ranks first", () => {
+    const { repo, memory, run } = withCapturedOutput();
+    const captured = run(EQUAL[0] ?? "", "captured");
+    const asserted = run(EQUAL[1] ?? "", "asserted");
+    writeFile(repo, "src/gateway.ts", "export const retries = 1;\n");
+
+    const items = recall(memory, "queue worker drains");
+    expect(items.map((item) => item.recordId)).toEqual([captured, asserted]);
+    expect(items.map((item) => [item.freshness, item.testRun?.evidence, item.testRun?.reason])).toEqual([
+      ["stale", "captured", "other_state"],
+      ["stale", "asserted", "other_state"],
+    ]);
+  });
+
+  test("T5: observed and user-given records rank above the agent's inference", () => {
+    const memory = open(initRepo());
+    const said = (body: string, attribution: "direct_observation" | "user_direction" | "agent_inference"): string =>
+      memory.record({ kind: "note", body, attribution }).recordId;
+    const observed = said(EQUAL[0] ?? "", "direct_observation");
+    const user = said(EQUAL[1] ?? "", "user_direction");
+    const inferred = said(EQUAL[2] ?? "", "agent_inference");
+
+    // Observed and user-given rank alike, so bm25's tie-break (newest first) orders them.
+    expect(ranked(memory, "queue worker drains")).toEqual([user, observed, inferred]);
+  });
+
+  test("T6: a claim from two independent roots ranks above a single-root claim; a derived_from copy does not lift it", () => {
+    const memory = open(initRepo());
+    const note = (body: string, links: { to: string; relation: "derived_from" }[] = []): string =>
+      memory.record({ kind: "note", body, attribution: "agent_inference", links }).recordId;
+    const first = note(EQUAL[0] ?? "");
+    const second = note(EQUAL[0] ?? "");
+    const original = note(EQUAL[1] ?? "");
+    note(EQUAL[1] ?? "", [{ to: original, relation: "derived_from" }]);
+    const single = note(EQUAL[2] ?? "");
+
+    // Newest first on bm25's tie-break would be: single, the copy (folded into original), original, second, first.
+    const items = recall(memory, "queue worker drains");
+    expect(items.map((item) => item.recordId)).toEqual([second, first, single, original]);
+    expect(items.map((item) => item.corroboration)).toEqual([
+      { independentRoots: 2, records: 2 },
+      { independentRoots: 2, records: 2 },
+      { independentRoots: 1, records: 1 },
+      { independentRoots: 1, records: 2 },
+    ]);
+  });
 });
 
 /**
