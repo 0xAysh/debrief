@@ -6,7 +6,7 @@ import type { Packable } from "./context-pack.js";
  * sub-agents, if one did), and whether its code references still hold, e.g.
  * `checkpoint r7 · 2d · codex · current` or `evidence · 5m · claude-code/general-purpose · unknown`.
  * Built from fields every pack entry already carries (the JSON pack keeps them structured, without this duplicate), for
- * text context such as session start.
+ * text context such as session start. A compact recall's index lines ({@link asIndexLine}) use the same fields.
  */
 
 const UNITS: [suffix: string, ms: number][] = [
@@ -26,13 +26,20 @@ export function age(iso: string, now: Date): string {
   return "now";
 }
 
+/** The host that wrote an entry, with the sub-agent if one did: `claude-code/general-purpose`. */
+function writer(entry: { host: string; source?: { agentType: string | null } | null }): string {
+  const agent = entry.source?.agentType ?? null;
+  return agent === null ? entry.host : `${entry.host}/${agent}`;
+}
+
+const checkpointKind = (revision: number): string => `checkpoint r${revision}`;
+
 export function itemLabel(item: { kind: string; createdAt: string; host: string; freshness: Freshness; source?: { agentType: string | null } | null }, now: Date): string {
-  const agent = item.source?.agentType ?? null;
-  return `${item.kind} · ${age(item.createdAt, now)} · ${item.host}${agent === null ? "" : `/${agent}`} · ${item.freshness}`;
+  return `${item.kind} · ${age(item.createdAt, now)} · ${writer(item)} · ${item.freshness}`;
 }
 
 export function checkpointLabel(checkpoint: { revision: number; createdAt: string; host: string; freshness: Freshness }, now: Date): string {
-  return itemLabel({ ...checkpoint, kind: `checkpoint r${checkpoint.revision}` }, now);
+  return itemLabel({ ...checkpoint, kind: checkpointKind(checkpoint.revision) }, now);
 }
 
 /** An index line's excerpt, in bytes: with its ~120 bytes of fields a line stays near 70 tokens. */
@@ -53,9 +60,8 @@ type IndexedEntry = { recordId: string; createdAt: string; host: string; freshne
  */
 export function asIndexLine(entry: Packable<IndexedEntry>): Packable<string> {
   const fields = entry.build("", false);
-  const what = "revision" in fields ? [`checkpoint r${fields.revision}`] : [fields.kind, fields.attribution];
-  const agent = "source" in fields ? (fields.source?.agentType ?? null) : null;
-  const head = `${fields.recordId} [${[fields.createdAt.slice(0, 10), ...what, agent === null ? fields.host : `${fields.host}/${agent}`, fields.freshness].join(" · ")}]`;
+  const what = "revision" in fields ? [checkpointKind(fields.revision)] : [fields.kind, fields.attribution];
+  const head = `${fields.recordId} [${[fields.createdAt.slice(0, 10), ...what, writer(fields), fields.freshness].join(" · ")}]`;
   const text = ("title" in fields ? (fields.title ?? entry.source) : entry.source).replace(/\s+/gu, " ").trim();
   return { recordId: entry.recordId, source: text, maxExcerptBytes: INDEX_EXCERPT_BYTES, build: (excerpt, cut) => `${head} ${excerpt}${cut ? "…" : ""}` };
 }

@@ -257,8 +257,8 @@ interface Reply {
 /** Every rule of the protocol, checked on both paths it is delivered by. */
 const RULES = [
   /memory_bootstrap first/,
-  /scope\.ambiguity/,
-  /import\.question/,
+  /scope\.ambiguity\.question, wait, then/,
+  /import\.question verbatim, wait, then/,
   /historical observations/i,
   /stale.*unknown.*read the current file/is,
   /independentRoots/,

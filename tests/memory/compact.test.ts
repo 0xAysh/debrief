@@ -55,6 +55,8 @@ describe("compact recall", () => {
       expect(lineTokens(line)).toBeLessThanOrEqual(100);
     }
     expect(pack.budget.usedBytes).toBe(packBytes(pack));
+    // Every hit was returned: a shortened excerpt is not content left out.
+    expect(pack.truncated).toBe(false);
   });
 
   test("respects the budget and fits more hits than a full pack in the same budget", () => {

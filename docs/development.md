@@ -30,7 +30,7 @@ src/
 ├── bootstrap/             # cwd → workspace → workstream → session
 ├── import/                # consent, transcript adapters (claude, codex), reconcile, privacy
 ├── integrity/             # checkpoints, lifecycle and taints, provenance, preferences, private sessions
-├── retrieval/             # eligibility, search, freshness, context packs, digest, session-start text
+├── retrieval/             # eligibility, search, freshness, context packs, index lines, digest, session-start text
 └── storage/               # SQLite, records, migrations, home-level logs, delete-data
 ```
 

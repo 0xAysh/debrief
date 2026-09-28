@@ -76,7 +76,6 @@ import {
   sealContinuation,
   usage,
 } from "./retrieval/context-pack.js";
-import { asIndexLine } from "./retrieval/label.js";
 import { eligibilityOf, type Lifecycle, requireVisibleRecord, type RecordRow, type Taint } from "./retrieval/eligibility.js";
 import {
   captureObservations,
@@ -88,6 +87,7 @@ import {
   type TestRunView,
   worktreeFingerprint,
 } from "./retrieval/freshness.js";
+import { asIndexLine } from "./retrieval/label.js";
 import { explainRank, parseQuery } from "./retrieval/query.js";
 import { type Candidate, clipToBytes, loadCandidates, PAGE_CANDIDATES, phrasesContained, rankSequence, rebuildSearchIndex, SEQUENCE_CAP, toFtsQuery } from "./retrieval/search.js";
 import {
@@ -755,7 +755,7 @@ class LocalMemory implements Memory {
         created: { workspace: location.isNew, workstream: scope.createdWorkstream },
         runtime: { sqliteVersion: runtime.sqliteVersion, fts5: runtime.fts5, schemaVersion: SCHEMA_VERSION },
         import: imported,
-        context: this.pack(db, scope, parse(RecallInput, { ...(parsed.maxTokens === undefined ? {} : { maxTokens: parsed.maxTokens }), ...(parsed.maxBytes === undefined ? {} : { maxBytes: parsed.maxBytes }) }), FULL_ENTRIES),
+        context: this.pack(db, scope, parse(RecallInput, { ...(parsed.maxTokens === undefined ? {} : { maxTokens: parsed.maxTokens }), ...(parsed.maxBytes === undefined ? {} : { maxBytes: parsed.maxBytes }) }), FULL_FORMAT),
       };
     });
   }
@@ -905,7 +905,7 @@ class LocalMemory implements Memory {
         const { db, scope, location } = this.bind();
         // No pending questions: re-asking one marks it asked in this session, and a sub-agent cannot ask the user.
         const preferences = preferenceBlock(this.preferenceStores(db, scope), []);
-        const pack = this.pack(db, scope, parse(RecallInput, { maxBytes: START_PACK_BYTES }), FULL_ENTRIES);
+        const pack = this.pack(db, scope, parse(RecallInput, { maxBytes: START_PACK_BYTES }), FULL_FORMAT);
         return renderSubagentStart({ scope: scopeView(db, scope), pack, preferences, newWorkspace: location.isNew, now: new Date() });
       } catch (error) {
         if (!(error instanceof DebriefError)) throw error;
@@ -977,7 +977,7 @@ class LocalMemory implements Memory {
     return this.guard(() => {
       const parsed = parse(RecallInput, input);
       const { db, scope } = this.bind();
-      return parsed.mode === "compact" ? this.pack(db, scope, parsed, INDEX_ENTRIES) : this.pack(db, scope, parsed, FULL_ENTRIES);
+      return parsed.mode === "compact" ? this.pack(db, scope, parsed, INDEX_FORMAT) : this.pack(db, scope, parsed, FULL_FORMAT);
     });
   }
 
@@ -1427,7 +1427,7 @@ class LocalMemory implements Memory {
    * scope and eligibility, so concurrent writes (which shift bm25 statistics) can neither
    * reorder nor inject records into an in-flight sequence.
    */
-  private pack<C, I>(db: Db, scope: BoundScope, parsed: z.output<typeof RecallInput>, entries: Entries<C, I>): ContextPack<C, I> {
+  private pack<C, I>(db: Db, scope: BoundScope, parsed: z.output<typeof RecallInput>, format: EntryFormat<C, I>): ContextPack<C, I> {
     const kinds = parsed.kinds === undefined ? null : [...new Set(parsed.kinds)].sort();
     let continued: ContinuationState | null = null;
     if (parsed.continuation !== undefined) {
@@ -1489,7 +1489,7 @@ class LocalMemory implements Memory {
       const checkpointPackable = (freshness: RecordFreshness): Packable<C> | null =>
         checkpointRow === null
           ? null
-          : entries.checkpoint({
+          : format.checkpoint({
               recordId: checkpointRow.id,
               source: checkpointRow.body,
               maxExcerptBytes: LIMITS.bodyBytes,
@@ -1508,7 +1508,7 @@ class LocalMemory implements Memory {
               }),
             });
       const itemPackables = (count: number, freshnessOf: (row: Candidate) => RecordFreshness): Packable<I>[] =>
-        groups.slice(0, count).map((group) => entries.item(itemPackable(group, freshnessOf(group.representative), citations, sources, roots, whyOf(group.representative))));
+        groups.slice(0, count).map((group) => format.item(itemPackable(group, freshnessOf(group.representative), citations, sources, roots, whyOf(group.representative))));
 
       // Resume at the first unconsumed group. Copies folded into a returned item leave the
       // sequence with it; records dropped as ineligible leave it too.
@@ -1527,7 +1527,7 @@ class LocalMemory implements Memory {
         if (page.oversized.length > 0) omissions.push({ reason: "exceeds_budget", count: page.oversized.length, recordIds: page.oversized });
         if (carried.length > 0) omissions.push({ reason: "budget", count: carried.length });
         if (uncarried > 0) omissions.push({ reason: "candidate_limit", count: uncarried });
-        const truncated = omissions.length > 0 || (page.checkpoint !== null && entries.cut(page.checkpoint));
+        const truncated = omissions.length > 0 || (page.checkpoint !== null && format.cut(page.checkpoint));
         const empty = page.checkpoint === null && page.items.length === 0 && omissions.length === 0;
         let notice: string | null = null;
         const withheld =
@@ -1547,7 +1547,7 @@ class LocalMemory implements Memory {
           notice =
             uncarried > 0 && carried.length === 0
               ? `${uncarried} more eligible record${uncarried === 1 ? "" : "s"} match than this sequence carries (at most ${SEQUENCE_CAP} are sequenced, fewer when a small budget limits the continuation). Refine the query, or recall with a larger budget.`
-              : `Budget reached before all eligible memory was returned. Pass \`continuation\`${entries.continueWith} for more, or read a recordId to expand it.`;
+              : `Budget reached before all eligible memory was returned. Pass \`continuation\`${format.continueWith} for more, or read a recordId to expand it.`;
         }
         return {
           scope: view,
@@ -1626,7 +1626,7 @@ class LocalMemory implements Memory {
 }
 
 /** How a pack renders its entries: cited objects (the default), or index lines (`mode: "compact"`). */
-interface Entries<C, I> {
+interface EntryFormat<C, I> {
   checkpoint: (entry: Packable<PackCheckpoint>) => Packable<C>;
   item: (entry: Packable<PackItem>) => Packable<I>;
   /** Whether a packed checkpoint lost part of its body (the pack then counts as truncated). */
@@ -1635,9 +1635,12 @@ interface Entries<C, I> {
   continueWith: string;
 }
 
-const FULL_ENTRIES: Entries<PackCheckpoint, PackItem> = { checkpoint: (entry) => entry, item: (entry) => entry, cut: (checkpoint) => checkpoint.truncated, continueWith: "" };
-/** An index line is a pointer to its record, never a clipped copy of it: nothing counts as cut. */
-const INDEX_ENTRIES: Entries<string, string> = { checkpoint: asIndexLine, item: asIndexLine, cut: () => false, continueWith: ' with mode "compact"' };
+const FULL_FORMAT: EntryFormat<PackCheckpoint, PackItem> = { checkpoint: (entry) => entry, item: (entry) => entry, cut: (checkpoint) => checkpoint.truncated, continueWith: "" };
+/**
+ * An index line points at its record; it is never a copy of it. A short excerpt leaves nothing out,
+ * so only omissions make a compact pack `truncated` (a checkpoint line is nearly always shortened).
+ */
+const INDEX_FORMAT: EntryFormat<string, string> = { checkpoint: asIndexLine, item: asIndexLine, cut: () => false, continueWith: ' with mode "compact"' };
 
 /**
  * One pack entry per claim group. Everything but the excerpt (freshness, warning,
