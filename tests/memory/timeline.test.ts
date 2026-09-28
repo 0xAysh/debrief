@@ -120,4 +120,29 @@ describe("a timeline around a read record", () => {
     expect(timeline?.after).toEqual([]);
     for (const id of hidden) expect(catchDebriefError(() => reader.read({ recordId: id, around: 5 })).code).toBe("not_found");
   });
+
+  test("another workstream's records never appear; workspace-level records of the same session do", () => {
+    const time = clock();
+    const memory = open(initRepo(), tempDir(), time);
+    const first = memory.bootstrap({ importChoice: "none", task: "PROJ-7" }).scope;
+    const note = (body: string, workspaceLevel = false): string => {
+      const { recordId } = memory.record({ kind: "note", body, attribution: "agent_inference", workspaceLevel });
+      time.tick();
+      return recordId;
+    };
+    const elsewhere = note("written for the first workstream");
+    const shared = note("true for the whole repository", true);
+    // The user names another task and chooses a new workstream for it: the same session moves there.
+    expect(memory.bootstrap({ task: "PROJ-8" }).scope.ambiguity).not.toBeNull();
+    const moved = memory.bootstrap({ task: "PROJ-8", workstream: "new" }).scope;
+    expect(moved).toMatchObject({ sessionId: first.sessionId, taskKey: "PROJ-8" });
+    expect(moved.workstreamId).not.toBe(first.workstreamId);
+    const target = note("written for PROJ-8");
+    const later = memory.record({ kind: "note", body: "later, still for PROJ-8", attribution: "agent_inference" }).recordId;
+
+    const timeline = memory.read({ recordId: target, around: 5 }).timeline;
+    expect(timeline?.before.map(idOf)).toEqual([shared]);
+    expect(timeline?.after.map(idOf)).toEqual([later]);
+    expect([...(timeline?.before ?? []), ...(timeline?.after ?? [])].map(idOf)).not.toContain(elsewhere);
+  });
 });
