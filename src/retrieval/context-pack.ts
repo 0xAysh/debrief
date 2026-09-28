@@ -38,7 +38,7 @@ export interface ContinuationState {
   beyondCap: number;
   /** Why page 1 ranked each remaining record where it did (`RANKED_BY` bits); absent seqs had none. */
   rankedBy: ReadonlyMap<number, number>;
-  /** What trust saw on page 1 for each remaining record it lifted (exactly those with the `RANKED_BY.trust` bit). */
+  /** What decided, on page 1, the place of each remaining record trust lifted (exactly those with the `RANKED_BY.trust` bit). */
   trusted: ReadonlyMap<number, TrustReason>;
 }
 
@@ -55,8 +55,8 @@ export function sealContinuation(secret: Buffer, state: ContinuationState): stri
   const reasons = state.remaining.some((seq) => state.rankedBy.has(seq)) ? state.remaining.map((seq) => (state.rankedBy.get(seq) ?? 0).toString(36)).join("") : null;
   // Two digits per record trust lifted, in sequence order; which records they belong to is in `w`.
   const trust = state.remaining.flatMap((seq) => {
-    const facts = state.trusted.get(seq);
-    return facts === undefined ? [] : [encodeTrust(facts)];
+    const reason = state.trusted.get(seq);
+    return reason === undefined ? [] : [encodeTrust(reason)];
   });
   const payload = Buffer.from(
     JSON.stringify({
@@ -101,9 +101,9 @@ export function openContinuation(secret: Buffer, token: string, scope: { workspa
     const bits = parseInt(state.w?.[i] ?? "0", 36);
     if (bits > 0) rankedBy.set(seq, bits);
     if ((bits & RANKED_BY.trust) === 0) return;
-    const facts = decodeTrust(state.t?.slice(trust, trust + 2) ?? "");
+    const reason = decodeTrust(state.t?.slice(trust, trust + 2) ?? "");
     trust += 2;
-    if (facts !== null) trusted.set(seq, facts);
+    if (reason !== null) trusted.set(seq, reason);
   });
   return {
     workspaceId: scope.workspaceId,
