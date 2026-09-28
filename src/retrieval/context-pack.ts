@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { DebriefError } from "../errors.js";
 import { estimateTokens } from "../schemas.js";
 import { clipToBytes, RANKED_BY } from "./search.js";
-import { decodeTrust, encodeTrust, type TrustFacts } from "./trust.js";
+import { decodeTrust, encodeTrust, type TrustReason } from "./trust.js";
 
 /**
  * Budgeted packing and continuation tokens for recall.
@@ -38,7 +38,7 @@ export interface ContinuationState {
   /** Why page 1 ranked each remaining record where it did (`RANKED_BY` bits); absent seqs had none. */
   rankedBy: ReadonlyMap<number, number>;
   /** What trust saw on page 1 for each remaining record it lifted (exactly those with the `RANKED_BY.trust` bit). */
-  trusted: ReadonlyMap<number, TrustFacts>;
+  trusted: ReadonlyMap<number, TrustReason>;
 }
 
 /**
@@ -94,7 +94,7 @@ export function openContinuation(secret: Buffer, token: string, scope: { workspa
   if (state.v !== 3) throw invalid("unsupported version");
   const remaining = state.r === "" ? [] : state.r.split(",").map((seq) => parseInt(seq, 36));
   const rankedBy = new Map<number, number>();
-  const trusted = new Map<number, TrustFacts>();
+  const trusted = new Map<number, TrustReason>();
   let trust = 0;
   remaining.forEach((seq, i) => {
     const bits = parseInt(state.w?.[i] ?? "0", 36);

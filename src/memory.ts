@@ -102,7 +102,7 @@ import {
   SEQUENCE_CAP,
   toFtsQuery,
 } from "./retrieval/search.js";
-import { orderByTrust, type TrustFacts } from "./retrieval/trust.js";
+import { orderByTrust, type TrustFacts, type TrustReason } from "./retrieval/trust.js";
 import {
   type Applicability,
   type Attribution,
@@ -1464,7 +1464,7 @@ class LocalMemory implements Memory {
       let beyondCap: number;
       // Frozen with the order: a later page explains its items as page 1 ranked them.
       let rankedBy: ReadonlyMap<number, number>;
-      let trusted: ReadonlyMap<number, TrustFacts>;
+      let trusted: ReadonlyMap<number, TrustReason>;
       // Page 1's freshness check of the records trust compared (and the checkpoint), reused for its labels.
       let trustChecked: ReadonlyMap<string, RecordFreshness> = new Map();
       if (continued === null) {
@@ -1734,7 +1734,7 @@ function rankByTrust(
   scope: BoundScope,
   ranked: RankedSequence,
   checkpointRow: RecordRow | null,
-): { seqs: number[]; lifted: Map<number, TrustFacts>; checked: Map<string, RecordFreshness> } | null {
+): { seqs: number[]; lifted: Map<number, TrustReason>; checked: Map<string, RecordFreshness> } | null {
   const sizes = new Map<number, number>();
   for (const band of ranked.bands) sizes.set(band, (sizes.get(band) ?? 0) + 1);
   const compared = ranked.seqs.filter((_seq, i) => (sizes.get(ranked.bands[i] ?? -1) ?? 0) > 1);
@@ -1759,7 +1759,7 @@ function rankByTrust(
         row.seq,
         {
           freshness: checked.get(row.id)?.freshness ?? "unknown",
-          evidence: fields.testRun?.evidence ?? null,
+          evidence: fields.testRun?.evidence ?? "none",
           attribution: fields.attribution,
           roots: claimRoots.get(normalizeClaim(row.body))?.size ?? 1,
         },
@@ -1770,7 +1770,7 @@ function rankByTrust(
 }
 
 /** The tiers' reasons plus the trust bit of every record trust lifted. */
-function withTrustBits(rankedBy: ReadonlyMap<number, number>, lifted: ReadonlyMap<number, TrustFacts>): Map<number, number> {
+function withTrustBits(rankedBy: ReadonlyMap<number, number>, lifted: ReadonlyMap<number, TrustReason>): Map<number, number> {
   const bits = new Map(rankedBy);
   for (const seq of lifted.keys()) bits.set(seq, (bits.get(seq) ?? 0) | RANKED_BY.trust);
   return bits;
