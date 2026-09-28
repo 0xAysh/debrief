@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory, type PackItem } from "../../src/memory.js";
 import { git, initRepo, onCleanup, tempDir } from "../helpers.js";
@@ -349,5 +350,131 @@ describe("local code freshness", () => {
     // Beyond the per-recall budget, references are reported as unchecked rather than scanned.
     expect(reasons.filter((reason) => reason !== "check_limit")).toHaveLength(64);
     expect(reasons.slice(64).every((reason) => reason === "check_limit")).toBe(true);
+  });
+});
+
+describe("cited lines", () => {
+  const charge = "export function charge() {\n  return retry(3);\n}\n";
+  const refund = "export function refund() {\n  return once();\n}\n";
+
+  /** A repository with `src/payments.ts` committed: charge() on lines 1–3, refund() on lines 5–7. */
+  function repoWithPayments(): string {
+    const repo = initRepo();
+    writeFile(repo, "src/payments.ts", `${charge}\n${refund}`);
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "payments");
+    return repo;
+  }
+
+  function recordChargeObservation(memory: Memory): string {
+    return memory.record({
+      kind: "evidence",
+      body: "charge() retries three times without an idempotency key",
+      attribution: "direct_observation",
+      externalRefs: [{ kind: "code", locator: "src/payments.ts", path: "src/payments.ts", lines: [1, 3] }],
+    }).recordId;
+  }
+
+  test("an edit elsewhere in the file leaves the cited lines current, noting the file changed elsewhere", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+    writeFile(repo, "src/payments.ts", `${charge}\nexport function refund(key) {\n  return once(key);\n}\n`);
+
+    const item = recallItem(memory, recordId);
+    expect(item.freshness).toBe("current");
+    expect(item.warning).toBeNull();
+    expect(item.externalRefs[0]).toMatchObject({ lines: [1, 3], freshness: "current", reason: "changed_elsewhere" });
+  });
+
+  test("lines inserted above the cited range move it, and the memory stays current", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+    writeFile(repo, "src/payments.ts", `import { retry, once } from "./retry";\n\n${charge}\n${refund}`);
+
+    const item = recallItem(memory, recordId);
+    expect(item.freshness).toBe("current");
+    expect(item.warning).toBeNull();
+    expect(item.externalRefs[0]).toMatchObject({ lines: [1, 3], freshness: "current", reason: "lines_moved" });
+  });
+
+  test("an edited cited line makes the memory stale and tells the agent to read the live file", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+    writeFile(repo, "src/payments.ts", `export function charge() {\n  return retry(5);\n}\n\n${refund}`);
+
+    const item = recallItem(memory, recordId);
+    expect(item.freshness).toBe("stale");
+    expect(item.externalRefs[0]).toMatchObject({ lines: [1, 3], freshness: "stale", reason: "lines_changed" });
+    expect(item.warning).toMatch(/read the current file/i);
+  });
+
+  test("deleted cited lines make the memory stale", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+    writeFile(repo, "src/payments.ts", refund);
+
+    const item = recallItem(memory, recordId);
+    expect(item.freshness).toBe("stale");
+    expect(item.externalRefs[0]).toMatchObject({ lines: [1, 3], freshness: "stale", reason: "lines_changed" });
+    expect(item.warning).toMatch(/read the current file/i);
+  });
+
+  test("a reference without a line range keeps the whole-file rule: any edit makes it stale", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const { recordId } = memory.record({
+      kind: "evidence",
+      body: "payments.ts holds charge() and refund()",
+      attribution: "direct_observation",
+      externalRefs: [{ kind: "code", locator: "src/payments.ts", path: "src/payments.ts" }],
+    });
+    writeFile(repo, "src/payments.ts", `${charge}\nexport function refund(key) {\n  return once(key);\n}\n`);
+
+    const item = recallItem(memory, recordId);
+    expect(item.freshness).toBe("stale");
+    expect(item.externalRefs[0]).toMatchObject({ freshness: "stale", reason: "changed" });
+  });
+
+  test("a record written before cited lines were fingerprinted keeps today's whole-file label", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+    // The reference as 0.1.0 stored it: commit, dirty flag and whole-file hash, nothing about the lines.
+    const db = new Database(memory.status().storage.dbPath ?? "");
+    try {
+      db.prepare("UPDATE records SET external_refs = json_remove(external_refs, '$[0].citedHash', '$[0].citedBytes') WHERE id = ?").run(recordId);
+      const { external_refs } = db.prepare("SELECT external_refs FROM records WHERE id = ?").get(recordId) as { external_refs: string };
+      const [stored] = JSON.parse(external_refs) as Record<string, unknown>[];
+      expect(Object.keys(stored ?? {}).sort()).toEqual(["commit", "dirty", "kind", "lines", "locator", "observedAt", "observedHash", "path"]);
+    } finally {
+      db.close();
+    }
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "current", reason: "unchanged" });
+
+    writeFile(repo, "src/payments.ts", `import { retry, once } from "./retry";\n\n${charge}\n${refund}`);
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "changed" });
+    writeFile(repo, "src/payments.ts", `${charge}\nexport function refund(key) {\n  return once(key);\n}\n`);
+    expect(recallItem(memory, recordId).externalRefs[0]).toMatchObject({ freshness: "stale", reason: "changed" });
+  });
+
+  test("only a fingerprint of the cited lines is stored, never their text", () => {
+    const repo = repoWithPayments();
+    const memory = open(repo, tempDir());
+    const recordId = recordChargeObservation(memory);
+    const db = new Database(memory.status().storage.dbPath ?? "", { readonly: true });
+    let row: string;
+    try {
+      row = JSON.stringify(db.prepare("SELECT * FROM records WHERE id = ?").get(recordId));
+    } finally {
+      db.close();
+    }
+    expect(row).toMatch(/\\"citedHash\\":\\"sha256:[0-9a-f]{64}\\"/);
+    for (const text of ["retry(3)", "export function charge", "cmV0cnkoMyk"]) expect(row).not.toContain(text);
+    // Recall shows the pointer and its label, not Debrief's fingerprints.
+    expect(recallItem(memory, recordId).externalRefs[0]).not.toHaveProperty("citedHash");
   });
 });

@@ -13,16 +13,35 @@ import type { ExternalRef, Freshness } from "../schemas.js";
  *
  * - {@link captureObservations} runs when an agent writes a record or checkpoint: for
  *   each local code reference it notes the worktree's commit, whether the file was dirty,
- *   and a bounded SHA-256 of the file (never the content itself).
+ *   a bounded SHA-256 of the file and, when the reference cites `lines`, a SHA-256 of
+ *   those lines' text (never the content itself).
  * - {@link checkFreshness} runs at recall/read time for the selected records only, and
  *   labels every reference current / stale / unknown with a reason.
  *
  * Why these signals, and how much each is trusted:
- * - **The file hash is authoritative.** Equal bytes mean the observation still describes
- *   the file; different bytes mean it may not. The whole file is hashed rather than the
- *   cited line range, because line numbers shift with any edit above them and a range
- *   hash would call moved-but-identical code stale or, worse, changed code current.
- *   A whole-file change is a conservative "read it again", which is the safe error.
+ * - **The file hash is authoritative when it matches.** Equal bytes mean the observation
+ *   still describes the file. In 0.1.0 different bytes alone meant `stale`: safe, but too
+ *   eager, since a blank line added anywhere made every memory citing the file stale, and
+ *   agents learn to ignore a label that fires on every edit.
+ * - **Cited lines are fingerprinted by their text, not their position.** A hash of the
+ *   range *as a position* would misfire both ways (moved code stale, other text shifted
+ *   under the old numbers current), which is why 0.1.0 hashed only the whole file. Hashing the
+ *   cited *text* and searching the current file for it avoids both: when the file's bytes
+ *   differ, the cited text found exactly once at the same lines is `changed_elsewhere`,
+ *   found exactly once at other lines is `lines_moved` (both current), and found nowhere is
+ *   `lines_changed` (stale). The text is normalised only for line endings (`\r\n` = `\n`,
+ *   a trailing newline or not), which editors and Git's autocrlf change without changing
+ *   the code; trailing whitespace and indentation stay significant, because they can carry
+ *   meaning (Python, YAML, Markdown line breaks, string literals) and a false `current`
+ *   costs more than a false `stale`. The fingerprint is taken only when it names one place:
+ *   a range that is inverted, past the end, whitespace-only, or whose text occurs more than
+ *   once in the file keeps the whole-file rule (otherwise an edit to the cited copy would
+ *   find another and read as current). At check time, text found more than once, or a
+ *   search the hashing budget cannot finish, also falls back to the whole-file verdict.
+ *   References without `lines`, and references stored before this (no `citedHash`), keep
+ *   the whole-file rule. Known limit: the label covers the cited text only; a claim that
+ *   also depends on code outside the range (a callee in the same file) is the agent's to
+ *   cite.
  * - **Commit + clean state is a shortcut, never a verdict on its own.** When the file was
  *   clean at commit C and is still clean with HEAD at C, Git guarantees the same bytes,
  *   so the file need not be read. This also covers files too large to hash. A dirty or
@@ -45,7 +64,8 @@ import type { ExternalRef, Freshness } from "../schemas.js";
  *   Debrief captured from the transcript) is an assertion and is never current.
  *
  * Work is bounded: at most {@link FRESHNESS_LIMITS.refsPerCheck} references and
- * {@link FRESHNESS_LIMITS.totalBytes} hashed bytes per call, files over
+ * {@link FRESHNESS_LIMITS.totalBytes} hashed bytes per call (searching for cited lines
+ * draws on the same budget, and hashes only windows of the cited byte length), files over
  * {@link FRESHNESS_LIMITS.fileBytes} are never read, results are cached per call, and Git
  * runs at most twice per call (one path-limited `git status`, one `cat-file` only when a
  * caller-supplied commit must be checked), plus one working-tree `git status` only when a
@@ -61,10 +81,16 @@ export const FRESHNESS_LIMITS = {
 export const FRESHNESS_REASONS = [
   /** current: the file's bytes (or its clean state at the observed commit) are unchanged. */
   "unchanged",
+  /** current: the file's bytes differ, but the cited `lines` hold the text observed, at the same line numbers. */
+  "changed_elsewhere",
+  /** current: the cited `lines` hold the text observed, now at other line numbers (lines were added or removed above). */
+  "lines_moved",
   /** stale: the file's bytes differ from what was observed. */
   "changed",
   /** stale: the observed file no longer exists. */
   "missing",
+  /** stale: the text of the cited `lines` is nowhere in the file any more (edited or removed). */
+  "lines_changed",
   /** unknown: nothing was fingerprinted when this reference was stored. */
   "not_observed",
   /** unknown: a file a transcript read or edited; its content then was never fingerprinted. */
@@ -116,6 +142,10 @@ export type TestRunView = Omit<StoredTestRun, "worktree"> & { applies: Freshness
 export interface StoredRef extends ExternalRef {
   /** Debrief-captured: the file had uncommitted or untracked changes when observed. */
   dirty?: boolean;
+  /** Debrief-captured: `sha256:` of the cited `lines` as {@link citeLines} normalises them (never the text). */
+  citedHash?: string;
+  /** Debrief-captured: the byte length of that normalised text, so a recheck hashes only same-length windows. */
+  citedBytes?: number;
 }
 
 /** A reference as presented: the pointer, when it was observed, and its freshness now. */
@@ -187,6 +217,11 @@ export function captureObservations(worktree: string, refs: readonly ExternalRef
     if (content.kind === "hashed") {
       budget -= content.bytes;
       captured.observedHash = content.hash;
+      const cited = ref.lines === undefined ? null : citeLines(content.content, ref.lines);
+      if (cited !== null) {
+        captured.citedHash = cited.hash;
+        captured.citedBytes = cited.bytes;
+      }
     }
     if (state !== null && state.head !== null) {
       captured.commit = state.head;
@@ -235,6 +270,7 @@ function presentTestRun(run: StoredTestRun): Omit<StoredTestRun, "worktree"> {
 class Checker {
   private readonly worktree: string;
   private readonly hashes = new Map<string, FileHash>();
+  private readonly lines = new Map<string, Lines>();
   private readonly state: GitState | null;
   private readonly knownCommits: ReadonlySet<string>;
   private refsLeft: number = FRESHNESS_LIMITS.refsPerCheck;
@@ -318,7 +354,8 @@ class Checker {
     const content = this.hash(path, Math.min(FRESHNESS_LIMITS.fileBytes, this.bytesLeft));
     switch (content.kind) {
       case "hashed":
-        return content.hash === ref.observedHash ? ["current", "unchanged"] : ["stale", "changed"];
+        if (content.hash === ref.observedHash) return ["current", "unchanged"];
+        return this.cited(path, ref, content.content) ?? ["stale", "changed"];
       case "too_large":
         return this.bytesLeft < FRESHNESS_LIMITS.fileBytes && content.size <= FRESHNESS_LIMITS.fileBytes ? ["unknown", "check_limit"] : ["unknown", "too_large"];
       case "missing":
@@ -326,6 +363,32 @@ class Checker {
       case "unreadable":
         return ["unknown", "unreadable"];
     }
+  }
+
+  /**
+   * The file changed: where the cited lines are now, if the reference fingerprinted them. Null
+   * (the whole-file verdict stands) when it did not, or when this call's hashing budget runs out.
+   */
+  private cited(path: string, ref: StoredRef, content: Buffer): [Freshness, FreshnessReason] | null {
+    if (ref.lines === undefined || ref.citedHash === undefined || ref.citedBytes === undefined || !HASH.test(ref.citedHash)) return null;
+    const n = ref.lines[1] - ref.lines[0] + 1;
+    if (n < 1) return null;
+    let lines = this.lines.get(path);
+    if (lines === undefined) {
+      lines = new Lines(content);
+      this.lines.set(path, lines);
+    }
+    const found: number[] = [];
+    for (let i = 0; i + n <= lines.count && found.length < 2; i++) {
+      if (lines.bytes(i, n) !== ref.citedBytes) continue;
+      if (this.bytesLeft < ref.citedBytes) return null;
+      this.bytesLeft -= ref.citedBytes;
+      if (lines.hash(i, n) === ref.citedHash) found.push(i);
+    }
+    if (found.length === 0) return ["stale", "lines_changed"];
+    // The text now occurs more than once: which copy is the cited one cannot be told.
+    if (found.length > 1) return null;
+    return found[0] === ref.lines[0] - 1 ? ["current", "changed_elsewhere"] : ["current", "lines_moved"];
   }
 
   /** Cached per path; `maxBytes` 0 only stats the file. */
@@ -344,11 +407,13 @@ function present(ref: StoredRef): Omit<CheckedRef, "freshness" | "reason"> {
   const pointer: StoredRef = { ...ref };
   delete pointer.observedHash;
   delete pointer.dirty;
+  delete pointer.citedHash;
+  delete pointer.citedBytes;
   return pointer;
 }
 
 type FileHash =
-  | { kind: "hashed"; hash: string; bytes: number }
+  | { kind: "hashed"; hash: string; bytes: number; content: Buffer }
   | { kind: "too_large"; size: number }
   | { kind: "missing" }
   | { kind: "unreadable" };
@@ -376,12 +441,89 @@ function hashFile(absolute: string, maxBytes: number): FileHash {
     }
     // The file grew past its stat while being read: report the new size, never a partial hash.
     if (read > stat.size) return { kind: "too_large", size: read };
-    return { kind: "hashed", hash: `sha256:${createHash("sha256").update(buffer.subarray(0, read)).digest("hex")}`, bytes: read };
+    const content = buffer.subarray(0, read);
+    return { kind: "hashed", hash: `sha256:${createHash("sha256").update(content).digest("hex")}`, bytes: read, content };
   } catch {
     return { kind: "unreadable" };
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * A file's lines as byte ranges of its buffer. A line ends at `\n`; a `\r` before it is not part
+ * of the line, and a final `\n` does not start an empty line, so the same text with CRLF or LF
+ * endings, with or without a trailing newline, has the same lines. Nothing else is normalised.
+ */
+class Lines {
+  readonly count: number;
+  private readonly buffer: Buffer;
+  private readonly starts: number[] = [];
+  private readonly ends: number[] = [];
+  /** `offsets[i]`: the normalised bytes of lines 0..i-1, so any window's length is O(1). */
+  private readonly offsets: number[] = [0];
+
+  constructor(buffer: Buffer) {
+    this.buffer = buffer;
+    let start = 0;
+    while (start < buffer.length) {
+      const newline = buffer.indexOf(0x0a, start);
+      const next = newline === -1 ? buffer.length : newline;
+      const end = next > start && buffer[next - 1] === 0x0d ? next - 1 : next;
+      this.starts.push(start);
+      this.ends.push(end);
+      this.offsets.push((this.offsets.at(-1) ?? 0) + end - start);
+      start = next + 1;
+    }
+    this.count = this.starts.length;
+  }
+
+  /** Byte length of lines `first`..`first + n - 1` joined by `\n`. */
+  bytes(first: number, n: number): number {
+    return (this.offsets[first + n] ?? 0) - (this.offsets[first] ?? 0) + n - 1;
+  }
+
+  hash(first: number, n: number): string {
+    const digest = createHash("sha256");
+    for (let i = first; i < first + n; i++) {
+      if (i > first) digest.update("\n");
+      digest.update(this.line(i));
+    }
+    return `sha256:${digest.digest("hex")}`;
+  }
+
+  /** Whether the two windows of `n` lines hold the same text. */
+  same(a: number, b: number, n: number): boolean {
+    for (let i = 0; i < n; i++) if (!this.line(a + i).equals(this.line(b + i))) return false;
+    return true;
+  }
+
+  blank(first: number, n: number): boolean {
+    for (let i = first; i < first + n; i++) if (!/^[\t\v\f\r ]*$/.test(this.line(i).toString("latin1"))) return false;
+    return true;
+  }
+
+  private line(i: number): Buffer {
+    return this.buffer.subarray(this.starts[i], this.ends[i]);
+  }
+}
+
+/**
+ * The fingerprint of the cited lines, or null when they cannot identify a place in the file:
+ * the range is inverted or runs past the end, holds only whitespace, or its text occurs more
+ * than once (an edit to the cited copy would then find the other one and read as current).
+ */
+function citeLines(content: Buffer, [start, end]: readonly [number, number]): { hash: string; bytes: number } | null {
+  const lines = new Lines(content);
+  const n = end - start + 1;
+  const first = start - 1;
+  if (n < 1 || end > lines.count || lines.blank(first, n)) return null;
+  const bytes = lines.bytes(first, n);
+  let copies = 0;
+  for (let i = 0; i + n <= lines.count; i++) {
+    if (lines.bytes(i, n) === bytes && lines.same(i, first, n) && ++copies > 1) return null;
+  }
+  return { hash: lines.hash(first, n), bytes };
 }
 
 /**
