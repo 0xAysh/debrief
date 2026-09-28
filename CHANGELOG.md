@@ -12,7 +12,7 @@
 ### Compact recall
 
 - **`memory_recall` with `mode: "compact"`** returns one line per hit (id, date, kind, attribution, host, freshness and a short excerpt), several times as many hits per budget as a full pack. The agent surveys the index, then reads the few records that matter with `memory_read`. Full packs stay the default.
-- **`memory_read` with `around: N`** (1–10) also returns up to N records on each side of the one read, from the same session, as index lines in time order: the question that led to a decision, the test run after an attempt. Only records a recall here could return appear, never another session's, another workstream's or a private session's. The lines share the read's budget with the body, nearest first; what does not fit is counted. Without `around` a read is unchanged.
+- **`memory_read` with `around: N`** (1–10) also returns up to N records on each side of the one read, from the same conversation, as index lines in time order: the question that led to a decision, the test run after an attempt. A record the agent wrote live sits among the imported turns of the same host session when its transcript carries Debrief's output. Only records a recall here could return appear, never another session's, another workstream's or a private session's. The lines share the read's budget with the body, nearest first; what does not fit is counted. Without `around` a read is unchanged.
 
 ### Freshness
 

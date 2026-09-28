@@ -404,7 +404,7 @@ export interface ReadResult {
   /** As in a pack: memory in scope that changed since this session last heard. */
   corrections: CorrectionNotice | null;
   /**
-   * Only with `around`: this record's session just before and after it, as index lines (see
+   * Only with `around`: this record's conversation just before and after it, as index lines (see
    * src/retrieval/timeline.ts). `omitted` counts neighbours whose lines the budget left out.
    */
   timeline?: Timeline;
