@@ -44,4 +44,51 @@ describe("a timeline around a read record", () => {
     // Near the start of the session there is only one record before.
     expect(memory.read({ recordId: ids[1] ?? "", around: 2 }).timeline?.before.map(idOf)).toEqual([ids[0]]);
   });
+
+  test("another session's records, interleaved in time, never appear", () => {
+    const time = clock();
+    const repo = initRepo();
+    const home = tempDir();
+    const mine = open(repo, home, time);
+    const theirs = open(repo, home, { ...time, host: "codex" });
+    const own: string[] = [];
+    const other: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      own.push(mine.record({ kind: "note", body: `mine ${i}`, attribution: "agent_inference" }).recordId);
+      time.tick();
+      other.push(theirs.record({ kind: "note", body: `theirs ${i}`, attribution: "agent_inference" }).recordId);
+      time.tick();
+    }
+
+    const timeline = mine.read({ recordId: own[1] ?? "", around: 3 }).timeline;
+    expect(timeline?.before.map(idOf)).toEqual([own[0]]);
+    expect(timeline?.after.map(idOf)).toEqual([own[2], own[3]]);
+    expect(theirs.read({ recordId: other[2] ?? "", around: 3 }).timeline?.before.map(idOf)).toEqual([other[0], other[1]]);
+  });
+
+  test("retracted, superseded, tainted and checkpoint neighbours are skipped and do not use up around", () => {
+    // The real clock: checkpoints and lifecycle changes are stamped with it, so everything stays in write order.
+    const memory = openMemory({ cwd: initRepo(), home: tempDir(), host: "claude-code" });
+    onCleanup(() => {
+      memory.close();
+    });
+    const note = (body: string, supportedBy: string[] = []): string => memory.record({ kind: "note", body, attribution: "agent_inference", supportedBy }).recordId;
+    const early = [note("first eligible"), note("second eligible")];
+    const retracted = note("retracted before");
+    const superseded = note("superseded before");
+    const evidence = note("evidence that will be retracted");
+    const tainted = note("rests on the retracted evidence", [evidence]);
+    const checkpoint = memory.checkpoint({ expectedRevision: 0, goal: "g", status: "a checkpoint between" }).recordId;
+    const target = note("the record being read");
+    const retractedAfter = note("retracted after");
+    const late = [note("third eligible"), note("fourth eligible")];
+    for (const recordId of [retracted, evidence, retractedAfter]) memory.manage({ action: "retract", recordId, reason: "wrong", attribution: "user_direction" });
+    memory.manage({ action: "supersede", recordId: superseded, body: "the new version", reason: "changed", attribution: "user_direction" });
+    expect(memory.manage({ action: "inspect", recordId: tainted })).toMatchObject({ record: { lifecycle: "active", eligible: false } });
+
+    const timeline = memory.read({ recordId: target, around: 2 }).timeline;
+    expect(timeline?.before.map(idOf)).toEqual(early);
+    expect(timeline?.after.map(idOf)).toEqual(late);
+    expect([...(timeline?.before ?? []), ...(timeline?.after ?? [])].map(idOf)).not.toContain(checkpoint);
+  });
 });
