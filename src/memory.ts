@@ -88,9 +88,9 @@ import {
   worktreeFingerprint,
 } from "./retrieval/freshness.js";
 import { asIndexLine } from "./retrieval/label.js";
-import { fitTimeline, sessionNeighbours, type Timeline, timelineLine } from "./retrieval/timeline.js";
 import { explainRank, parseQuery } from "./retrieval/query.js";
 import { type Candidate, clipToBytes, loadCandidates, PAGE_CANDIDATES, phrasesContained, rankSequence, rebuildSearchIndex, SEQUENCE_CAP, toFtsQuery } from "./retrieval/search.js";
+import { fitTimeline, sessionNeighbours, type Timeline, timelineLine } from "./retrieval/timeline.js";
 import {
   type Applicability,
   type Attribution,

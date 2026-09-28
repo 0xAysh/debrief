@@ -5,6 +5,11 @@ import { openMemory, type Memory } from "../../src/memory.js";
 import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 import { claudeConfigDir, claudeDelegatedTurn, codexThreadId, installSubagent, installTranscript } from "../import/fixtures.js";
 
+/**
+ * Timelines at seam ③: `read({ recordId, around })` in-process, against real SQLite and Git, with
+ * sessions opened as a host would open them and imports from hand-written transcripts.
+ */
+
 /** One clock for every session a test opens, a minute per tick, so records interleave in a known order. */
 function clock(): { now: () => Date; tick: () => void } {
   let at = Date.parse("2026-09-20T09:00:00.000Z");
