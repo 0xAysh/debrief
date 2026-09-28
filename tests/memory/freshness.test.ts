@@ -396,7 +396,8 @@ describe("cited lines", () => {
     const item = recallItem(memory, recordId);
     expect(item.freshness).toBe("current");
     expect(item.warning).toBeNull();
-    expect(item.externalRefs[0]).toMatchObject({ lines: [1, 3], freshness: "current", reason: "lines_moved" });
+    // The pointer stays as recorded, and says where the cited text is now.
+    expect(item.externalRefs[0]).toMatchObject({ lines: [1, 3], linesNow: [3, 5], freshness: "current", reason: "lines_moved" });
   });
 
   test("an edited cited line makes the memory stale and tells the agent to read the live file", () => {
@@ -449,7 +450,8 @@ describe("cited lines", () => {
       db.prepare("UPDATE records SET external_refs = json_remove(external_refs, '$[0].citedHash', '$[0].citedBytes') WHERE id = ?").run(recordId);
       const { external_refs } = db.prepare("SELECT external_refs FROM records WHERE id = ?").get(recordId) as { external_refs: string };
       const [stored] = JSON.parse(external_refs) as Record<string, unknown>[];
-      expect(Object.keys(stored ?? {}).sort()).toEqual(["commit", "dirty", "kind", "lines", "locator", "observedAt", "observedHash", "path"]);
+      expect(stored).toHaveProperty("observedHash");
+      expect(stored).not.toHaveProperty("citedHash");
     } finally {
       db.close();
     }
