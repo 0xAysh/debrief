@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory, type PackItem } from "../../src/memory.js";
+import { FRESHNESS_LIMITS } from "../../src/retrieval/freshness.js";
 import { git, initRepo, onCleanup, tempDir } from "../helpers.js";
 import { claudeConfigDir, installTranscript } from "../import/fixtures.js";
 
@@ -218,6 +219,34 @@ describe("recall ranking: trust among equally relevant records", () => {
       [older, "current", undefined],
     ]);
     expect(memory.bootstrap().context.items.map((item) => item.recordId)).toEqual([newer, older]);
+  });
+
+  test("T12: with more equally relevant records than one freshness check covers, recall completes and the unchecked sit between current and stale", () => {
+    const repo = repoWith("src/alpha.ts", "src/bravo.ts", "src/delta.ts");
+    const memory = open(repo);
+    const shard = (i: number): string => `queue worker drains shard s${i}`;
+    // Oldest, so last in bm25's tie order: past the check's budget. Their file never changes.
+    const unchecked = Array.from({ length: 6 }, (_, i) => cites(memory, shard(i), "src/delta.ts"));
+    const current: string[] = [];
+    const stale: string[] = [];
+    for (let i = 0; i < FRESHNESS_LIMITS.refsPerCheck; i++) {
+      if (i % 2 === 0) current.push(cites(memory, shard(100 + i), "src/alpha.ts"));
+      else stale.push(cites(memory, shard(100 + i), "src/bravo.ts"));
+    }
+    writeFile(repo, "src/bravo.ts", "export const bravo = 2;\n");
+
+    const items: PackItem[] = [];
+    let page = memory.recall({ query: "queue worker drains", maxTokens: 8_000 });
+    items.push(...page.items);
+    while (page.continuation !== null) {
+      page = memory.recall({ continuation: page.continuation, maxTokens: 8_000 });
+      items.push(...page.items);
+    }
+    const newestFirst = (ids: string[]): string[] => [...ids].reverse();
+    expect(items.map((item) => item.recordId)).toEqual([...newestFirst(current), ...newestFirst(unchecked), ...newestFirst(stale)]);
+    // Ranked as unknown (never demoted to stale), labelled by a check of their own.
+    const labelled = items.filter((item) => unchecked.includes(item.recordId));
+    expect(labelled.map((item) => [item.freshness, item.why])).toEqual(unchecked.map(() => ["current", "trusted: not stale"]));
   });
 });
 
