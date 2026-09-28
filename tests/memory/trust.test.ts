@@ -169,6 +169,56 @@ describe("recall ranking: trust among equally relevant records", () => {
       [current, undefined],
     ]);
   });
+
+  test("T9: why says what trust decided: trusted: current, captured", () => {
+    const { memory, run } = withCapturedOutput();
+    const captured = run(EQUAL[0] ?? "", "captured");
+    const noRun = cites(memory, EQUAL[1] ?? "", "src/gateway.ts");
+    const asserted = run(EQUAL[2] ?? "", "asserted");
+
+    const items = recall(memory, "queue worker drains");
+    expect(items.map((item) => item.recordId)).toEqual([captured, noRun, asserted]);
+    // Captured beat the record without a run on evidence, and the asserted run on freshness.
+    expect(items.map((item) => item.why)).toEqual(["trusted: current, captured", "trusted: current", undefined]);
+  });
+
+  test("T10: the query's tiers come first: a phrase match beats a more trusted non-match, and a question about now stays newest first", () => {
+    const repo = repoWith("src/alpha.ts", "src/bravo.ts");
+    const memory = open(repo);
+    // The same words, so bm25 ties; only the first has the phrase verbatim, and only its file changes.
+    const phrase = cites(memory, "queue worker drains the alpha shard", "src/bravo.ts");
+    const trusted = cites(memory, "the alpha queue worker drains shard", "src/alpha.ts");
+    writeFile(repo, "src/bravo.ts", "export const bravo = 2;\n");
+    expect(recall(memory, '"drains the alpha"').map((item) => [item.recordId, item.freshness, item.why])).toEqual([
+      [phrase, "stale", 'exact "drains the alpha"'],
+      [trusted, "current", undefined],
+    ]);
+
+    const other = repoWith("src/alpha.ts", "src/bravo.ts");
+    const now = open(other);
+    const older = cites(now, EQUAL[2] ?? "", "src/alpha.ts");
+    const newer = cites(now, EQUAL[3] ?? "", "src/bravo.ts");
+    writeFile(other, "src/bravo.ts", "export const bravo = 2;\n");
+    expect(recall(now, "which shard does the queue worker drain now").map((item) => [item.recordId, item.freshness, item.why])).toEqual([
+      [newer, "stale", "newest first: asks about now"],
+      [older, "current", "newest first: asks about now"],
+    ]);
+  });
+
+  test("T11: recall without a query (the recent list, bootstrap) is never reordered by trust", () => {
+    const repo = repoWith("src/alpha.ts", "src/bravo.ts");
+    const memory = open(repo);
+    const older = cites(memory, EQUAL[0] ?? "", "src/alpha.ts");
+    const newer = cites(memory, EQUAL[1] ?? "", "src/bravo.ts");
+    writeFile(repo, "src/bravo.ts", "export const bravo = 2;\n");
+
+    const recent = memory.recall({ maxTokens: 8_000 }).items;
+    expect(recent.map((item) => [item.recordId, item.freshness, item.why])).toEqual([
+      [newer, "stale", undefined],
+      [older, "current", undefined],
+    ]);
+    expect(memory.bootstrap().context.items.map((item) => item.recordId)).toEqual([newer, older]);
+  });
 });
 
 /** A budget whose page holds the envelope, a continuation and one short item. */
