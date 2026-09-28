@@ -145,4 +145,55 @@ describe("a timeline around a read record", () => {
     expect(timeline?.after.map(idOf)).toEqual([later]);
     expect([...(timeline?.before ?? []), ...(timeline?.after ?? [])].map(idOf)).not.toContain(elsewhere);
   });
+
+  test("a tight budget keeps the nearest lines, counts the rest as omitted, and the body continues via nextOffset", () => {
+    const time = clock();
+    const memory = open(initRepo(), tempDir(), time);
+    const note = (body: string): string => {
+      const { recordId } = memory.record({ kind: "note", body, attribution: "agent_inference" });
+      time.tick();
+      return recordId;
+    };
+    const before = [0, 1, 2, 3].map((i) => note(`what came before, step ${i}`));
+    const body = "The decision in full: drain the queue before the migration. ".repeat(20);
+    const target = note(body);
+    const after = [0, 1, 2, 3].map((i) => note(`what followed, step ${i}`));
+
+    const whole = memory.read({ recordId: target, around: 4, maxBytes: 32_000 });
+    expect(whole.body).toBe(body);
+    expect(whole.budget.usedBytes).toBe(Buffer.byteLength(body) + [...(whole.timeline?.before ?? []), ...(whole.timeline?.after ?? [])].reduce((sum, line) => sum + Buffer.byteLength(line), 0));
+    const bytes = (line: string | undefined): number => Buffer.byteLength(line ?? "");
+    const [b1, b2] = [whole.timeline?.before[3], whole.timeline?.before[2]];
+    const a1 = whole.timeline?.after[0];
+    // Room for the three nearest lines (one before, one after, the next before) and 40 bytes of body.
+    const maxBytes = bytes(b1) + bytes(a1) + bytes(b2) + 40;
+
+    const tight = memory.read({ recordId: target, around: 4, maxBytes });
+    expect(tight.timeline).toEqual({ before: [b2, b1], after: [a1], omitted: { before: 2, after: 3 } });
+    expect(tight.timeline?.before.map(idOf)).toEqual([before[2], before[3]]);
+    expect(tight.timeline?.after.map(idOf)).toEqual([after[0]]);
+    expect(tight.body).toBe(body.slice(0, 40));
+    expect(tight.budget.usedBytes).toBe(maxBytes);
+    expect(tight.truncated).toBe(true);
+    let rest = "";
+    for (let offset = tight.nextOffset; offset !== null; ) {
+      const slice = memory.read({ recordId: target, offset, maxBytes: 500 });
+      rest += slice.body;
+      offset = slice.nextOffset;
+    }
+    expect(tight.body + rest).toBe(body);
+  });
+
+  test("edges: the first and last records have an empty side, and around must be 1–10", () => {
+    const time = clock();
+    const memory = open(initRepo(), tempDir(), time);
+    const ids = [0, 1, 2].map((i) => {
+      const { recordId } = memory.record({ kind: "note", body: `record ${i}`, attribution: "agent_inference" });
+      time.tick();
+      return recordId;
+    });
+    expect(memory.read({ recordId: ids[0] ?? "", around: 10 }).timeline).toMatchObject({ before: [], after: [expect.stringContaining(ids[1] ?? ""), expect.stringContaining(ids[2] ?? "")] });
+    expect(memory.read({ recordId: ids[2] ?? "", around: 10 }).timeline).toMatchObject({ before: [expect.stringContaining(ids[0] ?? ""), expect.stringContaining(ids[1] ?? "")], after: [] });
+    for (const around of [0, 11, 1.5]) expect(catchDebriefError(() => memory.read({ recordId: ids[1] ?? "", around })).code).toBe("invalid_input");
+  });
 });
