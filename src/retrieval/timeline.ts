@@ -6,16 +6,23 @@ import { asIndexLine, INDEX_EXCERPT_BYTES } from "./label.js";
 import { clipToBytes } from "./search.js";
 
 /**
- * A read's timeline (`memory_read` with `around`): the records of the read record's own Debrief
- * session just before and after it, as index lines: the question that led to a decision, the
- * test run after an attempt.
+ * A read's timeline (`memory_read` with `around`): the records of the read record's conversation
+ * just before and after it, as index lines: the question that led to a decision, the test run
+ * after an attempt.
+ *
+ * The conversation is the record's Debrief session, bridged to its transcript
+ * ({@link conversationSessions}): what an agent records live and what the importer later reads
+ * from that host session's transcript land in different Debrief sessions (the live one, and the
+ * import's `ses_<digest(host, transcript)>`), and `transcript_sessions` links them wherever the
+ * transcript carries Debrief output naming the live session. Never the host's session as such: a
+ * resumed Codex thread is a new Debrief session with the same thread id, with its own timeline.
  *
  * Neighbours are exactly what recall could return here ({@link RECALL_ELIGIBLE_SQL}: this
  * workstream or workspace-level, current, untainted, no checkpoints), so a timeline never shows
- * a record a recall would hide, and a private session's records (forgotten when it was marked)
- * never appear. The session is the Debrief session, never the host's: a resumed Codex thread is
- * a new Debrief session with the same thread id, and it has its own timeline. Ineligible records
- * are skipped, not counted, so `around` neighbours are found whenever that many eligible ones exist.
+ * a record a recall would hide: a session bridged in from another workstream contributes only its
+ * workspace-level records, and a private session's records (forgotten when it was marked) never
+ * appear. Ineligible records are skipped, not counted, so `around` neighbours are found whenever
+ * that many eligible ones exist.
  *
  * Time order is the event's own time (`created_at`, compared as instants, as recall's date
  * windows do), then `seq`: an imported record carries its transcript time, and a sub-agent's
@@ -35,16 +42,46 @@ const THEN = `julianday($createdAt)`;
 const BEFORE_SQL = `(${AT} < ${THEN} OR (${AT} = ${THEN} AND r.seq < $seq))`;
 const AFTER_SQL = `(${AT} > ${THEN} OR (${AT} = ${THEN} AND r.seq > $seq))`;
 
-/** Up to `around` eligible records of `row`'s session on each side, nearest first. A record without a session has none. */
+/**
+ * The Debrief sessions of `sessionId`'s conversation, one transcript hop each way: itself; as a
+ * live session, the import sessions of the transcripts whose Debrief output names it; as an import
+ * session, the live sessions its transcripts name. A sub-agent's transcript is imported into its
+ * parent's session, so a link through it reaches that same import session. A private transcript
+ * is never crossed, and no private session is bridged in (by its own mark, or by another session
+ * of its host session, as `sessionIsPrivate` rules), although its records were forgotten when it
+ * was marked.
+ */
+export function conversationSessions(db: Db, sessionId: string): string[] {
+  const bridged = prepared(
+    db,
+    `WITH transcripts AS (
+       SELECT host, transcript_id, 'names' AS link FROM transcript_sessions WHERE session_id = $sessionId
+       UNION SELECT host, transcript_id, 'imported' AS link FROM import_cursors WHERE session_id = $sessionId
+     ), open AS (
+       SELECT * FROM transcripts t WHERE NOT EXISTS (SELECT 1 FROM private_transcripts p WHERE p.host = t.host AND p.transcript_id = t.transcript_id)
+     ), linked AS (
+       SELECT c.session_id AS id FROM open t JOIN import_cursors c ON c.host = t.host AND c.transcript_id = t.transcript_id WHERE t.link = 'names'
+       UNION SELECT l.session_id AS id FROM open t JOIN transcript_sessions l ON l.host = t.host AND l.transcript_id = t.transcript_id WHERE t.link = 'imported'
+     )
+     SELECT s.id FROM linked JOIN sessions s ON s.id = linked.id
+     WHERE s.id <> $sessionId AND NOT EXISTS (
+       SELECT 1 FROM sessions p WHERE p.private = 1 AND (p.id = s.id OR (s.host_session_id IS NOT NULL AND p.host = s.host AND p.host_session_id = s.host_session_id)))
+     ORDER BY s.id`,
+  ).all({ sessionId }) as { id: string }[];
+  return [sessionId, ...bridged.map((row) => row.id)];
+}
+
+/** Up to `around` eligible records of `row`'s conversation on each side, nearest first. A record without a session has none. */
 export function sessionNeighbours(db: Db, workstreamId: string, row: RecordRow, around: number): { before: RecordRow[]; after: RecordRow[] } {
   if (row.session_id === null) return { before: [], after: [] };
+  const sessions = JSON.stringify(conversationSessions(db, row.session_id));
   const side = (position: string, order: "ASC" | "DESC"): RecordRow[] =>
     prepared(
       db,
       `SELECT r.* FROM records r
-       WHERE r.session_id = $sessionId AND ${RECALL_ELIGIBLE_SQL} AND ${position}
+       WHERE r.session_id IN (SELECT value FROM json_each($sessions)) AND ${RECALL_ELIGIBLE_SQL} AND ${position}
        ORDER BY ${AT} ${order}, r.seq ${order} LIMIT $around`,
-    ).all({ sessionId: row.session_id, workstreamId, createdAt: row.created_at, seq: row.seq, around }) as RecordRow[];
+    ).all({ sessions, workstreamId, createdAt: row.created_at, seq: row.seq, around }) as RecordRow[];
   return { before: side(BEFORE_SQL, "DESC"), after: side(AFTER_SQL, "ASC") };
 }
 

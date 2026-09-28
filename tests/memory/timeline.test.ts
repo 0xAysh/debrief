@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
 import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
-import { claudeConfigDir, claudeDelegatedTurn, codexThreadId, installSubagent, installTranscript } from "../import/fixtures.js";
+import { claudeConfigDir, claudeDelegatedTurn, claudeToolExchange, claudeTurn, codexThreadId, installSubagent, installTranscript } from "../import/fixtures.js";
 
 /**
  * Timelines at seam ③: `read({ recordId, around })` in-process, against real SQLite and Git, with
@@ -268,4 +268,45 @@ describe("a timeline around a read record", () => {
     expect(timeline?.before.map(idOf)).toEqual(ids.slice(0, 2));
     expect(timeline?.after.map(idOf)).toEqual(ids.slice(3));
   });
+
+  test("a decision recorded live has the imported turn that led to it before, and the imported test output that followed after", () => {
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const home = tempDir();
+    const config = claudeConfigDir();
+    const setup = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config });
+    setup.bootstrap({ importChoice: "current_project" });
+    setup.close();
+    // The live Debrief session, stamping records inside the conversation's minutes.
+    const live = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config, now: () => new Date("2026-09-23T09:02:00.000Z") });
+    onCleanup(() => {
+      live.close();
+    });
+    const content = conversation(repo, JSON.stringify(live.bootstrap()));
+    const decision = live.record({ kind: "decision", body: "Send an idempotency key with every gateway charge.", attribution: "user_direction" }).recordId;
+    const transcript = installTranscript(config, "", { cwd: repo, sessionId: CONVERSATION, content });
+    expect(live.endTurn({ transcriptPath: transcript.path }).failure).toBeNull();
+
+    const timeline = live.read({ recordId: decision, around: 3 }).timeline;
+    expect(timeline?.before.some((line) => line.includes("· user_direction · claude-code · unknown] Why do payments get charged twice"))).toBe(true);
+    expect(timeline?.after.some((line) => line.includes("· direct_observation · claude-code · unknown] Bash: $ npm test -- payments/retry"))).toBe(true);
+    // In time order across both sessions: the prompt and its reply, then after the decision the test turn.
+    expect(timeline?.before.map((line) => line.slice(line.indexOf("] ") + 2))).toEqual(["Why do payments get charged twice after a gateway timeout?", "Done with turn 1."]);
+    expect(timeline?.after.map((line) => line.slice(line.indexOf("] ") + 2))).toEqual(["Run the payment retry tests.", "Bash: $ npm test -- payments/retry", "Done with turn 2."]);
+    // And the other way: the imported question's timeline has the live decision after its reply.
+    const question = idOf(timeline?.before[0] ?? "");
+    expect(live.read({ recordId: question, around: 2 }).timeline?.after.map(idOf)).toEqual([idOf(timeline?.before[1] ?? ""), decision]);
+  });
 });
+
+const CONVERSATION = "e0d00000-0000-4000-8000-0000000000e1";
+
+/**
+ * A 2.1.281 Claude Code conversation in `repo`: a question at 09:00, the Debrief output its
+ * live session returned (`debriefOutput`, which names that session) at 09:01, and a test run at 09:03.
+ */
+function conversation(repo: string, debriefOutput: string): string {
+  const first = claudeTurn({ cwd: repo, sessionId: CONVERSATION, n: 1, at: new Date("2026-09-23T09:00:00.000Z"), prompt: "Why do payments get charged twice after a gateway timeout?" });
+  const echo = claudeToolExchange({ cwd: repo, sessionId: CONVERSATION, gitBranch: "fix/double-charge", parentUuid: first.last, id: 50, tool: "mcp__debrief__memory_bootstrap", input: {}, result: debriefOutput });
+  const second = claudeTurn({ cwd: repo, sessionId: CONVERSATION, n: 2, at: new Date("2026-09-23T09:03:00.000Z"), prompt: "Run the payment retry tests.", command: "npm test -- payments/retry", after: "00000000-0000-4000-8000-000000000051" });
+  return first.lines + echo + second.lines;
+}
