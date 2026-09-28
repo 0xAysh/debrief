@@ -1,4 +1,5 @@
 import { RANKED_BY, splitIdentifier } from "./search.js";
+import { describeTrust, type TrustReason } from "./trust.js";
 
 /**
  * Reads what a recall query asks for beyond its words, with fixed rules and no model.
@@ -15,7 +16,8 @@ import { RANKED_BY, splitIdentifier } from "./search.js";
  *   earlier one.
  *
  * The words searched are always the query's own (a record may itself say "last week"), so
- * these rules only reorder what keyword search finds. The one exception is a query that is
+ * these rules only reorder what keyword search finds. After them, trust (`retrieval/trust.ts`)
+ * orders records the query's words match about equally well; that needs no reading of the query. The one exception is a query that is
  * only a time and question filler ("what did we do yesterday?"): searching "what did we do"
  * would match records at random, so it lists recent records, the time asked for first.
  */
@@ -155,14 +157,15 @@ const FILLER = new Set(
 );
 
 /**
- * The pack's short `why` for a record the query's tiers lifted (`RANKED_BY` bits), naming the
- * phrases it `contains`; undefined when bm25 alone placed it.
+ * The pack's short `why` for a record the query's tiers or trust lifted (`RANKED_BY` bits), naming
+ * the phrases it `contains` and what trust saw on page 1 (`trusted`); undefined when bm25 alone placed it.
  */
-export function explainRank(bits: number, query: ParsedQuery, contains: readonly string[]): string | undefined {
+export function explainRank(bits: number, query: ParsedQuery, contains: readonly string[], trusted?: TrustReason): string | undefined {
   const reasons: string[] = [];
   if ((bits & RANKED_BY.phrase) !== 0 && contains.length > 0) reasons.push(`exact ${contains.map((phrase) => JSON.stringify(phrase)).join(", ")}`);
   if ((bits & RANKED_BY.window) !== 0 && query.window !== null) reasons.push(`created ${query.window.label}`);
   if ((bits & RANKED_BY.newest) !== 0) reasons.push("newest first: asks about now");
+  if ((bits & RANKED_BY.trust) !== 0 && trusted !== undefined) reasons.push(describeTrust(trusted));
   return reasons.length === 0 ? undefined : reasons.join("; ");
 }
 

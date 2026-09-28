@@ -254,12 +254,14 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
     const full = await resumed.ok<ContextPack>("memory_recall", { query, maxTokens: 8_000 });
     const firstPage = await resumed.ok<ContextPack>("memory_recall", { query, maxBytes: 2_000 });
     const nextPage = await resumed.ok<ContextPack>("memory_recall", { continuation: firstPage.continuation, maxBytes: 2_100 });
-    mainPacks.push(full, firstPage, nextPage);
+    // Trust puts Codex's current correction of src/retry.ts ahead of Claude's equally relevant stale observation (#52), so that follows a page later.
+    const thirdPage = await resumed.ok<ContextPack>("memory_recall", { continuation: nextPage.continuation, maxBytes: 2_100 });
+    mainPacks.push(full, firstPage, nextPage, thirdPage);
     expect(firstPage).toMatchObject({ truncated: true, items: [], checkpoint: { recordId: codexCheckpoint.recordId, truncated: true } });
     expect(firstPage.checkpoint?.excerpt).toMatch(/cut by Debrief.*memory_read/);
     expect(firstPage.checkpoint).toMatchObject({ citations: full.checkpoint?.citations, externalRefs: full.checkpoint?.externalRefs, warning: full.checkpoint?.warning });
     expect(nextPage.items.length).toBeGreaterThan(0);
-    for (const page of [firstPage, nextPage]) {
+    for (const page of [firstPage, nextPage, thirdPage]) {
       expect(page.budget.usedBytes).toBeLessThanOrEqual(page.budget.maxBytes);
       for (const cut of page.items) {
         const whole = full.items.find((i) => i.recordId === cut.recordId);
@@ -267,14 +269,14 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
         if (cut.excerpt !== whole?.excerpt) expect(cut.excerpt).toMatch(/cut by Debrief/);
       }
     }
-    expect(nextPage.items.some((i) => i.freshness === "stale" && i.warning !== null)).toBe(true);
+    expect(thirdPage.items.some((i) => i.freshness === "stale" && i.warning !== null)).toBe(true);
 
     // ── (e) No cross-workspace leakage: nothing of the same-named repository in any main pack; direct reads refused ──
     const probe = await resumed.ok<ContextPack>("memory_recall", { query: "upstream gateway deduplicates zebracorn", maxTokens: 8_000 });
     mainPacks.push(probe);
     expect(probe.items.map((i) => i.excerpt).join("\n")).not.toMatch(/upstream gateway deduplicates|zebracorn/);
     const leaked = [otherBoot.scope.workspaceId, otherBoot.scope.workstreamId ?? "", otherDecision.recordId, otherCheckpoint.recordId, ...otherImported, "zebracorn", "upstream gateway deduplicates", otherThread];
-    expect(mainPacks).toHaveLength(10);
+    expect(mainPacks).toHaveLength(11);
     for (const pack of mainPacks) {
       const text = JSON.stringify(pack);
       for (const id of leaked) expect(text).not.toContain(id);
@@ -296,7 +298,7 @@ describe("Claude → fresh Codex → fresh Claude handoff across processes", () 
     writeArtifact("pack-copies", copyPack, placeholders);
     writeArtifact("pack-stale", context, placeholders);
     writeArtifact("pack-conflicting", conflict, placeholders);
-    writeArtifact("pack-truncated", { firstPage, nextPage }, placeholders);
+    writeArtifact("pack-truncated", { firstPage, nextPage, thirdPage }, placeholders);
   }, 120_000);
 
   test("a worktree two earlier sessions could continue asks instead of guessing, stays workspace-level until the choice, then binds it", async () => {
