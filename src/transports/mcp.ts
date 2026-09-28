@@ -36,12 +36,12 @@ const TOOLS: Record<OperationName, ToolSpec> = {
   },
   memory_recall: {
     description:
-      "Return a bounded, cited context pack: the head checkpoint first, then eligible records ranked for the query. Respects maxTokens/maxBytes (bodies are cut first, never warnings or citations); follow `continuation` for more. Items carry recordIds, citations, attribution, host/session/source provenance, live freshness per reference with a warning (stale/unknown: read the current file; remote refs: verify with your own tools), and corroboration counted by independent roots, with copies (branched transcripts, derived or cited restatements) collapsed under copies. Debrief never returns file content. While scope.ambiguity is set, only workspace-level memory is returned. mode \"compact\" returns the same sequence as one line per entry (id, date, kind, attribution, host, freshness, a short excerpt), several times as many per budget: survey with it, then memory_read the few that matter. A continuation works in either mode.",
+      "Return a bounded, cited context pack: the head checkpoint first, then eligible records ranked for the query. Respects maxTokens/maxBytes (bodies are cut first, never warnings or citations); follow `continuation` for more. Items carry recordIds, citations, attribution, host/session/source provenance, live freshness per reference with a warning (stale/unknown: read the current file; remote refs: verify with your own tools), and corroboration counted by independent roots, with copies (branched transcripts, derived or cited restatements) collapsed under copies. Debrief never returns file content. While scope.ambiguity is set, only workspace-level memory is returned. mode \"compact\" returns the same sequence as one line per entry (id, date, kind, attribution, host, freshness, a short excerpt), several times as many per budget: survey with it, then memory_read the few that matter (around: N for what came just before and after). A continuation works in either mode.",
     run: (memory, args) => memory.recall(args as never),
   },
   memory_read: {
     description:
-      "Expand one record by recordId within a byte/token budget; continue with nextOffset. Freshness of its references is checked live, as in recall. Other workstreams' records and records that are no longer current (corrected, retracted, superseded, or resting on one) are refused; the error names the replacement.",
+      "Expand one record by recordId within a byte/token budget; continue with nextOffset. around: N (1–10) adds up to N records of its session before and after it, as index lines in time order: what led to it and what followed. Freshness of its references is checked live, as in recall. Other workstreams' records and records that are no longer current (corrected, retracted, superseded, or resting on one) are refused; the error names the replacement.",
     run: (memory, args) => memory.read(args as never),
   },
   memory_record: {

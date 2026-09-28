@@ -251,7 +251,7 @@ export const RecallInput = z.strictObject({
     .enum(["full", "compact"])
     .optional()
     .describe(
-      'full (default) = cited entries with bodies, references and warnings. compact = one line per hit (id, date, kind, attribution, host, freshness, excerpt), many more per budget: survey with it, then memory_read the few that matter. Pass it again with a continuation',
+      'full (default) = cited entries with bodies, references and warnings. compact = one line per hit (id, date, kind, attribution, host, freshness, excerpt), many more per budget: survey with it, then memory_read the few that matter (around: N adds what came just before and after). Pass it again with a continuation',
     ),
 });
 export type RecallInput = z.input<typeof RecallInput>;
