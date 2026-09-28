@@ -87,7 +87,8 @@ import {
   type TestRunView,
   worktreeFingerprint,
 } from "./retrieval/freshness.js";
-import { type Candidate, clipToBytes, loadCandidates, PAGE_CANDIDATES, rankSequence, rebuildSearchIndex, SEQUENCE_CAP, toFtsQuery } from "./retrieval/search.js";
+import { explainRank, parseQuery } from "./retrieval/query.js";
+import { type Candidate, clipToBytes, loadCandidates, PAGE_CANDIDATES, phrasesContained, rankSequence, rebuildSearchIndex, SEQUENCE_CAP, toFtsQuery } from "./retrieval/search.js";
 import {
   type Applicability,
   type Attribution,
@@ -162,6 +163,11 @@ export interface OpenMemoryOptions {
   transcriptAdapter?: TranscriptAdapter;
   /** How long `bootstrap` may spend importing the current project's transcripts before returning. Default 3000 ms. */
   importBudgetMs?: number;
+  /**
+   * The clock `record` stamps records with and `recall` reads relative dates ("yesterday",
+   * "last week") against. Defaults to the system clock; tests set it.
+   */
+  now?: () => Date;
 }
 
 /**
@@ -199,6 +205,12 @@ export interface PackItem {
   excerpt: string;
   /** True when `excerpt` is not the whole body. */
   truncated: boolean;
+  /**
+   * Why the item ranked where it did, when more than keyword relevance decided: it contains a
+   * quoted phrase or identifier from the query (`exact "rankSequence"`), falls in the time the
+   * query names (`created last week`), or is the newest relevant record for a question about now.
+   */
+  why?: string;
   attribution: Attribution;
   reviewState: ReviewState;
   /**
@@ -684,6 +696,7 @@ class LocalMemory implements Memory {
   private readonly host: string;
   private readonly home: string;
   private readonly busyTimeoutMs: number | undefined;
+  private readonly now: () => Date;
   private hostSessionId: string | undefined;
   private bound: Bound | undefined;
   /** The workspace database opened before any session was bound (a hook's capture); bind adopts it. */
@@ -702,6 +715,7 @@ class LocalMemory implements Memory {
     this.host = options.host.trim().slice(0, LIMITS.hostChars) || "unknown";
     this.home = resolveHome(options.home);
     this.busyTimeoutMs = options.busyTimeoutMs;
+    this.now = options.now ?? (() => new Date());
     this.hostSessionId = options.hostSessionId;
     const adapter = options.transcriptAdapter ?? hostDescriptor(this.host)?.transcripts?.(options) ?? null;
     this.importer =
@@ -773,6 +787,7 @@ class LocalMemory implements Memory {
               : { ...applicability, testRun: { ...parsed.testRun, ...ranAgainst, evidence: capturedOutput(db, parsed.supportedBy, parsed.testRun) ? "captured" : "asserted" } },
           externalRefs,
           links,
+          createdAt: this.now().toISOString(),
         });
         return {
           recordId: written.recordId,
@@ -1412,20 +1427,36 @@ class LocalMemory implements Memory {
     }
     const query = continued === null ? (parsed.query ?? null) : continued.query;
     const sequenceKinds = continued === null ? kinds : continued.kinds;
-    const match = query === null ? null : toFtsQuery(query);
+    const intent = query === null ? null : parseQuery(query, this.now());
+    const match = intent === null || intent.words === null ? null : toFtsQuery(intent.words);
     const budget = effectiveBudget(parsed);
 
     return db.transaction((): ContextPack => {
       let sequence: number[];
       let beyondCap: number;
+      // Frozen with the order: a later page explains its items as page 1 ranked them.
+      let rankedBy: ReadonlyMap<number, number>;
       if (continued === null) {
-        const ranked = rankSequence(db, { workstreamId: scope.workstreamId, match, kinds: sequenceKinds });
+        const ranked = rankSequence(db, {
+          workstreamId: scope.workstreamId,
+          match,
+          kinds: sequenceKinds,
+          phrases: intent?.phrases ?? [],
+          window: intent?.window ?? null,
+          current: intent?.current ?? false,
+        });
         sequence = ranked.seqs;
         beyondCap = ranked.total - ranked.seqs.length;
+        rankedBy = ranked.rankedBy;
       } else {
         sequence = continued.remaining;
         beyondCap = continued.beyondCap;
+        rankedBy = continued.rankedBy;
       }
+      const whyOf = (row: Candidate): string | undefined => {
+        const bits = rankedBy.get(row.seq) ?? 0;
+        return intent === null || bits === 0 ? undefined : explainRank(bits, intent, phrasesContained(row, intent.phrases));
+      };
       const view = scopeView(db, scope);
       const head = continued === null ? loadHeadCheckpoint(db, scope.workstreamId) : { row: null, withheld: null };
       const checkpointRow = head.row;
@@ -1464,7 +1495,7 @@ class LocalMemory implements Memory {
               }),
             };
       const itemPackables = (count: number, freshnessOf: (row: Candidate) => RecordFreshness): Packable<PackItem>[] =>
-        groups.slice(0, count).map((group) => itemPackable(group, freshnessOf(group.representative), citations, sources, roots));
+        groups.slice(0, count).map((group) => itemPackable(group, freshnessOf(group.representative), citations, sources, roots, whyOf(group.representative)));
 
       // Resume at the first unconsumed group. Copies folded into a returned item leave the
       // sequence with it; records dropped as ineligible leave it too.
@@ -1520,6 +1551,7 @@ class LocalMemory implements Memory {
                   kinds: sequenceKinds,
                   remaining: carried,
                   beyondCap: uncarried,
+                  rankedBy,
                 })
               : null,
           budget: { ...budget, usedBytes: 0, usedTokens: 0 },
@@ -1591,6 +1623,7 @@ function itemPackable(
   citations: ReadonlyMap<string, Citation[]>,
   sources: ReadonlyMap<string, ImportedSource>,
   roots: ReadonlyMap<string, string>,
+  why: string | undefined,
 ): Packable<PackItem> {
   const row = group.representative;
   const fields = recordFields(row);
@@ -1611,6 +1644,7 @@ function itemPackable(
       title: row.title,
       excerpt: cut ? excerpt + CUT_MARKER : excerpt,
       truncated: cut || row.excerpt_source !== row.body,
+      ...(why === undefined ? {} : { why }),
       attribution: fields.attribution,
       reviewState: fields.reviewState,
       freshness: freshness.freshness,

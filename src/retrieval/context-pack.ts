@@ -19,8 +19,9 @@ export const ITEM_EXCERPT_BYTES = 1_000;
 
 /**
  * A continuation may take at most this fraction (1/n) of the budget. Tokens carry their
- * sequence (≤ 500 seqs, ~2.5 KB) and are paid for in the agent's context like any other
- * bytes, so a small budget carries a shorter sequence rather than a token bigger than its entries.
+ * sequence (≤ 500 seqs, ~2.5 KB; a character more per seq when they carry rank reasons) and
+ * are paid for in the agent's context like any other bytes, so a small budget carries a
+ * shorter sequence rather than a token bigger than its entries.
  */
 const CONTINUATION_SHARE = 4;
 
@@ -33,6 +34,8 @@ export interface ContinuationState {
   remaining: number[];
   /** Eligible matches the sequence does not carry (beyond the cap, or dropped to fit a budget); reported, never returned. */
   beyondCap: number;
+  /** Why page 1 ranked each remaining record where it did (`RANKED_BY` bits); absent seqs had none. */
+  rankedBy: ReadonlyMap<number, number>;
 }
 
 /**
@@ -44,6 +47,8 @@ export interface ContinuationState {
  * keeps the token (part of every budget) short.
  */
 export function sealContinuation(secret: Buffer, state: ContinuationState): string {
+  // One base-36 digit per remaining seq, and only when some record has a reason, so a plain query's token is unchanged.
+  const reasons = state.remaining.some((seq) => state.rankedBy.has(seq)) ? state.remaining.map((seq) => (state.rankedBy.get(seq) ?? 0).toString(36)).join("") : null;
   const payload = Buffer.from(
     JSON.stringify({
       v: 3,
@@ -51,6 +56,7 @@ export function sealContinuation(secret: Buffer, state: ContinuationState): stri
       k: state.kinds,
       r: state.remaining.map((seq) => seq.toString(36)).join(","),
       x: state.beyondCap,
+      ...(reasons === null ? {} : { w: reasons }),
     }),
   ).toString("base64url");
   return `${payload}.${sign(secret, state, payload)}`;
@@ -73,15 +79,23 @@ export function openContinuation(secret: Buffer, token: string, scope: { workspa
     k: string[] | null;
     r: string;
     x: number;
+    w?: string;
   };
   if (state.v !== 3) throw invalid("unsupported version");
+  const remaining = state.r === "" ? [] : state.r.split(",").map((seq) => parseInt(seq, 36));
+  const rankedBy = new Map<number, number>();
+  remaining.forEach((seq, i) => {
+    const bits = parseInt(state.w?.[i] ?? "0", 36);
+    if (bits > 0) rankedBy.set(seq, bits);
+  });
   return {
     workspaceId: scope.workspaceId,
     workstreamId: scope.workstreamId,
     query: state.q,
     kinds: state.k,
-    remaining: state.r === "" ? [] : state.r.split(",").map((seq) => parseInt(seq, 36)),
+    remaining,
     beyondCap: state.x,
+    rankedBy,
   };
 }
 
