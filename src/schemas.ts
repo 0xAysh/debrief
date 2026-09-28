@@ -33,6 +33,8 @@ export const LIMITS = {
   checkpointEntryChars: 2_000,
   /** A continuation carries the frozen remainder of its sequence (≤ 500 base-36 seqs). */
   continuationChars: 8_192,
+  /** A read's timeline: at most this many records on each side (`around`). */
+  timelineRecords: 10,
   /** Budgets: tokens are estimated as ceil(utf8Bytes / 4); the tighter of the two limits applies. */
   defaultMaxTokens: 2_000,
   maxTokens: 8_000,
@@ -249,7 +251,7 @@ export const RecallInput = z.strictObject({
     .enum(["full", "compact"])
     .optional()
     .describe(
-      'full (default) = cited entries with bodies, references and warnings. compact = one line per hit (id, date, kind, attribution, host, freshness, excerpt), many more per budget: survey with it, then memory_read the few that matter. Pass it again with a continuation',
+      'full (default) = cited entries with bodies, references and warnings. compact = one line per hit (id, date, kind, attribution, host, freshness, excerpt), many more per budget: survey with it, then memory_read the few that matter (around: N adds what came just before and after). Pass it again with a continuation',
     ),
 });
 export type RecallInput = z.input<typeof RecallInput>;
@@ -263,6 +265,16 @@ export const ReadInput = z.strictObject({
    * offset that falls inside a surrogate pair snaps back to the start of that code point.
    */
   offset: z.int().min(0).default(0),
+  /**
+   * Also return up to this many of the same session's records on each side of this one, as
+   * index lines in time order: what led to it and what followed. They share the budget with the body.
+   */
+  around: z
+    .int()
+    .min(1)
+    .max(LIMITS.timelineRecords)
+    .optional()
+    .describe("Also return up to this many records before and after this one in its session, as index lines (what led to it, what followed); they share the budget with the body"),
 });
 export type ReadInput = z.input<typeof ReadInput>;
 

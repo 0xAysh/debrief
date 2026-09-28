@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
-import type { CompactPack, RecordResult, StatusResult } from "../../src/memory.js";
+import type { CompactPack, ReadResult, RecordResult, StatusResult } from "../../src/memory.js";
 import { initRepo, tempDir } from "../helpers.js";
 import { CLI, spawnServer } from "./harness.js";
 
@@ -73,6 +73,33 @@ describe("MCP protocol surface", () => {
     expect(pack.items).toEqual([`${recordId} [${createdAt.slice(0, 10)} · decision · user_direction · debrief-test · unknown] Retry failed jobs with backoff.`]);
     expect(pack.budget.usedBytes).toBe(Buffer.byteLength(JSON.stringify(pack), "utf8"));
     expect((await server.call("memory_recall", { mode: "brief" })).structured).toMatchObject({ error: { code: "invalid_input" } });
+  });
+
+  test("memory_read takes around 1–10 and adds a timeline only when asked; without it the result is unchanged", async () => {
+    const server = await spawnServer({ cwd: initRepo(), home: tempDir() });
+    const tools = (await server.client.listTools()).tools;
+    const read = tools.find((t) => t.name === "memory_read");
+    expect((read?.inputSchema.properties as Record<string, object>)["around"]).toMatchObject({ type: "integer", minimum: 1, maximum: 10 });
+    // Taught where the agent decides: the read tool, and the compact recall that leads to it (the protocol has no room).
+    expect(read?.description).toMatch(/around/);
+    expect((tools.find((t) => t.name === "memory_recall")?.inputSchema.properties as Record<string, { description?: string }>)["mode"]?.description).toMatch(/around/);
+    await server.ok("memory_bootstrap");
+    const ids: string[] = [];
+    for (const body of ["the question", "the decision", "the test run"]) ids.push((await server.ok<RecordResult>("memory_record", { kind: "note", body, attribution: "agent_inference" })).recordId);
+
+    const plain = await server.ok<ReadResult>("memory_read", { recordId: ids[1] });
+    // The fields a read has always returned, in order, and nothing else.
+    expect(Object.keys(plain)).toEqual([
+      "recordId", "title", "body", "offset", "nextOffset", "truncated", "totalLength", "kind", "attribution", "reviewState", "freshness", "applicability",
+      "externalRefs", "testRun", "workspaceLevel", "warning", "independentRoot", "links", "checkpointRevision", "host", "sessionId", "source", "contentHash",
+      "createdAt", "budget", "corrections",
+    ]);
+    expect(plain.budget.usedBytes).toBe(Buffer.byteLength("the decision"));
+    const around = await server.ok<ReadResult>("memory_read", { recordId: ids[1], around: 1 });
+    expect(Object.keys(around)).toEqual([...Object.keys(plain), "timeline"]);
+    expect(around.timeline).toMatchObject({ before: [expect.stringMatching(new RegExp(`^${ids[0]} .* the question$`))], after: [expect.stringMatching(new RegExp(`^${ids[2]} .* the test run$`))] });
+    for (const bad of [0, 11]) expect((await server.call("memory_read", { recordId: ids[1], around: bad })).structured).toMatchObject({ error: { code: "invalid_input" } });
+    await server.close();
   });
 
   test("a payload carrying workspaceId or cwd is an invalid_input envelope", async () => {
