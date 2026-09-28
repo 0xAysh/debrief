@@ -270,20 +270,12 @@ describe("a timeline around a read record", () => {
   });
 
   test("a decision recorded live has the imported turn that led to it before, and the imported test output that followed after", () => {
-    const repo = initRepo({ branch: "fix/double-charge" });
-    const home = tempDir();
-    const config = claudeConfigDir();
-    const setup = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config });
-    setup.bootstrap({ importChoice: "current_project" });
-    setup.close();
+    const w = importing();
     // The live Debrief session, stamping records inside the conversation's minutes.
-    const live = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config, now: () => new Date("2026-09-23T09:02:00.000Z") });
-    onCleanup(() => {
-      live.close();
-    });
-    const content = conversation(repo, JSON.stringify(live.bootstrap()));
+    const live = w.open(w.repo, "2026-09-23T09:02:00.000Z");
+    const content = conversation(w.repo, [JSON.stringify(live.bootstrap())]).whole;
     const decision = live.record({ kind: "decision", body: "Send an idempotency key with every gateway charge.", attribution: "user_direction" }).recordId;
-    const transcript = installTranscript(config, "", { cwd: repo, sessionId: CONVERSATION, content });
+    const transcript = installTranscript(w.config, "", { cwd: w.repo, sessionId: CONVERSATION, content });
     expect(live.endTurn({ transcriptPath: transcript.path }).failure).toBeNull();
 
     const timeline = live.read({ recordId: decision, around: 3 }).timeline;
@@ -296,17 +288,91 @@ describe("a timeline around a read record", () => {
     const question = idOf(timeline?.before[0] ?? "");
     expect(live.read({ recordId: question, around: 2 }).timeline?.after.map(idOf)).toEqual([idOf(timeline?.before[1] ?? ""), decision]);
   });
+
+  test("the bridge never crosses into a private session", () => {
+    const w = importing();
+    // The host session reconnected Debrief mid-conversation: two live Debrief sessions, both named in its transcript.
+    const kept = w.open(w.repo, "2026-09-23T09:02:00.000Z");
+    const secret = w.open(w.repo, "2026-09-23T09:02:30.000Z");
+    const content = conversation(w.repo, [JSON.stringify(kept.bootstrap()), JSON.stringify(secret.bootstrap())]).whole;
+    const keptIds = ["kept decision", "kept next step"].map((body) => kept.record({ kind: "note", body, attribution: "agent_inference" }).recordId);
+    const secretId = secret.record({ kind: "note", body: "the private session's note", attribution: "agent_inference" }).recordId;
+    const transcript = installTranscript(w.config, "", { cwd: w.repo, sessionId: CONVERSATION, content });
+    expect(kept.endTurn({ transcriptPath: transcript.path }).failure).toBeNull();
+    // Bridged: from the imported question, both live sessions' records follow.
+    const question = kept.recall({ query: "charged twice gateway timeout", mode: "compact" }).items.map(idOf)[0] ?? "";
+    expect(kept.read({ recordId: question, around: 10 }).timeline?.after.map(idOf)).toEqual(expect.arrayContaining([...keptIds, secretId]));
+
+    secret.manage({ action: "private_session" });
+    const all = (recordId: string): string[] => {
+      const timeline = kept.read({ recordId, around: 10 }).timeline;
+      return [...(timeline?.before ?? []), ...(timeline?.after ?? [])].map(idOf);
+    };
+    expect(all(keptIds[0] ?? "")).toEqual([keptIds[1]]);
+    expect(all(keptIds[1] ?? "")).toEqual([keptIds[0]]);
+    expect(catchDebriefError(() => kept.read({ recordId: question, around: 10 })).code).toBe("not_found");
+  });
+
+  test("a transcript naming a session of another workstream bridges only that session's workspace-level records", () => {
+    const w = importing();
+    const worktree = join(tempDir("debrief-wt-"), "wt");
+    git(w.repo, "worktree", "add", "--quiet", "-b", "other", worktree);
+    const elsewhere = w.open(worktree, "2026-09-23T09:02:00.000Z");
+    const content = conversation(w.repo, [JSON.stringify(elsewhere.bootstrap())]);
+    const theirs = elsewhere.record({ kind: "decision", body: "a decision for the other workstream", attribution: "user_direction" }).recordId;
+    const shared = elsewhere.record({ kind: "constraint", body: "true for the whole repository", attribution: "user_direction", workspaceLevel: true }).recordId;
+    const reader = w.open(w.repo, "2026-09-23T09:05:00.000Z");
+    // The first turn is imported at its Stop, into this worktree's workstream. The next names a
+    // session of the other workstream: its transcript is quarantined from there, but the link is kept.
+    const transcript = installTranscript(w.config, "", { cwd: w.repo, sessionId: CONVERSATION, content: content.opening });
+    expect(reader.endTurn({ transcriptPath: transcript.path }).failure).toBeNull();
+    writeFileSync(transcript.path, content.whole);
+    reader.endTurn({ transcriptPath: transcript.path });
+    expect(reader.status().import?.currentProject).toMatchObject({ quarantined: 1 });
+    const question = reader.recall({ query: "charged twice gateway timeout", mode: "compact" }).items.map(idOf)[0] ?? "";
+    expect(question).not.toBe("");
+
+    const timeline = reader.read({ recordId: question, around: 10 }).timeline;
+    expect(timeline?.after.map((line) => line.slice(line.indexOf("] ") + 2))).toEqual(["Done with turn 1.", "true for the whole repository"]);
+    expect(timeline?.after.map(idOf)).toContain(shared);
+    expect(timeline?.after.map(idOf)).not.toContain(theirs);
+  });
 });
+
+/** A repository whose Claude Code transcripts may be imported, and live sessions on it (or a worktree of it) with a fixed clock. */
+function importing(): { repo: string; config: string; open: (cwd: string, at: string) => Memory } {
+  const repo = initRepo({ branch: "fix/double-charge" });
+  const home = tempDir();
+  const config = claudeConfigDir();
+  const setup = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config });
+  setup.bootstrap({ importChoice: "current_project" });
+  setup.close();
+  const open = (cwd: string, at: string): Memory => {
+    const memory = openMemory({ cwd, home, host: "claude-code", claudeConfigDir: config, now: () => new Date(at) });
+    onCleanup(() => {
+      memory.close();
+    });
+    return memory;
+  };
+  return { repo, config, open };
+}
 
 const CONVERSATION = "e0d00000-0000-4000-8000-0000000000e1";
 
 /**
- * A 2.1.281 Claude Code conversation in `repo`: a question at 09:00, the Debrief output its
- * live session returned (`debriefOutput`, which names that session) at 09:01, and a test run at 09:03.
+ * A 2.1.281 Claude Code conversation in `repo`: a question at 09:00, the Debrief output its live
+ * sessions returned (each names its session) at 09:01, and a test run at 09:03. `opening` is the
+ * first turn alone, as a Stop hook finds the transcript after it.
  */
-function conversation(repo: string, debriefOutput: string): string {
+function conversation(repo: string, debriefOutputs: string[]): { opening: string; rest: string; whole: string } {
   const first = claudeTurn({ cwd: repo, sessionId: CONVERSATION, n: 1, at: new Date("2026-09-23T09:00:00.000Z"), prompt: "Why do payments get charged twice after a gateway timeout?" });
-  const echo = claudeToolExchange({ cwd: repo, sessionId: CONVERSATION, gitBranch: "fix/double-charge", parentUuid: first.last, id: 50, tool: "mcp__debrief__memory_bootstrap", input: {}, result: debriefOutput });
-  const second = claudeTurn({ cwd: repo, sessionId: CONVERSATION, n: 2, at: new Date("2026-09-23T09:03:00.000Z"), prompt: "Run the payment retry tests.", command: "npm test -- payments/retry", after: "00000000-0000-4000-8000-000000000051" });
-  return first.lines + echo + second.lines;
+  let parentUuid = first.last;
+  let echoes = "";
+  debriefOutputs.forEach((result, i) => {
+    const id = 50 + 10 * i;
+    echoes += claudeToolExchange({ cwd: repo, sessionId: CONVERSATION, gitBranch: "fix/double-charge", parentUuid, id, tool: "mcp__debrief__memory_bootstrap", input: {}, result });
+    parentUuid = `00000000-0000-4000-8000-${(id + 1).toString().padStart(12, "0")}`;
+  });
+  const second = claudeTurn({ cwd: repo, sessionId: CONVERSATION, n: 2, at: new Date("2026-09-23T09:03:00.000Z"), prompt: "Run the payment retry tests.", command: "npm test -- payments/retry", after: parentUuid });
+  return { opening: first.lines, rest: echoes + second.lines, whole: first.lines + echoes + second.lines };
 }
