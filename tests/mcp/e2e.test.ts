@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { BootstrapResult, CheckpointResult, ContextPack, RecordResult } from "../../src/memory.js";
-import { initRepo, tempDir } from "../helpers.js";
+import { git, initRepo, tempDir } from "../helpers.js";
 import { spawnServer } from "./harness.js";
 
 const ARTIFACTS = join(import.meta.dirname, "__artifacts__");
@@ -78,5 +78,35 @@ describe("MCP end-to-end", () => {
 
     mkdirSync(ARTIFACTS, { recursive: true });
     writeFileSync(join(ARTIFACTS, "sample-context-pack.json"), JSON.stringify(pack, null, 2) + "\n");
+  });
+});
+
+describe("cited-line freshness through the server", () => {
+  test("memory_recall reports moved cited lines with where they are now, and an edit elsewhere as changed_elsewhere", async () => {
+    const repo = initRepo();
+    const charge = "export function charge() {\n  return retry(3);\n}\n";
+    const refund = "export function refund() {\n  return once();\n}\n";
+    mkdirSync(join(repo, "src"));
+    writeFileSync(join(repo, "src/payments.ts"), `${charge}\n${refund}`);
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "payments");
+    const server = await spawnServer({ cwd: repo, home: tempDir(), host: "claude-code" });
+    await server.ok<BootstrapResult>("memory_bootstrap", { hostSessionId: "claude-session-1" });
+    const { recordId } = await server.ok<RecordResult>("memory_record", {
+      kind: "evidence",
+      body: "charge() retries three times without an idempotency key",
+      attribution: "direct_observation",
+      externalRefs: [{ kind: "code", locator: "src/payments.ts", lines: [1, 3] }],
+    });
+    const refOf = async (): Promise<unknown> => (await server.ok<ContextPack>("memory_recall", { maxTokens: 2_000 })).items.find((item) => item.recordId === recordId)?.externalRefs[0];
+
+    writeFileSync(join(repo, "src/payments.ts"), `import { retry } from "./retry";\n\n${charge}\n${refund}`);
+    expect(await refOf()).toMatchObject({ lines: [1, 3], linesNow: [3, 5], freshness: "current", reason: "lines_moved" });
+
+    writeFileSync(join(repo, "src/payments.ts"), `${charge}\nexport function refund(key) {\n  return once(key);\n}\n`);
+    const ref = await refOf();
+    expect(ref).toMatchObject({ lines: [1, 3], freshness: "current", reason: "changed_elsewhere" });
+    expect(ref).not.toHaveProperty("linesNow");
+    expect(ref).not.toHaveProperty("citedHash");
   });
 });

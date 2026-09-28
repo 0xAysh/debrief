@@ -105,7 +105,14 @@ export const ExternalRef = z.strictObject({
   /** Repository-relative path, issue number, URL, … — a pointer, never the content. */
   locator: z.string().min(1).max(500),
   path: z.string().min(1).max(500).optional(),
-  lines: z.tuple([z.int().min(1), z.int().min(1)]).optional(),
+  /**
+   * `[start, end]`, 1-based and inclusive. For code Debrief observes, it also fingerprints these
+   * lines' text, so an edit elsewhere in the file, or one that only moves them, leaves the reference current.
+   */
+  lines: z
+    .tuple([z.int().min(1), z.int().min(1)])
+    .refine(([start, end]) => end >= start, "lines is [start, end]: end must be at least start")
+    .optional(),
   /**
    * Pins the reference to a version. Leave `commit` and `observedHash` out for code as it is
    * on disk now: Debrief then records the commit, dirty state and a `sha256:` hash itself.

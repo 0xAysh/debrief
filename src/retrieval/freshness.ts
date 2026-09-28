@@ -13,16 +13,37 @@ import type { ExternalRef, Freshness } from "../schemas.js";
  *
  * - {@link captureObservations} runs when an agent writes a record or checkpoint: for
  *   each local code reference it notes the worktree's commit, whether the file was dirty,
- *   and a bounded SHA-256 of the file (never the content itself).
+ *   a bounded SHA-256 of the file and, when the reference cites `lines`, a SHA-256 of
+ *   those lines' text (never the content itself).
  * - {@link checkFreshness} runs at recall/read time for the selected records only, and
  *   labels every reference current / stale / unknown with a reason.
  *
  * Why these signals, and how much each is trusted:
- * - **The file hash is authoritative.** Equal bytes mean the observation still describes
- *   the file; different bytes mean it may not. The whole file is hashed rather than the
- *   cited line range, because line numbers shift with any edit above them and a range
- *   hash would call moved-but-identical code stale or, worse, changed code current.
- *   A whole-file change is a conservative "read it again", which is the safe error.
+ * - **The file hash is authoritative when it matches.** Equal bytes mean the observation
+ *   still describes the file. In 0.1.0 different bytes alone meant `stale`: safe, but too
+ *   eager, since a blank line added anywhere made every memory citing the file stale, and
+ *   agents learn to ignore a label that fires on every edit.
+ * - **Cited lines are fingerprinted by their text, not their position.** A hash of the
+ *   range *as a position* would misfire both ways (moved code stale, other text shifted
+ *   under the old numbers current), which is why 0.1.0 hashed only the whole file. Hashing the
+ *   cited *text* and searching the current file for it avoids both: when the file's bytes
+ *   differ, the cited text found exactly once at the same lines is `changed_elsewhere`,
+ *   found exactly once at other lines is `lines_moved` with `linesNow` (both current), and
+ *   found nowhere is `lines_changed` (stale). The text is normalised only for line endings
+ *   (`\r\n` = `\n`, a trailing newline or not), which editors and Git's autocrlf change
+ *   without changing the code; trailing whitespace and indentation stay significant, because
+ *   they can carry meaning (Python, YAML, Markdown line breaks, string literals) and a false
+ *   `current` costs more than a false `stale`. The fingerprint is taken only when it names
+ *   one place: a range that is past the end, whitespace-only, or whose text occurs more than
+ *   once in the file, or that fills the write's hashing budget, keeps the whole-file rule
+ *   (otherwise an edit to the cited copy would find another and read as current). An inverted
+ *   range is `invalid_input` at the schema; the check here is defence in depth. At check time, text found more than once also
+ *   falls back to the whole-file verdict, and a search the hashing budget cannot finish is
+ *   `unknown` / `check_limit`. References without `lines`, and references stored before this
+ *   (no `citedHash`), keep the whole-file rule. Known limits, both false `current`s: the
+ *   label covers the cited text only, so a claim that also depends on code outside the range
+ *   (a callee in the same file) needs that code cited too; and text is identity, so cited
+ *   lines copied elsewhere and then edited in place read as `lines_moved` to the copy.
  * - **Commit + clean state is a shortcut, never a verdict on its own.** When the file was
  *   clean at commit C and is still clean with HEAD at C, Git guarantees the same bytes,
  *   so the file need not be read. This also covers files too large to hash. A dirty or
@@ -45,7 +66,8 @@ import type { ExternalRef, Freshness } from "../schemas.js";
  *   Debrief captured from the transcript) is an assertion and is never current.
  *
  * Work is bounded: at most {@link FRESHNESS_LIMITS.refsPerCheck} references and
- * {@link FRESHNESS_LIMITS.totalBytes} hashed bytes per call, files over
+ * {@link FRESHNESS_LIMITS.totalBytes} hashed bytes per call (searching for cited lines
+ * draws on the same budget, and hashes only windows of the cited byte length), files over
  * {@link FRESHNESS_LIMITS.fileBytes} are never read, results are cached per call, and Git
  * runs at most twice per call (one path-limited `git status`, one `cat-file` only when a
  * caller-supplied commit must be checked), plus one working-tree `git status` only when a
@@ -61,10 +83,16 @@ export const FRESHNESS_LIMITS = {
 export const FRESHNESS_REASONS = [
   /** current: the file's bytes (or its clean state at the observed commit) are unchanged. */
   "unchanged",
+  /** current: the file's bytes differ, but the cited `lines` hold the text observed, at the same line numbers. */
+  "changed_elsewhere",
+  /** current: the cited `lines` hold the text observed, now at other line numbers (lines were added or removed above). */
+  "lines_moved",
   /** stale: the file's bytes differ from what was observed. */
   "changed",
   /** stale: the observed file no longer exists. */
   "missing",
+  /** stale: the text of the cited `lines` is nowhere in the file any more (edited or removed). */
+  "lines_changed",
   /** unknown: nothing was fingerprinted when this reference was stored. */
   "not_observed",
   /** unknown: a file a transcript read or edited; its content then was never fingerprinted. */
@@ -116,12 +144,18 @@ export type TestRunView = Omit<StoredTestRun, "worktree"> & { applies: Freshness
 export interface StoredRef extends ExternalRef {
   /** Debrief-captured: the file had uncommitted or untracked changes when observed. */
   dirty?: boolean;
+  /** Debrief-captured: `sha256:` of the cited `lines` as {@link citeLines} normalises them (never the text). */
+  citedHash?: string;
+  /** Debrief-captured: the byte length of that normalised text, so a recheck hashes only same-length windows. */
+  citedBytes?: number;
 }
 
 /** A reference as presented: the pointer, when it was observed, and its freshness now. */
 export type CheckedRef = Omit<ExternalRef, "observedHash"> & {
   freshness: Freshness;
   reason: FreshnessReason;
+  /** `lines_moved` only: where the cited text is now (`lines` stays as recorded). */
+  linesNow?: [number, number];
 };
 
 export interface RecordFreshness {
@@ -187,6 +221,14 @@ export function captureObservations(worktree: string, refs: readonly ExternalRef
     if (content.kind === "hashed") {
       budget -= content.bytes;
       captured.observedHash = content.hash;
+      if (ref.lines !== undefined) {
+        const { cited, spent } = citeLines(content.content, ref.lines, budget);
+        budget -= spent;
+        if (cited !== null) {
+          captured.citedHash = cited.hash;
+          captured.citedBytes = cited.bytes;
+        }
+      }
     }
     if (state !== null && state.head !== null) {
       captured.commit = state.head;
@@ -235,6 +277,7 @@ function presentTestRun(run: StoredTestRun): Omit<StoredTestRun, "worktree"> {
 class Checker {
   private readonly worktree: string;
   private readonly hashes = new Map<string, FileHash>();
+  private readonly lines = new Map<string, Lines>();
   private readonly state: GitState | null;
   private readonly knownCommits: ReadonlySet<string>;
   private refsLeft: number = FRESHNESS_LIMITS.refsPerCheck;
@@ -260,8 +303,8 @@ class Checker {
 
   record(subject: FreshnessSubject): RecordFreshness {
     const externalRefs = subject.refs.map((ref) => {
-      const [freshness, reason] = this.ref(ref, subject.imported);
-      return { ...present(ref), freshness, reason };
+      const [freshness, reason, linesNow] = this.ref(ref, subject.imported);
+      return { ...present(ref), freshness, reason, ...(linesNow === undefined ? {} : { linesNow }) };
     });
     const testRun = subject.testRun === undefined ? null : this.testRun(subject.testRun);
     // An asserted run counts as unknown whatever the state: the agent's word is not an observation.
@@ -289,7 +332,7 @@ class Checker {
       : { ...view, applies: "stale", reason: "other_state" };
   }
 
-  private ref(ref: StoredRef, imported: boolean): [Freshness, FreshnessReason] {
+  private ref(ref: StoredRef, imported: boolean): Verdict {
     if (!isLocalFile(ref)) return ["unknown", REMOTE_KINDS.has(ref.kind) ? "remote_unverified" : "not_checkable"];
     if (this.refsLeft-- <= 0) return ["unknown", "check_limit"];
     const path = worktreePath(this.worktree, ref.path ?? ref.locator);
@@ -318,7 +361,8 @@ class Checker {
     const content = this.hash(path, Math.min(FRESHNESS_LIMITS.fileBytes, this.bytesLeft));
     switch (content.kind) {
       case "hashed":
-        return content.hash === ref.observedHash ? ["current", "unchanged"] : ["stale", "changed"];
+        if (content.hash === ref.observedHash) return ["current", "unchanged"];
+        return this.locateCited(path, ref, content.content) ?? ["stale", "changed"];
       case "too_large":
         return this.bytesLeft < FRESHNESS_LIMITS.fileBytes && content.size <= FRESHNESS_LIMITS.fileBytes ? ["unknown", "check_limit"] : ["unknown", "too_large"];
       case "missing":
@@ -326,6 +370,29 @@ class Checker {
       case "unreadable":
         return ["unknown", "unreadable"];
     }
+  }
+
+  /**
+   * The file changed: where the cited lines are now, if the reference fingerprinted them. Null
+   * (the whole-file verdict stands) when it did not, or when the text now occurs more than once.
+   */
+  private locateCited(path: string, ref: StoredRef, content: Buffer): Verdict | null {
+    if (ref.lines === undefined || ref.citedHash === undefined || ref.citedBytes === undefined || !HASH.test(ref.citedHash)) return null;
+    const [start, end] = ref.lines;
+    if (end < start) return null;
+    let lines = this.lines.get(path);
+    if (lines === undefined) {
+      lines = new Lines(content);
+      this.lines.set(path, lines);
+    }
+    const search = findCited(lines, end - start + 1, { hash: ref.citedHash, bytes: ref.citedBytes }, this.bytesLeft);
+    this.bytesLeft -= search.spent;
+    if (!search.complete) return ["unknown", "check_limit"];
+    const [first, second] = search.at;
+    if (first === undefined) return ["stale", "lines_changed"];
+    // Which copy is the cited one cannot be told.
+    if (second !== undefined) return null;
+    return first === start - 1 ? ["current", "changed_elsewhere"] : ["current", "lines_moved", [first + 1, first + 1 + end - start]];
   }
 
   /** Cached per path; `maxBytes` 0 only stats the file. */
@@ -344,11 +411,16 @@ function present(ref: StoredRef): Omit<CheckedRef, "freshness" | "reason"> {
   const pointer: StoredRef = { ...ref };
   delete pointer.observedHash;
   delete pointer.dirty;
+  delete pointer.citedHash;
+  delete pointer.citedBytes;
   return pointer;
 }
 
+/** A reference's label, and for `lines_moved` the 1-based range where the cited text is now. */
+type Verdict = [freshness: Freshness, reason: FreshnessReason, linesNow?: [number, number]];
+
 type FileHash =
-  | { kind: "hashed"; hash: string; bytes: number }
+  | { kind: "hashed"; hash: string; bytes: number; content: Buffer }
   | { kind: "too_large"; size: number }
   | { kind: "missing" }
   | { kind: "unreadable" };
@@ -376,12 +448,105 @@ function hashFile(absolute: string, maxBytes: number): FileHash {
     }
     // The file grew past its stat while being read: report the new size, never a partial hash.
     if (read > stat.size) return { kind: "too_large", size: read };
-    return { kind: "hashed", hash: `sha256:${createHash("sha256").update(buffer.subarray(0, read)).digest("hex")}`, bytes: read };
+    const content = buffer.subarray(0, read);
+    return { kind: "hashed", hash: `sha256:${createHash("sha256").update(content).digest("hex")}`, bytes: read, content };
   } catch {
     return { kind: "unreadable" };
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * A file's lines as byte ranges of its buffer. A line ends at `\n`; a `\r` before it is not part
+ * of the line, and a final `\n` does not start an empty line, so the same text with CRLF or LF
+ * endings, with or without a trailing newline, has the same lines. Nothing else is normalised.
+ */
+class Lines {
+  readonly count: number;
+  private readonly buffer: Buffer;
+  private readonly starts: number[] = [];
+  private readonly ends: number[] = [];
+  /** `offsets[i]`: the normalised bytes of lines 0..i-1, so any window's length is O(1). */
+  private readonly offsets: number[] = [0];
+
+  constructor(buffer: Buffer) {
+    this.buffer = buffer;
+    let start = 0;
+    while (start < buffer.length) {
+      const newline = buffer.indexOf(0x0a, start);
+      const next = newline === -1 ? buffer.length : newline;
+      const end = newline !== -1 && next > start && buffer[next - 1] === 0x0d ? next - 1 : next;
+      this.starts.push(start);
+      this.ends.push(end);
+      this.offsets.push((this.offsets.at(-1) ?? 0) + end - start);
+      start = next + 1;
+    }
+    this.count = this.starts.length;
+  }
+
+  /** Byte length of the `n` lines from index `first`, joined by `\n`. */
+  windowBytes(first: number, n: number): number {
+    return (this.offsets[first + n] ?? 0) - (this.offsets[first] ?? 0) + n - 1;
+  }
+
+  /** `sha256:` of the `n` lines from index `first`, joined by `\n`. */
+  hash(first: number, n: number): string {
+    const digest = createHash("sha256");
+    for (let i = first; i < first + n; i++) {
+      if (i > first) digest.update("\n");
+      digest.update(this.line(i));
+    }
+    return `sha256:${digest.digest("hex")}`;
+  }
+
+  /** Whether the `n` lines from index `first` hold only whitespace (or nothing). */
+  blank(first: number, n: number): boolean {
+    for (let i = first; i < first + n; i++) if (!/^[\t\v\f\r ]*$/.test(this.line(i).toString("latin1"))) return false;
+    return true;
+  }
+
+  private line(i: number): Buffer {
+    return this.buffer.subarray(this.starts[i], this.ends[i]);
+  }
+}
+
+/** The cited lines' text as stored: its hash and normalised byte length, never the text. */
+interface CitedText {
+  hash: string;
+  bytes: number;
+}
+
+/**
+ * The fingerprint of the cited lines (1-based, inclusive), or null when they cannot identify a
+ * place in the file: the range is inverted or runs past the end, holds only whitespace, its text
+ * occurs more than once (an edit to the cited copy would then find the other one and read as
+ * current), or checking that would hash more than `budget` bytes. `spent` is the bytes hashed.
+ */
+function citeLines(content: Buffer, [start, end]: readonly [number, number], budget: number): { cited: CitedText | null; spent: number } {
+  const lines = new Lines(content);
+  const n = end - start + 1;
+  if (n < 1 || end > lines.count || lines.blank(start - 1, n) || lines.windowBytes(start - 1, n) > budget) return { cited: null, spent: 0 };
+  const cited = { hash: lines.hash(start - 1, n), bytes: lines.windowBytes(start - 1, n) };
+  const search = findCited(lines, n, cited, budget - cited.bytes);
+  return { cited: search.complete && search.at.length === 1 ? cited : null, spent: cited.bytes + search.spent };
+}
+
+/**
+ * Where the cited text occurs among the file's windows of `n` lines: the 0-based index of the
+ * first line of at most two matches (a second means it is not unique). Only windows of the cited
+ * byte length are hashed; `complete` is false when that would take more than `budget` bytes.
+ */
+function findCited(lines: Lines, n: number, cited: CitedText, budget: number): { at: number[]; spent: number; complete: boolean } {
+  const at: number[] = [];
+  let spent = 0;
+  for (let i = 0; i + n <= lines.count && at.length < 2; i++) {
+    if (lines.windowBytes(i, n) !== cited.bytes) continue;
+    if (spent + cited.bytes > budget) return { at, spent, complete: false };
+    spent += cited.bytes;
+    if (lines.hash(i, n) === cited.hash) at.push(i);
+  }
+  return { at, spent, complete: true };
 }
 
 /**
