@@ -1,4 +1,5 @@
 import { RANKED_BY, splitIdentifier } from "./search.js";
+import { describeTrust, type TrustFacts } from "./trust.js";
 
 /**
  * Reads what a recall query asks for beyond its words, with fixed rules and no model.
@@ -155,14 +156,15 @@ const FILLER = new Set(
 );
 
 /**
- * The pack's short `why` for a record the query's tiers lifted (`RANKED_BY` bits), naming the
- * phrases it `contains`; undefined when bm25 alone placed it.
+ * The pack's short `why` for a record the query's tiers or trust lifted (`RANKED_BY` bits), naming
+ * the phrases it `contains` and what trust saw on page 1 (`trusted`); undefined when bm25 alone placed it.
  */
-export function explainRank(bits: number, query: ParsedQuery, contains: readonly string[]): string | undefined {
+export function explainRank(bits: number, query: ParsedQuery, contains: readonly string[], trusted?: TrustFacts): string | undefined {
   const reasons: string[] = [];
   if ((bits & RANKED_BY.phrase) !== 0 && contains.length > 0) reasons.push(`exact ${contains.map((phrase) => JSON.stringify(phrase)).join(", ")}`);
   if ((bits & RANKED_BY.window) !== 0 && query.window !== null) reasons.push(`created ${query.window.label}`);
   if ((bits & RANKED_BY.newest) !== 0) reasons.push("newest first: asks about now");
+  if ((bits & RANKED_BY.trust) !== 0 && trusted !== undefined) reasons.push(describeTrust(trusted));
   return reasons.length === 0 ? undefined : reasons.join("; ");
 }
 
