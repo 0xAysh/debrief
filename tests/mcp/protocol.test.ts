@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { describe, expect, test } from "vitest";
-import type { RecordResult, StatusResult } from "../../src/memory.js";
+import type { CompactPack, RecordResult, StatusResult } from "../../src/memory.js";
 import { initRepo, tempDir } from "../helpers.js";
 import { CLI, spawnServer } from "./harness.js";
 
@@ -49,16 +49,30 @@ describe("MCP protocol surface", () => {
   });
 
   test("session-start hook context delivers the same rules", () => {
-    const repo = initRepo();
-    const run = spawnSync(process.execPath, [CLI, "hook", "session-start", "--host", "claude-code"], {
-      cwd: repo,
-      input: JSON.stringify({ session_id: "5e550000-0000-4000-8000-0000000000a9", hook_event_name: "SessionStart", source: "startup" }),
-      encoding: "utf8",
-      env: { ...process.env, DEBRIEF_HOME: tempDir(), CLAUDE_CONFIG_DIR: tempDir() },
-    });
-    expect(run.status).toBe(0);
-    const context = (JSON.parse(run.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+    const context = sessionStartContext();
     for (const rule of RULES) expect(context).toMatch(rule);
+  });
+
+  test("the index → read workflow costs the protocol a line, and session start stays within noise of 0.1.0", async () => {
+    const server = await spawnServer({ cwd: initRepo(), home: tempDir() });
+    const instructions = server.client.getInstructions() ?? "";
+    expect(instructions).toMatch(/mode "compact".*memory_read/s);
+    // 0.1.0's protocol was 12 lines; its session start for an empty repository was 2,815 bytes.
+    expect(instructions.split("\n").length).toBeLessThanOrEqual(14);
+    expect(Buffer.byteLength(sessionStartContext(), "utf8")).toBeLessThanOrEqual(2_850);
+    await server.close();
+  });
+
+  test("memory_recall takes mode compact and returns one line per hit", async () => {
+    const server = await spawnServer({ cwd: initRepo(), home: tempDir() });
+    const recall = (await server.client.listTools()).tools.find((t) => t.name === "memory_recall");
+    expect((recall?.inputSchema.properties as Record<string, { enum?: string[] }>)["mode"]?.enum).toEqual(["full", "compact"]);
+    await server.ok("memory_bootstrap");
+    const { recordId, createdAt } = await server.ok<RecordResult>("memory_record", { kind: "decision", body: "Retry failed jobs\nwith backoff.", attribution: "user_direction" });
+    const pack = await server.ok<CompactPack>("memory_recall", { query: "retry", mode: "compact" });
+    expect(pack.items).toEqual([`${recordId} [${createdAt.slice(0, 10)} · decision · user_direction · debrief-test · unknown] Retry failed jobs with backoff.`]);
+    expect(pack.budget.usedBytes).toBe(Buffer.byteLength(JSON.stringify(pack), "utf8"));
+    expect((await server.call("memory_recall", { mode: "brief" })).structured).toMatchObject({ error: { code: "invalid_input" } });
   });
 
   test("a payload carrying workspaceId or cwd is an invalid_input envelope", async () => {
@@ -222,6 +236,18 @@ describe("MCP protocol surface", () => {
   });
 });
 
+/** What Claude Code's session-start hook injects for an empty repository. */
+function sessionStartContext(): string {
+  const run = spawnSync(process.execPath, [CLI, "hook", "session-start", "--host", "claude-code"], {
+    cwd: initRepo(),
+    input: JSON.stringify({ session_id: "5e550000-0000-4000-8000-0000000000a9", hook_event_name: "SessionStart", source: "startup" }),
+    encoding: "utf8",
+    env: { ...process.env, DEBRIEF_HOME: tempDir(), CLAUDE_CONFIG_DIR: tempDir() },
+  });
+  expect(run.status).toBe(0);
+  return (JSON.parse(run.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+}
+
 interface Reply {
   id?: number | null;
   error?: { code: number; message: string };
@@ -231,8 +257,8 @@ interface Reply {
 /** Every rule of the protocol, checked on both paths it is delivered by. */
 const RULES = [
   /memory_bootstrap first/,
-  /scope\.ambiguity/,
-  /import\.question/,
+  /scope\.ambiguity\.question, wait, then/,
+  /import\.question verbatim, wait, then/,
   /historical observations/i,
   /stale.*unknown.*read the current file/is,
   /independentRoots/,
@@ -244,4 +270,5 @@ const RULES = [
   /memory_checkpoint.*expectedRevision/s,
   /checkpoint_conflict.*never overwrite/is,
   /honest miss/i,
+  /mode "compact".*memory_read/s,
 ];

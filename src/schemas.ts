@@ -241,6 +241,16 @@ export const RecallInput = z.strictObject({
   maxBytes: MaxBytes.optional(),
   /** Opaque token from a previous pack; it fixes the query and kinds of the sequence. */
   continuation: z.string().min(1).max(LIMITS.continuationChars).optional().describe("Token from a previous pack's `continuation` to get the next page"),
+  /**
+   * How entries are rendered, per call: a continuation serves the same sequence in either mode.
+   * The agent chooses; Debrief never switches on its own, so the shape of a result is never a surprise.
+   */
+  mode: z
+    .enum(["full", "compact"])
+    .optional()
+    .describe(
+      'full (default) = cited entries with bodies, references and warnings. compact = one line per hit (id, date, kind, attribution, host, freshness, excerpt), many more per budget: survey with it, then memory_read the few that matter. Pass it again with a continuation',
+    ),
 });
 export type RecallInput = z.input<typeof RecallInput>;
 

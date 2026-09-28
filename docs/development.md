@@ -30,7 +30,7 @@ src/
 ├── bootstrap/             # cwd → workspace → workstream → session
 ├── import/                # consent, transcript adapters (claude, codex), reconcile, privacy
 ├── integrity/             # checkpoints, lifecycle and taints, provenance, preferences, private sessions
-├── retrieval/             # eligibility, search, freshness, context packs, digest, session-start text
+├── retrieval/             # eligibility, search, freshness, context packs, index lines, digest, session-start text
 └── storage/               # SQLite, records, migrations, home-level logs, delete-data
 ```
 
@@ -119,7 +119,7 @@ debrief diag import [--host claude-code|codex]      # import approved transcript
 
 - **Scope** always comes from the current directory's Git worktree. No command or tool accepts a workspace id or path.
 - **Transcripts** are read from `$CLAUDE_CONFIG_DIR/projects` (default `~/.claude/projects`), and from `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions` (default `~/.codex`); nothing else in `CODEX_HOME` is read. The import decision is stored per host in `$DEBRIEF_HOME/consent.json`.
-- **MCP tools:** `memory_bootstrap`, `memory_recall`, `memory_read`, `memory_record`, `memory_checkpoint`, `memory_manage`, `memory_status`. The server's MCP `instructions` carry the agent protocol (`src/protocol.ts`): bootstrap first, verify live state, record with honest attribution, cite evidence, correct or retract wrong memory with `memory_manage` when the user says so, propose a preference only for lasting language, and checkpoint with `expectedRevision` before finishing.
+- **MCP tools:** `memory_bootstrap`, `memory_recall`, `memory_read`, `memory_record`, `memory_checkpoint`, `memory_manage`, `memory_status`. The server's MCP `instructions` carry the agent protocol (`src/protocol.ts`): bootstrap first, verify live state, survey with a compact recall and read only what matters, record with honest attribution, cite evidence, correct or retract wrong memory with `memory_manage` when the user says so, propose a preference only for lasting language, and checkpoint with `expectedRevision` before finishing.
 
 ## Releasing
 
