@@ -93,6 +93,7 @@ import {
   type Candidate,
   clipToBytes,
   loadCandidates,
+  loadRanked,
   PAGE_CANDIDATES,
   phrasesContained,
   RANKED_BY,
@@ -1740,16 +1741,22 @@ function rankByTrust(
   for (const band of ranked.bands) sizes.set(band, (sizes.get(band) ?? 0) + 1);
   const compared = ranked.seqs.filter((_seq, i) => (sizes.get(ranked.bands[i] ?? -1) ?? 0) > 1);
   if (compared.length === 0) return null;
-  const rows = loadCandidates(db, { workstreamId: scope.workstreamId, match: null, seqs: compared });
-  const ids = rows.map((row) => row.id);
-  const imported = importedFrom(db, ids);
+  const rows = loadRanked(db, compared);
+  const imported = importedFrom(db, rows.map((row) => row.id));
   const checked = checkFreshness(scope.worktree, [
     ...(checkpointRow === null ? [] : [freshnessSubject(checkpointRow, false)]),
     ...rows.map((row) => freshnessSubject(row, imported.has(row.id))),
   ]);
-  const roots = independentRoots(db, scope.workstreamId, ids);
-  const claimRoots = new Map<string, Set<string>>();
+  // Roots matter only where a claim is stated more than once: alone, it has one root.
+  const claims = new Map<string, RecordRow[]>();
   for (const row of rows) {
+    const claim = normalizeClaim(row.body);
+    claims.set(claim, [...(claims.get(claim) ?? []), row]);
+  }
+  const repeated = [...claims.values()].filter((stating) => stating.length > 1).flat();
+  const roots = independentRoots(db, scope.workstreamId, repeated.map((row) => row.id));
+  const claimRoots = new Map<string, Set<string>>();
+  for (const row of repeated) {
     const claim = normalizeClaim(row.body);
     claimRoots.set(claim, (claimRoots.get(claim) ?? new Set<string>()).add(rootOf(roots, row.id)));
   }

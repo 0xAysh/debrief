@@ -327,6 +327,19 @@ export function loadCandidates(db: Db, request: { workstreamId: string; match: s
     .all(params) as Candidate[];
 }
 
+/**
+ * The records with the given seqs, in the given order, as stored. Unlike {@link loadCandidates} it
+ * re-applies no eligibility: it is for records {@link rankSequence} returned in this same
+ * transaction. The seq list drives the lookup (primary key), so hundreds of seqs cost no scan of
+ * the workstream, which is what joining them against eligibility's scope index did.
+ */
+export function loadRanked(db: Db, seqs: readonly number[]): RecordRow[] {
+  if (seqs.length === 0) return [];
+  return db
+    .prepare(`SELECT r.* FROM json_each(?) w CROSS JOIN records r ON r.seq = CAST(w.value AS INTEGER) ORDER BY w.key`)
+    .all(JSON.stringify(seqs)) as RecordRow[];
+}
+
 function splitText(text: string, maxBytes: number): string[] {
   const parts = text.split(/(\s+)/u);
   const chunks: string[] = [];
