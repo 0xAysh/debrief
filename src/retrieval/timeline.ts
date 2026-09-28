@@ -14,8 +14,9 @@ import { clipToBytes } from "./search.js";
  * ({@link conversationSessions}): what an agent records live and what the importer later reads
  * from that host session's transcript land in different Debrief sessions (the live one, and the
  * import's `ses_<digest(host, transcript)>`), and `transcript_sessions` links them wherever the
- * transcript carries Debrief output naming the live session. Never the host's session as such: a
- * resumed Codex thread is a new Debrief session with the same thread id, with its own timeline.
+ * transcript carries Debrief output naming the live session. Sessions join only through such a
+ * transcript, never by sharing a host session id alone: a resumed session's live Debrief sessions
+ * are one conversation once its transcript, naming each, is imported.
  *
  * Neighbours are exactly what recall could return here ({@link RECALL_ELIGIBLE_SQL}: this
  * workstream or workspace-level, current, untainted, no checkpoints), so a timeline never shows
@@ -43,25 +44,27 @@ const BEFORE_SQL = `(${AT} < ${THEN} OR (${AT} = ${THEN} AND r.seq < $seq))`;
 const AFTER_SQL = `(${AT} > ${THEN} OR (${AT} = ${THEN} AND r.seq > $seq))`;
 
 /**
- * The Debrief sessions of `sessionId`'s conversation, one transcript hop each way: itself; as a
- * live session, the import sessions of the transcripts whose Debrief output names it; as an import
- * session, the live sessions its transcripts name. A sub-agent's transcript is imported into its
- * parent's session, so a link through it reaches that same import session. A private transcript
- * is never crossed, and no private session is bridged in (by its own mark, or by another session
- * of its host session, as `sessionIsPrivate` rules), although its records were forgotten when it
- * was marked.
+ * The Debrief sessions of `sessionId`'s conversation: itself, and for every transcript linked to
+ * it (its Debrief output names the session, or it was imported into the session), that
+ * transcript's import session and every live session it names. The same set whichever of them a
+ * record comes from: a host session that ran Debrief in two processes (`claude --resume` appends to
+ * the same transcript but starts a new MCP server, so a new live Debrief session) is one
+ * conversation. A sub-agent's transcript is imported into its parent's session, so a link through
+ * it reaches that same import session. A private transcript is never crossed, and no private
+ * session is bridged in (by its own mark, or by another session of its host session, as
+ * `sessionIsPrivate` rules), although its records were forgotten when it was marked.
  */
 export function conversationSessions(db: Db, sessionId: string): string[] {
   const bridged = prepared(
     db,
     `WITH transcripts AS (
-       SELECT host, transcript_id, 'names' AS link FROM transcript_sessions WHERE session_id = $sessionId
-       UNION SELECT host, transcript_id, 'imported' AS link FROM import_cursors WHERE session_id = $sessionId
+       SELECT host, transcript_id FROM transcript_sessions WHERE session_id = $sessionId
+       UNION SELECT host, transcript_id FROM import_cursors WHERE session_id = $sessionId
      ), open AS (
        SELECT * FROM transcripts t WHERE NOT EXISTS (SELECT 1 FROM private_transcripts p WHERE p.host = t.host AND p.transcript_id = t.transcript_id)
      ), linked AS (
-       SELECT c.session_id AS id FROM open t JOIN import_cursors c ON c.host = t.host AND c.transcript_id = t.transcript_id WHERE t.link = 'names'
-       UNION SELECT l.session_id AS id FROM open t JOIN transcript_sessions l ON l.host = t.host AND l.transcript_id = t.transcript_id WHERE t.link = 'imported'
+       SELECT c.session_id AS id FROM open t JOIN import_cursors c ON c.host = t.host AND c.transcript_id = t.transcript_id
+       UNION SELECT l.session_id AS id FROM open t JOIN transcript_sessions l ON l.host = t.host AND l.transcript_id = t.transcript_id
      )
      SELECT s.id FROM linked JOIN sessions s ON s.id = linked.id
      WHERE s.id <> $sessionId AND NOT EXISTS (

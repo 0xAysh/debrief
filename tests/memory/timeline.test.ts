@@ -289,6 +289,30 @@ describe("a timeline around a read record", () => {
     expect(live.read({ recordId: question, around: 2 }).timeline?.after.map(idOf)).toEqual([idOf(timeline?.before[1] ?? ""), decision]);
   });
 
+  test("a resumed conversation is one timeline: a live session's timeline has its sibling live session's records and the imported turns, in time order", () => {
+    const w = importing();
+    // \`claude --resume\` appends to the same transcript but starts a new MCP server process, so a
+    // second live Debrief session (same host session id), and the transcript names both.
+    const first = w.open(w.repo, "2026-09-23T09:02:00.000Z", CONVERSATION);
+    const resumed = w.open(w.repo, "2026-09-23T09:02:30.000Z", CONVERSATION);
+    const content = conversation(w.repo, [JSON.stringify(first.bootstrap()), JSON.stringify(resumed.bootstrap())]).whole;
+    expect(resumed.status().scope?.sessionId).not.toBe(first.status().scope?.sessionId);
+    const decision = first.record({ kind: "decision", body: "Send an idempotency key with every gateway charge.", attribution: "user_direction" }).recordId;
+    const followUp = resumed.record({ kind: "next_step", body: "Backfill keys for in-flight orders.", attribution: "agent_inference" }).recordId;
+    const transcript = installTranscript(w.config, "", { cwd: w.repo, sessionId: CONVERSATION, content });
+    expect(first.endTurn({ transcriptPath: transcript.path }).failure).toBeNull();
+
+    const excerpt = (line: string): string => line.slice(line.indexOf("] ") + 2);
+    const fromFirst = first.read({ recordId: decision, around: 5 }).timeline;
+    expect(fromFirst?.before.map(excerpt)).toEqual(["Why do payments get charged twice after a gateway timeout?", "Done with turn 1."]);
+    expect(fromFirst?.after.map(excerpt)).toEqual(["Backfill keys for in-flight orders.", "Run the payment retry tests.", "Bash: $ npm test -- payments/retry", "Done with turn 2."]);
+    expect(fromFirst?.after[0]?.startsWith(followUp)).toBe(true);
+    // Whichever record it starts from, the conversation is the same.
+    const fromResumed = resumed.read({ recordId: followUp, around: 5 }).timeline;
+    expect(fromResumed?.before.map(idOf)).toEqual([...(fromFirst?.before ?? []).map(idOf), decision]);
+    expect(fromResumed?.after.map(idOf)).toEqual((fromFirst?.after ?? []).slice(1).map(idOf));
+  });
+
   test("the bridge never crosses into a private session", () => {
     const w = importing();
     // The host session reconnected Debrief mid-conversation: two live Debrief sessions, both named in its transcript.
@@ -302,6 +326,8 @@ describe("a timeline around a read record", () => {
     // Bridged: from the imported question, both live sessions' records follow.
     const question = kept.recall({ query: "charged twice gateway timeout", mode: "compact" }).items.map(idOf)[0] ?? "";
     expect(kept.read({ recordId: question, around: 10 }).timeline?.after.map(idOf)).toEqual(expect.arrayContaining([...keptIds, secretId]));
+    // And from a live session, its sibling's records too.
+    expect(kept.read({ recordId: keptIds[1] ?? "", around: 10 }).timeline?.after.map(idOf)).toContain(secretId);
 
     secret.manage({ action: "private_session" });
     const all = (recordId: string): string[] => {
@@ -340,15 +366,15 @@ describe("a timeline around a read record", () => {
 });
 
 /** A repository whose Claude Code transcripts may be imported, and live sessions on it (or a worktree of it) with a fixed clock. */
-function importing(): { repo: string; config: string; open: (cwd: string, at: string) => Memory } {
+function importing(): { repo: string; config: string; open: (cwd: string, at: string, hostSessionId?: string) => Memory } {
   const repo = initRepo({ branch: "fix/double-charge" });
   const home = tempDir();
   const config = claudeConfigDir();
   const setup = openMemory({ cwd: repo, home, host: "claude-code", claudeConfigDir: config });
   setup.bootstrap({ importChoice: "current_project" });
   setup.close();
-  const open = (cwd: string, at: string): Memory => {
-    const memory = openMemory({ cwd, home, host: "claude-code", claudeConfigDir: config, now: () => new Date(at) });
+  const open = (cwd: string, at: string, hostSessionId?: string): Memory => {
+    const memory = openMemory({ cwd, home, host: "claude-code", claudeConfigDir: config, now: () => new Date(at), ...(hostSessionId === undefined ? {} : { hostSessionId }) });
     onCleanup(() => {
       memory.close();
     });
