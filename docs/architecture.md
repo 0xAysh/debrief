@@ -187,7 +187,7 @@ query ─ parseQuery(query, now) ─┬─ words ───────── toF
                                 ├─ phrases ─┐
                                 ├─ window ──┼─ ORDER BY  1. verbatim phrases contained (more first)
                                 └─ now? ────┘            2. relevant AND created in the window
-                                                         3. relevant, newest first (a question about now)
+                                                         3. close, newest first    (a question about now)
                                                          4. bm25, created_at DESC, seq DESC  (the order before #52)
 relevant = bm25 within half of the best record's; close = within 90%
 ```
