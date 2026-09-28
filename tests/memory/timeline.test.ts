@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
-import { initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { codexThreadId } from "../import/fixtures.js";
 
 /** One clock for every session a test opens, a minute per tick, so records interleave in a known order. */
 function clock(): { now: () => Date; tick: () => void } {
@@ -90,5 +91,33 @@ describe("a timeline around a read record", () => {
     expect(timeline?.before.map(idOf)).toEqual(early);
     expect(timeline?.after.map(idOf)).toEqual(late);
     expect([...(timeline?.before ?? []), ...(timeline?.after ?? [])].map(idOf)).not.toContain(checkpoint);
+  });
+
+  test("a private session's records never appear, even when it shares the host session id (a resumed Codex thread)", () => {
+    const time = clock();
+    const repo = initRepo();
+    const home = tempDir();
+    const threadId = codexThreadId();
+    const first = open(repo, home, { ...time, host: "codex", hostSessionId: threadId });
+    const kept: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      kept.push(first.record({ kind: "note", body: `before the resume ${i}`, attribution: "agent_inference" }).recordId);
+      time.tick();
+    }
+    // Resuming the thread starts a new Debrief session with the same thread id.
+    const resumed = open(repo, home, { ...time, host: "codex", hostSessionId: threadId });
+    expect(resumed.status().scope?.sessionId).not.toBe(first.status().scope?.sessionId);
+    const hidden: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      hidden.push(resumed.record({ kind: "note", body: `after the resume ${i}`, attribution: "agent_inference" }).recordId);
+      time.tick();
+    }
+    resumed.manage({ action: "private_session" });
+
+    const reader = open(repo, home, time);
+    const timeline = reader.read({ recordId: kept[2] ?? "", around: 5 }).timeline;
+    expect(timeline?.before.map(idOf)).toEqual([kept[0], kept[1]]);
+    expect(timeline?.after).toEqual([]);
+    for (const id of hidden) expect(catchDebriefError(() => reader.read({ recordId: id, around: 5 })).code).toBe("not_found");
   });
 });
