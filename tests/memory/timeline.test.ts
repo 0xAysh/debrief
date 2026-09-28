@@ -1,6 +1,8 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
-import { catchDebriefError, initRepo, onCleanup, tempDir } from "../helpers.js";
+import { catchDebriefError, git, initRepo, onCleanup, tempDir } from "../helpers.js";
 import { codexThreadId } from "../import/fixtures.js";
 
 /** One clock for every session a test opens, a minute per tick, so records interleave in a known order. */
@@ -195,5 +197,34 @@ describe("a timeline around a read record", () => {
     expect(memory.read({ recordId: ids[0] ?? "", around: 10 }).timeline).toMatchObject({ before: [], after: [expect.stringContaining(ids[1] ?? ""), expect.stringContaining(ids[2] ?? "")] });
     expect(memory.read({ recordId: ids[2] ?? "", around: 10 }).timeline).toMatchObject({ before: [expect.stringContaining(ids[0] ?? ""), expect.stringContaining(ids[1] ?? "")], after: [] });
     for (const around of [0, 11, 1.5]) expect(catchDebriefError(() => memory.read({ recordId: ids[1] ?? "", around })).code).toBe("invalid_input");
+  });
+
+  test("neighbour lines carry live freshness: a cited file edited after recording shows stale", () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "queue.ts"), "export const drain = () => 1;\n");
+    writeFileSync(join(repo, "worker.ts"), "export const retry = () => 1;\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "code");
+    const time = clock();
+    const memory = open(repo, tempDir(), time);
+    const evidence = (body: string, locator: string): string => {
+      const { recordId } = memory.record({ kind: "evidence", body, attribution: "direct_observation", externalRefs: [{ kind: "code", locator }] });
+      time.tick();
+      return recordId;
+    };
+    const drain = evidence("drain is slow", "queue.ts");
+    const target = memory.record({ kind: "decision", body: "batch the drain", attribution: "agent_inference" }).recordId;
+    time.tick();
+    const retry = evidence("retry is linear", "worker.ts");
+    writeFileSync(join(repo, "queue.ts"), "export const drain = () => 2;\n");
+
+    const freshnessOf = (line: string | undefined): string => /\[([^\]]*)\]/.exec(line ?? "")?.[1]?.split(" · ").at(-1) ?? "";
+    const timeline = memory.read({ recordId: target, around: 1 }).timeline;
+    expect(timeline?.before.map(idOf)).toEqual([drain]);
+    expect(freshnessOf(timeline?.before[0])).toBe("stale");
+    expect(freshnessOf(timeline?.after[0])).toBe("current");
+    // The same labels a read of each neighbour shows.
+    expect(memory.read({ recordId: drain }).freshness).toBe("stale");
+    expect(memory.read({ recordId: retry }).freshness).toBe("current");
   });
 });
