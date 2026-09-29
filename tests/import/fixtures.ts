@@ -243,3 +243,98 @@ export function installCodexRollout(
   writeFileSync(path, options.content ?? renderCodexFixture(fixture, { ...options, threadId }));
   return { sessionId: threadId, path };
 }
+
+// ── File reads (#54): transcripts whose tool results are a file's text ──
+
+/** One step of a hand-written session: a tool call with its result as the model saw it, or an assistant reply. */
+export type SessionStep =
+  | { tool: string; input: object; result: string; toolUseResult?: object; isError?: boolean }
+  | { say: string };
+
+/**
+ * A Claude Code 2.1.283 session (newline-terminated lines): a typed prompt, then each step as an
+ * assistant `tool_use` and the user `tool_result` (with `toolUseResult` when given), or an
+ * assistant reply. Timestamps advance one second per step from `at`.
+ */
+export function claudeSession(options: { cwd: string; sessionId: string; at?: Date; steps: readonly SessionStep[] }): string {
+  const at = options.at ?? new Date("2026-09-23T09:00:00.000Z");
+  const common = { isSidechain: false, userType: "external", entrypoint: "cli", cwd: options.cwd, sessionId: options.sessionId, version: "2.1.283", gitBranch: "main" };
+  let n = 0;
+  const uuid = () => `00000000-0000-4000-8000-${(++n).toString().padStart(12, "0")}`;
+  const time = (step: number, ms = 0) => new Date(at.getTime() + step * 1_000 + ms).toISOString();
+  const lines: object[] = [];
+  let parent = uuid();
+  lines.push({ ...common, parentUuid: null, promptId: "p-1", type: "user", message: { role: "user", content: "Look at the gateway." }, uuid: parent, timestamp: time(0), permissionMode: "default", origin: { kind: "human" }, promptSource: "typed" });
+  const assistant = (content: object[], step: number) => {
+    const id = uuid();
+    lines.push({ ...common, parentUuid: parent, type: "assistant", uuid: id, timestamp: time(step), message: { model: "claude-opus-5-5", id: `msg_${id.slice(-4)}`, type: "message", role: "assistant", content, stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } });
+    parent = id;
+  };
+  options.steps.forEach((step, index) => {
+    if ("say" in step) {
+      assistant([{ type: "text", text: step.say }], index + 1);
+      return;
+    }
+    const toolUseId = `toolu_read_${index + 1}`;
+    assistant([{ type: "tool_use", id: toolUseId, name: step.tool, input: step.input }], index + 1);
+    const id = uuid();
+    lines.push({
+      ...common,
+      parentUuid: parent,
+      type: "user",
+      uuid: id,
+      timestamp: time(index + 1, 500),
+      message: { role: "user", content: [{ tool_use_id: toolUseId, type: "tool_result", content: step.result, ...(step.isError === true ? { is_error: true } : {}) }] },
+      ...(step.toolUseResult === undefined ? {} : { toolUseResult: step.toolUseResult }),
+      sourceToolAssistantUUID: parent,
+    });
+    parent = id;
+  });
+  return lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+}
+
+/**
+ * What Claude Code's `Read` tool returns for `text` (a file's exact content): each line of the
+ * window prefixed `N\t` in `message.content`, and the window in `toolUseResult.file`. A final
+ * newline shows as a last, empty line, as Claude Code counts lines (`content.split("\n")`).
+ */
+export function claudeReadStep(path: string, text: string, window: { offset?: number; limit?: number } = {}): SessionStep {
+  const all = text.split("\n");
+  const start = window.offset ?? 1;
+  const shown = all.slice(start - 1, window.limit === undefined ? undefined : start - 1 + window.limit);
+  return {
+    tool: "Read",
+    input: { file_path: path, ...(window.offset === undefined ? {} : { offset: window.offset }), ...(window.limit === undefined ? {} : { limit: window.limit }) },
+    result: shown.map((line, i) => `${start + i}\t${line}`).join("\n"),
+    toolUseResult: { type: "text", file: { filePath: path, content: shown.join("\n"), numLines: shown.length, startLine: start, totalLines: all.length } },
+  };
+}
+
+/** A Claude Code `Bash` step whose stdout was `stdout`: the model sees it with leading blank lines dropped and the end trimmed, as Claude Code shows shell output. */
+export function claudeBashStep(command: string, stdout: string, extra: object = {}): SessionStep {
+  const shown = stdout.replace(/^(?:[ \t]*\n)+/, "").trimEnd();
+  return { tool: "Bash", input: { command, description: "Print the file" }, result: shown, toolUseResult: { stdout: shown, stderr: "", interrupted: false, isImage: false, noOutputExpected: false, ...extra } };
+}
+
+/** Lines `a`..`b` (1-based, inclusive) of `text` as `sed -n 'a,bp'` prints them: each newline-terminated, clipped at the end of the file. */
+export function sedPrint(text: string, a: number, b: number): string {
+  const lines = text.split("\n");
+  if (text.endsWith("\n")) lines.pop();
+  const shown = lines.slice(a - 1, b);
+  return shown.map((line, i) => (a - 1 + i === lines.length - 1 && !text.endsWith("\n") ? line : `${line}\n`)).join("");
+}
+
+/** A Codex 0.142.5 rollout (newline-terminated lines): session_meta, a turn_context, then one `exec_command` call and its framed output per step. */
+export function codexSession(options: { cwd: string; threadId: string; calls: readonly { cmd: string; output: string }[] }): string {
+  const time = (s: number) => new Date(Date.UTC(2026, 0, 1, 0, 1, s)).toISOString();
+  const lines: object[] = [
+    { timestamp: time(0), type: "session_meta", payload: { session_id: options.threadId, id: options.threadId, timestamp: time(0), cwd: options.cwd, originator: "Codex Desktop", cli_version: "0.142.5", source: "vscode", thread_source: "user", model_provider: "openai", base_instructions: { text: "<placeholder base instructions>" }, dynamic_tools: [], git: { branch: "main" } } },
+    { timestamp: time(1), type: "turn_context", payload: { turn_id: "turn-1", cwd: options.cwd } },
+  ];
+  options.calls.forEach((call, index) => {
+    const callId = `call_read_${index + 1}`;
+    lines.push({ timestamp: time(2 + index * 2), type: "response_item", payload: { type: "function_call", id: `fc_${callId}`, name: "exec_command", arguments: JSON.stringify({ cmd: call.cmd, workdir: options.cwd, yield_time_ms: 10_000, max_output_tokens: 10_000 }), call_id: callId } });
+    lines.push({ timestamp: time(3 + index * 2), type: "response_item", payload: { type: "function_call_output", call_id: callId, output: `Chunk ID: 0a1b${index}\nWall time: 0.0100 seconds\nProcess exited with code 0\nOriginal token count: 20\nOutput:\n${call.output}` } });
+  });
+  return lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+}

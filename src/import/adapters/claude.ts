@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type {
   CompatibilityRow,
   ExclusionReason,
+  FileRead,
   NormalizedEvent,
+  OutputFacts,
   ToolKind,
   TranscriptAdapter,
   TranscriptChunk,
@@ -41,7 +43,10 @@ import { inCompatibility } from "../versions.js";
  *   isCompactSummary, origin.kind, subtype, content (system), message.content[] blocks:
  *   text · thinking · redacted_thinking · tool_use{id,name,input} · tool_result{tool_use_id,content,is_error} · image
  *
- * Every other field (usage, toolUseResult, wireToolInputs, snapshots, …) is ignored. Unknown entry
+ * Of `toolUseResult`, only metadata is read, never content: `agentId`/`status` (a sub-agent's
+ * hand-back), `type` and `file.{startLine,numLines,totalLines}` (a `Read` window), and
+ * `persistedOutputPath`, `isImage`, `interrupted`, `stderr` being empty (whether a shell
+ * output reached the model whole). Every other field (usage, wireToolInputs, snapshots, …) is ignored. Unknown entry
  * or block types inside a supported version are skipped and counted (`unsupported_entry`), never
  * interpreted.
  */
@@ -279,12 +284,16 @@ function normalizeEntry(entry: Entry, line: { start: number; end: number }, out:
     let text = "";
     let textBlock = -1;
     const reported = subagentReported(entry, context);
+    // One result per entry is how Claude Code writes them; with several, whose metadata this is cannot be told.
+    const facts = content.filter((b: unknown) => (b as { type?: unknown }).type === "tool_result").length === 1 ? outputFacts(entry) : undefined;
     content.forEach((block: unknown, index) => {
       const b = block as { type?: unknown; text?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown };
       if (b.type === "tool_result" && typeof b.tool_use_id === "string" && reported) {
         exclude("subagent_report");
       } else if (b.type === "tool_result" && typeof b.tool_use_id === "string") {
-        out.push({ ...origin, eventId: eventId(index), type: "tool_result", callId: b.tool_use_id, text: resultText(b.content, exclude), isError: b.is_error === true });
+        const text = resultText(b.content, exclude);
+        const output = facts === undefined ? {} : { output: { ...facts, intact: facts.intact && !HOST_NOTE.test(text) } };
+        out.push({ ...origin, eventId: eventId(index), type: "tool_result", callId: b.tool_use_id, text, isError: b.is_error === true, ...output });
       } else if (b.type === "text" && typeof b.text === "string") {
         if (textBlock < 0) textBlock = index;
         text += (text === "" ? "" : "\n") + b.text;
@@ -344,7 +353,7 @@ function subagentReported(entry: Entry, context: ReadContext): boolean {
 }
 
 /** One-line description, touched paths and semantic kind of a tool call, from its input. */
-function describeCall(name: string, input: Entry, cwd: string): { summary: string; paths: string[]; urls: string[]; toolKind: ToolKind; inputDigest?: string } {
+function describeCall(name: string, input: Entry, cwd: string): { summary: string; paths: string[]; urls: string[]; toolKind: ToolKind; inputDigest?: string; read?: FileRead } {
   const str = (key: string): string | null => (typeof input[key] === "string" ? input[key] : null);
   const debrief = DEBRIEF_TOOL.exec(name);
   if (debrief !== null) return { summary: `${debrief[1] ?? name} ${JSON.stringify(input)}`, paths: [], urls: [], toolKind: "debrief" };
@@ -353,7 +362,8 @@ function describeCall(name: string, input: Entry, cwd: string): { summary: strin
     const offset = typeof input["offset"] === "number" ? input["offset"] : null;
     const limit = typeof input["limit"] === "number" ? input["limit"] : null;
     const lines = offset !== null && limit !== null ? ` (lines ${offset}-${offset + limit - 1})` : "";
-    return { summary: `${name} ${path ?? "(no path)"}${lines}`, paths: path === null ? [] : [path], urls: [], toolKind: "artifact_access" };
+    const read = name === "Read" && path !== null ? { read: { path: isAbsolute(path) ? path : resolve(cwd, path), format: "read_tool" as const, trimmed: false } } : {};
+    return { summary: `${name} ${path ?? "(no path)"}${lines}`, paths: path === null ? [] : [path], urls: [], toolKind: "artifact_access", ...read };
   }
   switch (name) {
     case "Bash":
@@ -384,6 +394,27 @@ function describeCall(name: string, input: Entry, cwd: string): { summary: strin
         inputDigest: `sha256:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`,
       };
   }
+}
+
+/** A note Claude Code adds to shell output (the command printed nothing, or it moved the shell out of the project). */
+const HOST_NOTE = /^\((?:Bash completed with no output|No output)\)$|(?:^|\n)Shell cwd was reset to /;
+
+/**
+ * Whether the model saw a result whole, and a `Read` window, from `toolUseResult` metadata: a
+ * `text` Read's `file` line counts, and for shell output whether it was persisted to a file,
+ * an image, interrupted, or had stderr (which Claude Code shows with stdout). Undefined when
+ * the entry records neither.
+ */
+function outputFacts(entry: Entry): OutputFacts | undefined {
+  const result = asObject(entry["toolUseResult"]);
+  if (result["type"] === "text") {
+    const file = asObject(result["file"]);
+    const [startLine, numLines, totalLines] = [file["startLine"], file["numLines"], file["totalLines"]];
+    if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(numLines) || !Number.isSafeInteger(totalLines)) return undefined;
+    return { intact: true, window: { startLine: startLine as number, numLines: numLines as number, totalLines: totalLines as number } };
+  }
+  if (typeof result["stdout"] !== "string") return undefined;
+  return { intact: result["persistedOutputPath"] === undefined && result["isImage"] !== true && result["interrupted"] !== true && result["stderr"] === "" };
 }
 
 function resultText(content: unknown, exclude: Excluder): string {

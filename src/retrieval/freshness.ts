@@ -150,6 +150,12 @@ export interface StoredRef extends ExternalRef {
   citedHash?: string;
   /** Debrief-captured: the byte length of that normalised text, so a recheck hashes only same-length windows. */
   citedBytes?: number;
+  /**
+   * Imported shell reads only: the cited text's line count, when the host trimmed blank lines from
+   * the edges of `lines` (Claude Code's shell output); the text lies within `lines`, with only
+   * blank lines around it.
+   */
+  citedLines?: number;
 }
 
 /** A reference as presented: the pointer, when it was observed, and its freshness now. */
@@ -346,7 +352,9 @@ class Checker {
 
     const captured = ref.dirty !== undefined;
     const hashed = ref.observedHash !== undefined && HASH.test(ref.observedHash);
-    const observed = captured || hashed;
+    // Only an imported partial read fingerprints its lines without the whole file (see import/read-fingerprint.ts).
+    const citedOnly = imported && !hashed && ref.citedHash !== undefined;
+    const observed = captured || hashed || citedOnly;
     const unobserved = (): [Freshness, FreshnessReason] => {
       if (imported) return ["unknown", "transcript_reference"];
       if (ref.commit !== undefined && !this.knownCommits.has(ref.commit)) return ["unknown", "unknown_commit"];
@@ -361,12 +369,13 @@ class Checker {
       return ["current", "unchanged"];
     }
     // Observed without a hash (too large, or over the capture budget) and the shortcut failed.
-    if (!hashed) return file.kind === "too_large" && file.size > FRESHNESS_LIMITS.fileBytes ? ["unknown", "too_large"] : ["unknown", "not_observed"];
+    if (!hashed && !citedOnly) return file.kind === "too_large" && file.size > FRESHNESS_LIMITS.fileBytes ? ["unknown", "too_large"] : ["unknown", "not_observed"];
     const content = this.hash(path, Math.min(FRESHNESS_LIMITS.fileBytes, this.bytesLeft));
     switch (content.kind) {
       case "hashed":
-        if (content.hash === ref.observedHash) return ["current", "unchanged"];
-        return this.locateCited(path, ref, content.content) ?? ["stale", "changed"];
+        if (hashed && content.hash === ref.observedHash) return ["current", "unchanged"];
+        // With no whole-file hash there is no whole-file verdict to fall back to.
+        return this.locateCited(path, ref, content.content) ?? (hashed ? ["stale", "changed"] : ["unknown", "transcript_reference"]);
       case "too_large":
         return this.bytesLeft < FRESHNESS_LIMITS.fileBytes && content.size <= FRESHNESS_LIMITS.fileBytes ? ["unknown", "check_limit"] : ["unknown", "too_large"];
       case "missing":
@@ -389,14 +398,18 @@ class Checker {
       lines = new Lines(content);
       this.lines.set(path, lines);
     }
-    const search = findCited(lines, end - start + 1, { hash: ref.citedHash, bytes: ref.citedBytes }, this.bytesLeft);
+    const n = ref.citedLines ?? end - start + 1;
+    if (n < 1 || n > end - start + 1) return null;
+    const search = findCited(lines, n, { hash: ref.citedHash, bytes: ref.citedBytes }, this.bytesLeft);
     this.bytesLeft -= search.spent;
     if (!search.complete) return ["unknown", "check_limit"];
     const [first, second] = search.at;
     if (first === undefined) return ["stale", "lines_changed"];
     // Which copy is the cited one cannot be told.
     if (second !== undefined) return null;
-    return first === start - 1 ? ["current", "changed_elsewhere"] : ["current", "lines_moved", [first + 1, first + 1 + end - start]];
+    // In place: where the range starts, or (trimmed edges) after only blank lines of it.
+    const inPlace = first >= start - 1 && first + n <= end && lines.blank(start - 1, first - start + 1);
+    return inPlace ? ["current", "changed_elsewhere"] : ["current", "lines_moved", [first + 1, first + n]];
   }
 
   /** Cached per path; `maxBytes` 0 only stats the file. */
@@ -417,6 +430,7 @@ function present(ref: StoredRef): Omit<CheckedRef, "freshness" | "reason"> {
   delete pointer.dirty;
   delete pointer.citedHash;
   delete pointer.citedBytes;
+  delete pointer.citedLines;
   return pointer;
 }
 
@@ -516,9 +530,15 @@ class Lines {
 }
 
 /** The cited lines' text as stored: its hash and normalised byte length, never the text. */
-interface CitedText {
+export interface CitedText {
   hash: string;
   bytes: number;
+}
+
+/** The fingerprint {@link Lines} gives these lines of a file (a `\r` ending a line is not part of it): for text read elsewhere, e.g. from a transcript. */
+export function linesFingerprint(lines: readonly string[]): CitedText {
+  const text = lines.map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line)).join("\n");
+  return { hash: `sha256:${createHash("sha256").update(text).digest("hex")}`, bytes: Buffer.byteLength(text) };
 }
 
 /**
