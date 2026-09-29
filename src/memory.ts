@@ -55,6 +55,9 @@ import { sessionDigest, workSince } from "./retrieval/digest.js";
 import { oneLine, renderSessionStart, renderSubagentStart, type SessionStart, type SubagentStart, type TurnEnd, unreadableSessionStart, unreadableSubagentStart, userNotice } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
 import { type HookRun, lastHookRuns } from "./import/hook-runs.js";
+import { type JevAccess, jevAccessFromEnv, JevClient, jevState, jevStatus, type JevStatus, readJevConsent } from "./judge/jev.js";
+import { JevLedger, LEDGER_FILE } from "./judge/ledger.js";
+import { type Judgment, type JudgeStep, StillTrue } from "./judge/still-true.js";
 import { removePrivateEverywhere } from "./import/privacy.js";
 import { type CaptureResult, type CaptureSkip, type ImportStatus, readToolResultTitle, TranscriptImporter, unsupportedHostStatus } from "./import/reconcile.js";
 import { type Citation, citationsFor, importedFrom, type ImportedSource, independentRoots, linksOf } from "./integrity/provenance.js";
@@ -148,6 +151,8 @@ export type { ImportedSource, Citation } from "./integrity/provenance.js";
 export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./retrieval/freshness.js";
 export type { HookFailure } from "./import/hook-failures.js";
 export type { HookRun } from "./import/hook-runs.js";
+export type { JevStatus } from "./judge/jev.js";
+export type { Judgment, JudgeStep } from "./judge/still-true.js";
 export type { SessionStart, SubagentStart, TurnEnd } from "./retrieval/session-context.js";
 export type { CaptureResult, CaptureSkip, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
@@ -184,6 +189,12 @@ export interface OpenMemoryOptions {
    * "last week") against. Defaults to the system clock; tests set it.
    */
   now?: () => Date;
+  /**
+   * Where Jev judgments would go and with which key. Defaults to the environment
+   * (`TYPESAFE_API_KEY`, `DEBRIEF_JEV_ENDPOINT`); nothing is sent without the consent
+   * `debrief jev enable` records for that endpoint.
+   */
+  jev?: JevAccess;
 }
 
 /**
@@ -246,6 +257,13 @@ export interface PackItem {
    * the agent's assertion) and whether it `applies` to the commit and working tree as they are now.
    */
   testRun: TestRunView | null;
+  /**
+   * With Jev on (`debrief jev enable`): its verdict on whether the changes since the stale
+   * references were observed invalidate the claim. Advisory: `freshness` is unchanged. Present
+   * only when every stale reference has one; the warning to re-read goes only for "still_holds"
+   * at 0.9 or above.
+   */
+  judgment?: Judgment;
   workspaceLevel: boolean;
   host: string;
   /** Debrief session that wrote (or imported) the record. */
@@ -287,6 +305,8 @@ export interface PackCheckpoint {
   warning: string | null;
   citations: Citation[];
   externalRefs: CheckedRef[];
+  /** As on {@link PackItem}. */
+  judgment?: Judgment;
   host: string;
   sessionId: string | null;
   createdAt: string;
@@ -401,6 +421,8 @@ export interface ReadResult {
   applicability: Applicability;
   externalRefs: CheckedRef[];
   testRun: TestRunView | null;
+  /** As on a pack item. */
+  judgment?: Judgment;
   independentRoot: string;
   /** Links in both directions whose other end is visible in this scope. */
   links: { recordId: string; relation: LinkRelation; direction: "outgoing" | "incoming" }[];
@@ -554,6 +576,8 @@ export interface StatusResult {
   lastCaptureAt: string | null;
   /** Preference proposals in this repository still waiting for the user's answer. */
   preferenceQuestions: number;
+  /** Whether Jev judgments are on here, and what they cost (per UTC day and in total, on this machine). */
+  jev: JevStatus;
 }
 
 /**
@@ -572,7 +596,7 @@ export interface StatusResult {
  *   is `idempotency_conflict` for a different one.
  * - **Checkpoints are compare-and-swap** on `expectedRevision`; never merged.
  * - **Recall filters before ranking** and the whole pack stays within its budget (unless the budget cannot hold even its scope).
- * - Methods are synchronous and throw only `DebriefError` for expected failures.
+ * - Methods are synchronous (except `judge`, the one network call) and throw only `DebriefError` for expected failures.
  */
 export interface Memory {
   /**
@@ -665,6 +689,14 @@ export interface Memory {
   /** Returns one visible record's body slice within a budget, plus its in-scope links. */
   read(input: ReadInput): ReadResult;
   /**
+   * Sends up to `maxCalls` of the Jev judgments recall and read queued (stale references with no
+   * verdict for the versions on disk), one at a time, and caches the verdicts for later recalls.
+   * The one asynchronous operation, and the only one that may use the network: the MCP server
+   * runs it between requests; hooks and the CLI never do. It never throws for the service: a
+   * failure pauses judging and puts a notice on recalls. Resolves at once when Jev is off here.
+   */
+  judge(input?: { maxCalls?: number }): Promise<JudgeStep>;
+  /**
    * Inspects, corrects, supersedes, retracts or restores one claim in this scope. Each change
    * is one transaction that also takes every dependent out of (or back into) current guidance
    * and records an attributed audit entry; see src/integrity/lifecycle.ts.
@@ -744,6 +776,9 @@ class LocalMemory implements Memory {
   private globalDb: Db | undefined;
   /** Null for hosts without a transcript adapter. */
   private readonly importer: TranscriptImporter | null;
+  private readonly jevAccess: JevAccess;
+  /** Opened on the first recall that finds Jev on (or with cached verdicts to show) in this repository. */
+  private judging: { ledger: JevLedger; stillTrue: StillTrue } | undefined;
 
   constructor(options: OpenMemoryOptions) {
     this.cwd = options.cwd;
@@ -752,6 +787,7 @@ class LocalMemory implements Memory {
     this.busyTimeoutMs = options.busyTimeoutMs;
     this.now = options.now ?? (() => new Date());
     this.hostSessionId = options.hostSessionId;
+    this.jevAccess = options.jev ?? jevAccessFromEnv(process.env);
     const adapter = options.transcriptAdapter ?? hostDescriptor(this.host)?.transcripts?.(options) ?? null;
     this.importer =
       adapter === null
@@ -1008,7 +1044,9 @@ class LocalMemory implements Memory {
   read(input: ReadInput): ReadResult {
     return this.guard(() => {
       const parsed = parse(ReadInput, input);
-      const { db, scope } = this.bind();
+      const bound = this.bind();
+      const { db, scope } = bound;
+      const judging = this.stillTrue(bound);
       return db.transaction((): ReadResult => {
         const row = requireVisibleRecord(db, scope.workstreamId, parsed.recordId);
         if (parsed.offset > row.body.length) {
@@ -1038,7 +1076,8 @@ class LocalMemory implements Memory {
         if (corrections !== null) this.seenLifecycle = Math.max(this.seenLifecycle, corrections.watermark);
         const source = sources.get(row.id) ?? null;
         const fields = recordFields(row);
-        const checked = freshness.get(row.id);
+        const live = freshness.get(row.id);
+        const checked: JudgedFreshness | undefined = live === undefined || judging === null ? live : judging.annotate({ recordId: row.id, refs: fields.externalRefs, imported: source !== null }, live);
         return {
           recordId: row.id,
           title: row.title,
@@ -1052,6 +1091,7 @@ class LocalMemory implements Memory {
           warning: checked?.warning ?? null,
           externalRefs: checked?.externalRefs ?? [],
           testRun: checked?.testRun ?? null,
+          ...(checked?.judgment == null ? {} : { judgment: checked.judgment }),
           independentRoot: rootOf(independentRoots(db, scope.workstreamId, [row.id]), row.id),
           links: linksOf(db, scope.workstreamId, row.id),
           checkpointRevision: revision?.revision ?? null,
@@ -1065,6 +1105,26 @@ class LocalMemory implements Memory {
           ...(fitted === null ? {} : { timeline: fitted.timeline }),
         };
       })();
+    });
+  }
+
+  async judge(input: { maxCalls?: number } = {}): Promise<JudgeStep> {
+    const bound = this.closed ? undefined : this.bound;
+    const judging = bound === undefined ? null : this.stillTrue(bound);
+    if (bound === undefined || judging === null) return { calls: 0, pending: 0, paused: false };
+    const { db, scope } = bound;
+    return judging.step(Math.max(1, Math.min(input.maxCalls ?? 2, 8)), {
+      memoryText: (recordId) => {
+        if (this.closed) return null;
+        try {
+          const row = requireVisibleRecord(db, scope.workstreamId, recordId);
+          return row.title === null ? row.body : `${row.title}\n\n${row.body}`;
+        } catch (error) {
+          if (error instanceof DebriefError) return null;
+          throw error;
+        }
+      },
+      sessionPrivate: () => this.closed || sessionIsPrivate(db, { sessionId: scope.sessionId, host: scope.host, hostSessionId: this.hostSessionId }),
     });
   }
 
@@ -1193,12 +1253,14 @@ class LocalMemory implements Memory {
         hookRuns: lastHookRuns(this.home),
         lastCaptureAt: null,
         preferenceQuestions: 0,
+        jev: jevStatus(this.home, this.jevAccess, null, this.now()),
       };
       let db: Db | null = null;
       try {
         if (this.closed) throw new DebriefError("storage_unavailable", "This Memory has been closed.");
         const location = locateWorkspace(this.cwd, this.home);
         result.storage.dbPath = location.dbPath;
+        result.jev.state = jevState(readJevConsent(this.home), this.jevAccess, location.repositoryKey);
         result.scope = {
           workspaceId: location.workspaceId,
           workspaceLabel: location.label,
@@ -1285,6 +1347,9 @@ class LocalMemory implements Memory {
 
   close(): void {
     this.closed = true;
+    this.judging?.stillTrue.close();
+    this.judging?.ledger.close();
+    this.judging = undefined;
     this.globalDb?.close();
     this.globalDb = undefined;
     this.importer?.close();
@@ -1295,6 +1360,25 @@ class LocalMemory implements Memory {
   }
 
   // ── internals ──
+
+  /**
+   * The "changed, but still true" judge for this repository, or null when Jev is off or opted
+   * out here (then nothing is read or queued). Consent is re-read on every use, so turning Jev
+   * off takes effect in a running server. Without a key it only shows verdicts already cached.
+   */
+  private stillTrue(bound: Bound): StillTrue | null {
+    const state = jevState(readJevConsent(this.home), this.jevAccess, bound.location.repositoryKey);
+    if (state === "off" || state === "excluded") return null;
+    if (this.judging === undefined) {
+      // Without a key there is nothing to send, and no ledger means nothing cached to show.
+      if (state === "no_key" && !existsSync(join(this.home, LEDGER_FILE))) return null;
+      const ledger = JevLedger.open(this.home, this.busyTimeoutMs);
+      const apiKey = this.jevAccess.apiKey;
+      const client = state === "on" && apiKey !== null ? new JevClient({ endpoint: this.jevAccess.endpoint, apiKey, ledger }) : null;
+      this.judging = { ledger, stillTrue: new StillTrue({ worktree: bound.scope.worktree, workspaceId: bound.scope.workspaceId, ledger, client, now: this.now }) };
+    }
+    return this.judging.stillTrue;
+  }
 
   /**
    * Resolves and binds scope once per instance; later calls reuse it. Only bootstrap passes
@@ -1480,6 +1564,10 @@ class LocalMemory implements Memory {
     const intent = query === null ? null : parseQuery(query, this.now());
     const match = intent === null || intent.words === null ? null : toFtsQuery(intent.words);
     const budget = effectiveBudget(parsed);
+    // Jev's cached verdicts label stale entries; pairs with none are queued for the MCP server.
+    // Known before planning, the notice is measured with the envelope like any other.
+    const judging = this.bound === undefined ? null : this.stillTrue(this.bound);
+    const jevNotice = judging?.notice() ?? null;
 
     return db.transaction((): ContextPack<C, I> => {
       const head = continued === null ? loadHeadCheckpoint(db, scope.workstreamId) : { row: null, withheld: null };
@@ -1530,7 +1618,7 @@ class LocalMemory implements Memory {
         (a, b) => a.created_at < b.created_at || (a.created_at === b.created_at && a.seq < b.seq),
       );
 
-      const checkpointPackable = (freshness: RecordFreshness): Packable<C> | null =>
+      const checkpointPackable = (freshness: JudgedFreshness): Packable<C> | null =>
         checkpointRow === null
           ? null
           : format.checkpoint({
@@ -1546,12 +1634,13 @@ class LocalMemory implements Memory {
                 warning: freshness.warning,
                 citations: citations.get(checkpointRow.id) ?? [],
                 externalRefs: freshness.externalRefs,
+                ...(freshness.judgment == null ? {} : { judgment: freshness.judgment }),
                 host: checkpointRow.host,
                 sessionId: checkpointRow.session_id,
                 createdAt: checkpointRow.created_at,
               }),
             });
-      const itemPackables = (count: number, freshnessOf: (row: Candidate) => RecordFreshness): Packable<I>[] =>
+      const itemPackables = (count: number, freshnessOf: (row: Candidate) => JudgedFreshness): Packable<I>[] =>
         groups.slice(0, count).map((group) => format.item(itemPackable(group, freshnessOf(group.representative), citations, sources, roots, whyOf(group.representative))));
 
       // Resume at the first unconsumed group. Copies folded into a returned item leave the
@@ -1614,7 +1703,7 @@ class LocalMemory implements Memory {
               : null,
           budget: { ...budget, usedBytes: 0, usedTokens: 0 },
           empty,
-          notice: withScopeNotice(scope, withheld !== null && notice !== withheld && !starved ? (notice === null ? withheld : `${withheld} ${notice}`) : notice, empty),
+          notice: withJevNotice(withScopeNotice(scope, withheld !== null && notice !== withheld && !starved ? (notice === null ? withheld : `${withheld} ${notice}`) : notice, empty), starved ? null : jevNotice),
           corrections,
         };
       };
@@ -1645,10 +1734,11 @@ class LocalMemory implements Memory {
         ...selected.filter((row) => !reused(row)).map((row) => freshnessSubject(row, sources.has(row.id))),
       ];
       const live = unchecked.length === 0 ? new Map<string, RecordFreshness>() : checkFreshness(scope.worktree, unchecked);
-      const freshnessOf = (row: RecordRow): RecordFreshness => {
+      const freshnessOf = (row: RecordRow): JudgedFreshness => {
         const result = live.get(row.id) ?? trustChecked.get(row.id);
         if (result === undefined) throw new Error(`record ${row.id} was packed without a freshness check`);
-        return result;
+        // A verdict makes an entry larger than its floor, which can only shrink the selection.
+        return judging === null ? result : judging.annotate({ recordId: row.id, refs: recordFields(row).externalRefs, imported: sources.has(row.id) }, result);
       };
       const packed = packWithinBudget(
         budget.maxBytes,
@@ -1691,6 +1781,14 @@ const FULL_FORMAT: EntryFormat<PackCheckpoint, PackItem> = { checkpoint: (entry)
  */
 const INDEX_FORMAT: EntryFormat<string, string> = { checkpoint: asIndexLine, item: asIndexLine, cut: () => false, continueWith: ' with mode "compact"' };
 
+/** A record's freshness with Jev's verdict, when it has one (see `judge/still-true.ts`). */
+type JudgedFreshness = RecordFreshness & { judgment?: Judgment | null };
+
+/** A pack's notice with Jev's, when its last judgment failed, after it. */
+function withJevNotice(notice: string | null, jev: string | null): string | null {
+  return jev === null ? notice : notice === null ? jev : `${notice} ${jev}`;
+}
+
 /**
  * One pack entry per claim group. Everything but the excerpt (freshness, warning,
  * citations, provenance, copies) is fixed-size metadata that `fit` measures first, so
@@ -1698,7 +1796,7 @@ const INDEX_FORMAT: EntryFormat<string, string> = { checkpoint: asIndexLine, ite
  */
 function itemPackable(
   group: ClaimGroup<Candidate>,
-  freshness: RecordFreshness,
+  freshness: JudgedFreshness,
   citations: ReadonlyMap<string, Citation[]>,
   sources: ReadonlyMap<string, ImportedSource>,
   roots: ReadonlyMap<string, string>,
@@ -1732,6 +1830,7 @@ function itemPackable(
       citations: citations.get(row.id) ?? [],
       externalRefs: freshness.externalRefs,
       testRun: freshness.testRun,
+      ...(freshness.judgment == null ? {} : { judgment: freshness.judgment }),
       workspaceLevel: fields.workspaceLevel,
       host: row.host,
       sessionId: row.session_id,

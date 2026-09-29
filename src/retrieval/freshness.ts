@@ -178,7 +178,7 @@ export interface FreshnessSubject {
 }
 
 /** Kept short: every stale or unknown item in a pack carries one, and they share the budget with bodies. */
-const FRESHNESS_WARNINGS = {
+export const FRESHNESS_WARNINGS = {
   stale: "Stale: a referenced file changed or is gone. Read the current file before relying on this.",
   unverified: "Unverified: a referenced file may have changed. Read the current file before relying on this.",
   remote: "Historical: issue/PR/URL/document state is as observed then; verify it with your own tools.",
@@ -423,14 +423,14 @@ function present(ref: StoredRef): Omit<CheckedRef, "freshness" | "reason"> {
 /** A reference's label, and for `lines_moved` the 1-based range where the cited text is now. */
 type Verdict = [freshness: Freshness, reason: FreshnessReason, linesNow?: [number, number]];
 
-type FileHash =
+export type FileHash =
   | { kind: "hashed"; hash: string; bytes: number; content: Buffer }
   | { kind: "too_large"; size: number }
   | { kind: "missing" }
   | { kind: "unreadable" };
 
 /** SHA-256 of a regular file of at most `maxBytes`, read through one descriptor (no TOCTOU between size and bytes). */
-function hashFile(absolute: string, maxBytes: number): FileHash {
+export function hashFile(absolute: string, maxBytes: number): FileHash {
   let fd: number;
   try {
     // Non-blocking, so a named pipe or device in the worktree cannot hang recall on open.
@@ -558,7 +558,7 @@ function findCited(lines: Lines, n: number, cited: CitedText, budget: number): {
  * worktree. Symlinks are resolved (for the longest existing prefix), so a link that
  * escapes the worktree is outside it; `..` segments cannot climb out either.
  */
-function worktreePath(worktree: string, pointer: string): string | null {
+export function worktreePath(worktree: string, pointer: string): string | null {
   const absolute = isAbsolute(pointer) ? pointer : resolve(worktree, pointer);
   const rel = relative(worktree, realPrefix(absolute));
   if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;

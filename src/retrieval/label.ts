@@ -34,18 +34,31 @@ function writer(entry: { host: string; source?: { agentType: string | null } | n
 
 const checkpointKind = (revision: number): string => `checkpoint r${revision}`;
 
-export function itemLabel(item: { kind: string; createdAt: string; host: string; freshness: Freshness; source?: { agentType: string | null } | null }, now: Date): string {
-  return `${item.kind} · ${age(item.createdAt, now)} · ${writer(item)} · ${item.freshness}`;
+/** Jev's verdict on a stale entry, when it has one (see `judge/still-true.ts`). */
+interface Verdict {
+  verdict: "still_holds" | "invalidated";
+  probability: number;
 }
 
-export function checkpointLabel(checkpoint: { revision: number; createdAt: string; host: string; freshness: Freshness }, now: Date): string {
+/** `stale`, or with Jev's verdict `stale · still holds (0.91)` / `stale · invalidated (0.88)`. */
+function freshnessLabel(entry: { freshness: Freshness; judgment?: Verdict }): string {
+  const judgment = entry.judgment;
+  if (judgment === undefined) return entry.freshness;
+  return `${entry.freshness} · ${judgment.verdict === "still_holds" ? "still holds" : "invalidated"} (${judgment.probability.toFixed(2)})`;
+}
+
+export function itemLabel(item: { kind: string; createdAt: string; host: string; freshness: Freshness; judgment?: Verdict; source?: { agentType: string | null } | null }, now: Date): string {
+  return `${item.kind} · ${age(item.createdAt, now)} · ${writer(item)} · ${freshnessLabel(item)}`;
+}
+
+export function checkpointLabel(checkpoint: { revision: number; createdAt: string; host: string; freshness: Freshness; judgment?: Verdict }, now: Date): string {
   return itemLabel({ ...checkpoint, kind: checkpointKind(checkpoint.revision) }, now);
 }
 
 /** An index line's excerpt, in bytes: with its ~120 bytes of fields a line stays near 70 tokens. */
 export const INDEX_EXCERPT_BYTES = 160;
 
-type IndexedEntry = { recordId: string; createdAt: string; host: string; freshness: Freshness } & (
+type IndexedEntry = { recordId: string; createdAt: string; host: string; freshness: Freshness; judgment?: Verdict } & (
   | { kind: string; attribution: string; title: string | null; source: { agentType: string | null } | null }
   | { revision: number }
 );
@@ -61,7 +74,7 @@ type IndexedEntry = { recordId: string; createdAt: string; host: string; freshne
 export function asIndexLine(entry: Packable<IndexedEntry>): Packable<string> {
   const fields = entry.build("", false);
   const what = "revision" in fields ? [checkpointKind(fields.revision)] : [fields.kind, fields.attribution];
-  const head = `${fields.recordId} [${[fields.createdAt.slice(0, 10), ...what, writer(fields), fields.freshness].join(" · ")}]`;
+  const head = `${fields.recordId} [${[fields.createdAt.slice(0, 10), ...what, writer(fields), freshnessLabel(fields)].join(" · ")}]`;
   const text = ("title" in fields ? (fields.title ?? entry.source) : entry.source).replace(/\s+/gu, " ").trim();
   return { recordId: entry.recordId, source: text, maxExcerptBytes: INDEX_EXCERPT_BYTES, build: (excerpt, cut) => `${head} ${excerpt}${cut ? "…" : ""}` };
 }

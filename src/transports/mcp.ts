@@ -80,6 +80,10 @@ const BACKFILL_PAUSE_MS = 25;
 /** Consecutive failed steps retried (after 2 s, 4 s, … 32 s) before waiting for the next bootstrap. */
 const BACKFILL_RETRIES = 5;
 
+/** Jev judgments (see src/judge/still-true.ts): calls per step, and the pause before a step that lets requests through. */
+const JUDGE_STEP_CALLS = 2;
+const JUDGE_DELAY_MS = 50;
+
 /** How long a preference question waits for the user before it stays pending (decided with the user, #21). */
 const DEFAULT_ELICITATION_TIMEOUT_MS = 60_000;
 /** The SDK's error when a request (here: the question to the user) gets no answer in time. */
@@ -117,6 +121,8 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     if (memory !== undefined && named !== undefined && named !== memorySession) {
       if (backfill !== undefined) clearTimeout(backfill);
       backfill = undefined;
+      clearTimeout(judging);
+      judging = undefined;
       memory.close();
       memory = undefined;
     }
@@ -157,6 +163,32 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
       }
     }, delayMs);
     backfill.unref();
+  };
+
+  // Jev judgments the last requests queued run here, a few calls a step, between requests: the
+  // calls are asynchronous, so a request arriving meanwhile is served at once, and recall never
+  // waits for a verdict. A step that finds judging paused (a failure) ends the loop until the next request.
+  let judging: NodeJS.Timeout | undefined;
+  let judgingNow = false;
+  const scheduleJudging = (): void => {
+    if (judging !== undefined || judgingNow || memory === undefined) return;
+    const current = memory;
+    judging = setTimeout(() => {
+      judging = undefined;
+      if (current !== memory) return;
+      judgingNow = true;
+      current.judge({ maxCalls: JUDGE_STEP_CALLS }).then(
+        (step) => {
+          judgingNow = false;
+          if (step.pending > 0 && !step.paused) scheduleJudging();
+        },
+        (error: unknown) => {
+          judgingNow = false;
+          log(`Jev judgments stopped: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+        },
+      );
+    }, JUDGE_DELAY_MS);
+    judging.unref();
   };
 
   const elicitationTimeoutMs = options.elicitationTimeoutMs ?? (Number(process.env["DEBRIEF_ELICITATION_TIMEOUT_MS"]) || DEFAULT_ELICITATION_TIMEOUT_MS);
@@ -248,6 +280,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
         const preferences = result["preferences"] as { pending: PreferenceQuestion[] };
         preferences.pending = await ask(memory, preferences.pending);
       }
+      scheduleJudging();
       return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
     } catch (error) {
       if (!(error instanceof DebriefError)) {
@@ -264,6 +297,8 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     close: () => {
       clearTimeout(backfill);
       backfill = undefined;
+      clearTimeout(judging);
+      judging = undefined;
       memory?.close();
       memory = undefined;
     },
