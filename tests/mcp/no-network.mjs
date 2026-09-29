@@ -37,7 +37,7 @@ function guarded(what, original) {
   return function (...args) {
     const endpoint = endpointOf(args);
     if (endpoint !== null && allowed.has(endpoint)) return original.apply(this, args);
-    refuse(endpoint === null ? what : `${what} ${endpoint}`);
+    refuse(what);
   };
 }
 
@@ -59,5 +59,5 @@ globalThis.fetch = function (input, init) {
     // Not a URL: refused below.
   }
   if (endpoint !== null && allowed.has(endpoint)) return originalFetch(input, init);
-  refuse(endpoint === null ? "fetch" : `fetch ${endpoint}`);
+  refuse("fetch");
 };
