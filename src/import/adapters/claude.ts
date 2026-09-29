@@ -52,7 +52,7 @@ export const COMPATIBILITY: readonly CompatibilityRow[] = [
     below: "2.2.0",
     format: "claude-code-jsonl-v1",
     basis:
-      "Observed on 72 local transcripts written by 2.1.183–2.1.281 (2026-09): the fields read here are present and unchanged across that range; only additive keys differ. Fixtures: tests/import/fixtures/claude-code/{2.1.183,2.1.281}.",
+      "Observed on 72 local transcripts written by 2.1.183–2.1.281 (2026-09): the fields read here are present and unchanged across that range; only additive keys differ. Fixtures: tests/import/fixtures/claude-code/{2.1.183,2.1.281,2.1.284}.",
   },
 ];
 
