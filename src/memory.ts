@@ -499,7 +499,7 @@ export type ManageResult =
       forgotten: string[];
       /** Transcripts of this session that will never be imported. */
       transcripts: number;
-      /** Earlier Debrief sessions of the same host session (a resumed Codex thread, `claude --resume`), forgotten and marked with it. */
+      /** Other Debrief sessions of the same host session (a resumed Codex thread, `claude --resume`) whose memory was forgotten with it. */
       earlierSessions: number;
       notice: string;
     };
@@ -1102,15 +1102,15 @@ class LocalMemory implements Memory {
         });
         // global.sqlite keeps no host session ids: it is told which sessions they are.
         const global = existsSync(this.globalDbPath()) ? stores.global() : null;
-        const globally = global === null ? [] : writeTransaction(global, () => forgetSession(global, { ...session, hostSessionId: undefined }, actor, marked.sessions)).forgotten;
-        const { alreadyPrivate, transcripts, earlierSessions } = marked;
+        const globally = global === null ? null : writeTransaction(global, () => forgetSession(global, { ...session, hostSessionId: undefined }, actor, marked.sessions));
+        const earlierSessions = new Set([...marked.earlierSessions, ...(globally?.earlierSessions ?? [])]).size;
         return {
           v: 1,
           action: "private_session",
           sessionId: scope.sessionId,
-          alreadyPrivate,
-          forgotten: [...marked.forgotten, ...globally],
-          transcripts,
+          alreadyPrivate: marked.alreadyPrivate,
+          forgotten: [...marked.forgotten, ...(globally?.forgotten ?? [])],
+          transcripts: marked.transcripts,
           earlierSessions,
           notice: privateNotice(earlierSessions),
         };

@@ -284,6 +284,14 @@ describe("don't remember this session, in a resumed conversation", () => {
     const alone = open(initRepo(), e, { host: "codex", hostSessionId: codexThreadId() });
     alone.bootstrap({ importChoice: "none" });
     expect(markPrivate(alone).notice).not.toMatch(/earlier session/i);
+    // Nor does a Claude Code session whose session-start hook opened its own Debrief session: that is no resume.
+    const claudeRepo = initRepo();
+    const hostSessionId = "5e550000-0000-4000-8000-0000000000f2";
+    open(claudeRepo, e).sessionStart({ hostSessionId });
+    const server = open(claudeRepo, e);
+    server.bootstrap({ importChoice: "none", hostSessionId });
+    note(server, "Session note.");
+    expect(markPrivate(server)).toMatchObject({ earlierSessions: 0, notice: expect.not.stringMatching(/earlier session/i) as unknown });
   });
 
   test("a global preference the earlier session confirmed is forgotten too", () => {

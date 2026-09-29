@@ -285,8 +285,11 @@ export interface ForgetSessionResult {
   transcripts: number;
   /** The Debrief sessions of the host session, this one included, all marked private. */
   sessions: string[];
-  /** Of those, the live ones other than this one: the rest of a resumed conversation. */
-  earlierSessions: number;
+  /**
+   * Of those, the live ones other than this one whose records were forgotten here: the rest of a
+   * resumed conversation. Sessions that stored nothing (a Claude Code hook's own) are not counted.
+   */
+  earlierSessions: string[];
 }
 
 /**
@@ -306,18 +309,17 @@ export function forgetSession(
 ): ForgetSessionResult {
   requireTransaction(db, "forgetSession");
   const transcripts = transcriptsOf(db, { host: session.host, hostSessionId: session.hostSessionId, sessions });
-  const earlierSessions = (
-    prepared(db, "SELECT count(*) AS n FROM sessions WHERE id IN (SELECT value FROM json_each(?)) AND id <> ? AND json_extract(capabilities, '$.imported') IS NOT 1").get(
-      JSON.stringify(sessions),
-      session.sessionId,
-    ) as { n: number }
-  ).n;
-  const done = { transcripts: transcripts.length, sessions: [...sessions], earlierSessions };
+  const done = { transcripts: transcripts.length, sessions: [...sessions] };
   if (sessionIsPrivate(db, session) && transcripts.every((t) => isPrivateTranscript(db, t.host, t.transcriptId))) {
-    return { alreadyPrivate: true, forgotten: [], ...done };
+    return { alreadyPrivate: true, forgotten: [], ...done, earlierSessions: [] };
   }
   const forgotten = forgetPrivate(db, { sessionId: session.sessionId, sessions, host: session.host, transcripts, workstreamId: session.workstreamId, writtenBy: sessions }, actor);
-  return { alreadyPrivate: false, forgotten, ...done };
+  const earlier = prepared(
+    db,
+    `SELECT DISTINCT s.id FROM records r JOIN sessions s ON s.id = r.session_id
+     WHERE r.id IN (SELECT value FROM json_each(?)) AND s.id <> ? AND json_extract(s.capabilities, '$.imported') IS NOT 1 ORDER BY s.id`,
+  ).all(JSON.stringify(forgotten), session.sessionId) as { id: string }[];
+  return { alreadyPrivate: false, forgotten, ...done, earlierSessions: earlier.map((row) => row.id) };
 }
 
 /**
