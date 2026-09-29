@@ -248,14 +248,19 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     expect(traffic.uses).toEqual(["mcp__debrief__memory_manage"]);
     expect(traffic.results[0]).toContain('"action":"private_session"');
 
-    // The MCP server's session carries Claude's session id, like the hooks' sessions.
+    // The MCP server's session carries Claude's session id, like the hooks' sessions and the resumed
+    // turn's, so it is one host session: marking it marks every Debrief session of it (#60).
     const db = new Database(locateWorkspace(repo, debriefHome).dbPath, { readonly: true });
     onCleanup(() => {
       db.close();
     });
     const sessions = db.prepare("SELECT host_session_id AS id, private FROM sessions WHERE host = 'claude-code' ORDER BY started_at").all() as { id: string | null; private: number }[];
     db.close();
-    expect(sessions.filter((s) => s.private === 1).map((s) => s.id)).toEqual([live]);
+    // (Sessions with no host id are this test's own readers: not part of it.)
+    const ofClaude = sessions.filter((s) => s.id !== null);
+    expect(ofClaude.length).toBeGreaterThan(1);
+    expect(ofClaude).toEqual(ofClaude.map(() => ({ id: live, private: 1 })));
+    expect(sessions.filter((s) => s.id === null && s.private === 1)).toEqual([]);
 
     // Nothing from either turn is recalled, and a later import pass does not bring it back.
     const after = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
