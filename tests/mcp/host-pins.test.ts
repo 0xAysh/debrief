@@ -91,14 +91,14 @@ describe("host suites that cannot run", () => {
     const dir = tempDir("debrief-host-skips-");
     expect(hostSkipBanner(readHostSkips(dir))).toBe("");
 
-    expect(hostGate("claude code plugin tests", null, { env: {}, dir })).toBeNull();
-    expect(hostGate("claude code plugin tests", "claude is Claude Code 2.1.285", { env: {}, dir })).toBe("claude is Claude Code 2.1.285");
-    hostGate("codex connection tests", "codex is codex-cli 0.150.0", { env: {}, dir });
+    expect(hostGate("example claude suite (V4)", null, { env: {}, dir })).toBeNull();
+    expect(hostGate("example claude suite (V4)", "claude is Claude Code 2.1.285", { env: {}, dir })).toBe("claude is Claude Code 2.1.285");
+    hostGate("example codex suite (V4)", "codex is codex-cli 0.150.0", { env: {}, dir });
 
     const banner = hostSkipBanner(readHostSkips(dir));
     expect(banner).toContain("2 HOST SUITES SKIPPED");
-    expect(banner).toContain("claude code plugin tests: claude is Claude Code 2.1.285");
-    expect(banner).toContain("codex connection tests: codex is codex-cli 0.150.0");
+    expect(banner).toContain("example claude suite (V4): claude is Claude Code 2.1.285");
+    expect(banner).toContain("example codex suite (V4): codex is codex-cli 0.150.0");
     expect(banner).toContain("DEBRIEF_REQUIRE_HOSTS=1");
   });
 });
