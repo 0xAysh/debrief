@@ -1,8 +1,12 @@
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { tempDir } from "../helpers.js";
+import { hostGate, hostSkipBanner, readHostSkips } from "../host-skips.js";
 import { resolveClaude } from "./claude.js";
+
+const ROOT = resolve(import.meta.dirname, "../..");
 
 /**
  * How the driven host tests pick their host binary, and what they do when it drifted from the pin.
@@ -53,5 +57,48 @@ describe("resolving the pinned Claude Code", () => {
 
     // No binary at all.
     expect(resolveClaude({ bin: "/nonexistent/claude", env: {}, versionsDir: kept.replace(/versions$/, "none"), pinned: "2.1.283" }).skip).toContain("no Claude Code binary at /nonexistent/claude");
+  });
+});
+
+describe("host suites that cannot run", () => {
+  test("V3: with DEBRIEF_REQUIRE_HOSTS=1, a missing Claude Code or Codex fails collection with the reason instead of skipping", () => {
+    // A real vitest run of two real host suites, with no global setup (nothing to build: collection fails first).
+    const config = join(tempDir("debrief-require-hosts-"), "vitest.config.mjs");
+    writeFileSync(config, `export default { test: { include: ["tests/mcp/claude-connection.test.ts", "tests/mcp/codex-connection.test.ts"] } };\n`);
+    const vitest = (require: Record<string, string>): { code: number | null; output: string } => {
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST") && key !== "DEBRIEF_REQUIRE_HOSTS"));
+      const run = spawnSync(process.execPath, [join(ROOT, "node_modules/vitest/vitest.mjs"), "run", "--root", ROOT, "--config", config], {
+        env: { ...env, DEBRIEF_TEST_CLAUDE_BIN: "/nonexistent/claude", DEBRIEF_TEST_CODEX_BIN: "/nonexistent/codex", ...require },
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      return { code: run.status, output: run.stdout + run.stderr };
+    };
+
+    const skipped = vitest({});
+    expect(skipped.code, skipped.output).toBe(0);
+    expect(skipped.output).toMatch(/skipped/);
+
+    const required = vitest({ DEBRIEF_REQUIRE_HOSTS: "1" });
+    expect(required.code, required.output).not.toBe(0);
+    expect(required.output).toContain("no Claude Code binary at /nonexistent/claude");
+    expect(required.output).toContain("no Codex binary at /nonexistent/codex");
+    expect(required.output).toContain("DEBRIEF_REQUIRE_HOSTS=1");
+    expect(required.output).toMatch(/Test Files {2}2 failed/);
+  });
+
+  test("V4: a run that skipped host suites ends with a banner naming each one and why", () => {
+    const dir = tempDir("debrief-host-skips-");
+    expect(hostSkipBanner(readHostSkips(dir))).toBe("");
+
+    expect(hostGate("claude code plugin tests", null, { env: {}, dir })).toBeNull();
+    expect(hostGate("claude code plugin tests", "claude is Claude Code 2.1.285", { env: {}, dir })).toBe("claude is Claude Code 2.1.285");
+    hostGate("codex connection tests", "codex is codex-cli 0.150.0", { env: {}, dir });
+
+    const banner = hostSkipBanner(readHostSkips(dir));
+    expect(banner).toContain("2 HOST SUITES SKIPPED");
+    expect(banner).toContain("claude code plugin tests: claude is Claude Code 2.1.285");
+    expect(banner).toContain("codex connection tests: codex is codex-cli 0.150.0");
+    expect(banner).toContain("DEBRIEF_REQUIRE_HOSTS=1");
   });
 });

@@ -17,12 +17,17 @@ import { CLI, NO_NETWORK } from "./harness.js";
 export const CODEX_PINNED_VERSION = "0.148.0-alpha.21";
 export const CODEX_BIN = process.env["DEBRIEF_TEST_CODEX_BIN"] ?? "/Applications/ChatGPT.app/Contents/Resources/codex";
 
-/** Null when the pinned binary is available; otherwise why the Codex tests are skipped. */
+/**
+ * Null when the pinned binary is available; otherwise why the Codex tests are skipped. Codex
+ * updates with the ChatGPT app and keeps no older builds, so drift has no fallback: the reason
+ * names both fixes.
+ */
 export function codexSkipReason(): string | null {
   if (!existsSync(CODEX_BIN)) return `no Codex binary at ${CODEX_BIN} (set DEBRIEF_TEST_CODEX_BIN)`;
   const run = spawnSync(CODEX_BIN, ["--version"], { encoding: "utf8", timeout: 20_000 });
   const version = /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)/.exec(run.stdout)?.[1];
-  if (version !== CODEX_PINNED_VERSION) return `${CODEX_BIN} is codex-cli ${version ?? "unknown"}; these tests pin ${CODEX_PINNED_VERSION}`;
+  if (version !== CODEX_PINNED_VERSION)
+    return `${CODEX_BIN} is codex-cli ${version ?? "unknown"}; these tests pin ${CODEX_PINNED_VERSION}: set DEBRIEF_TEST_CODEX_BIN to a ${CODEX_PINNED_VERSION} binary, or bump CODEX_PINNED_VERSION (tests/mcp/codex.ts, with the docs) once these suites pass on the new build with DEBRIEF_REQUIRE_HOSTS=1`;
   return null;
 }
 

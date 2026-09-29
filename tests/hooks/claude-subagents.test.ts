@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { initRepo, tempDir } from "../helpers.js";
+import { hostGate } from "../host-skips.js";
 import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, firstUserText, debriefAddArgs, type StubToolUse, startStubMessages } from "../mcp/claude.js";
 import { type HookEvent, type HookOutput, type HookRecord, hookRig, sanitize } from "./hook-rig.js";
 
@@ -13,8 +14,7 @@ import { type HookEvent, type HookOutput, type HookRecord, hookRig, sanitize } f
  * git-ignored `__artifacts__/` as evidence.
  */
 
-const SKIP = claudeSkipReason();
-if (SKIP !== null) process.stderr.write(`claude code sub-agent tests skipped: ${SKIP}\n`);
+const SKIP = hostGate("claude code sub-agent tests", claudeSkipReason());
 
 const ARTIFACT = join(import.meta.dirname, "__artifacts__", `claude-${CLAUDE_PINNED_VERSION}-subagents.json`);
 const evidence: Record<string, unknown> = { claudeCode: CLAUDE_PINNED_VERSION, mode: "claude -p", registration: "--settings <file> with a top-level hooks object" };
