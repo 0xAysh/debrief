@@ -436,21 +436,24 @@ Known limits: lifecycle changes to global preferences are not reported through t
 
 ## Private sessions
 
-"Don't remember this session" is `memory_manage private_session`. One transaction (`forgetSession` in `lifecycle.ts`; markers in `private-session.ts`):
+"Don't remember this session" is `memory_manage private_session`. "This session" is the host session: every Debrief session with the same `host` and `host_session_id` (`sameHostSession`). A resumed Codex thread, or `claude --resume`, starts a new Debrief session with the same host session id, so marking any of them covers the whole conversation, the sessions before the resume included. One transaction (`forgetSession` in `lifecycle.ts`; markers in `private-session.ts`):
 
 ```text
+sessions                     every Debrief session of the host session (same host + host_session_id), this one included
 transcripts of the session   the host session id (Codex: the thread id · Claude Code: the session id, which names its transcript)
-                             + transcripts whose Debrief output named it as scope.sessionId (transcript_sessions, recorded at import)
+                             + transcripts whose Debrief output named one of those sessions as scope.sessionId (transcript_sessions)
                              + the imported transcripts of their sub-agents (same import session)
-forget (no preview; the request is its own confirmation)   records the session wrote + records imported from those transcripts
-                             + global preferences it confirmed (global.sqlite) + preference questions it raised
-mark                         sessions.private = 1 · private_transcripts += those transcripts
-ledger                       forget entries + a private_session entry (a restored older copy is marked again)
+forget (no preview; the request is its own confirmation)   records those sessions wrote + records imported from those transcripts
+                             + global preferences they confirmed (global.sqlite, told the session ids: it keeps no host session ids)
+                             + preference questions they raised
+mark                         sessions.private = 1 on each · private_transcripts += those transcripts
+ledger                       forget entries + a private_session entry naming the sessions (a restored older copy is marked
+                             again, even one taken before the resume: its earlier sessions keep the host session private)
 ```
 
-Afterwards `record`, `checkpoint`, `settlePreference` and every changing `memory_manage` action throw `session_private` (reads still work). A later Debrief session of the same host session (a resumed Codex thread) is private too. The importer never reads a private transcript again, nor a sub-agent transcript whose parent is private (so one written after the marking is never read either): it checks before reading and again in each batch's write transaction, so a marking committed by another process while a Stop capture is between batches stops the capture there (`tests/hooks/stop-hook.test.ts`, the race test). A batch whose Debrief output names a private session as its scope drops what that transcript brought in and marks it private. Only `scope.sessionId` links (in every result it directly follows `headRevision`): recalled items name their writer's session, and recalling a private session's records does not make a transcript that session's. Marking twice does nothing more.
+Afterwards `record`, `checkpoint`, `settlePreference` and every changing `memory_manage` action throw `session_private` (reads still work). A later Debrief session of the same host session (resumed after the marking) is private too. The result counts the other live sessions whose memory it forgot (`earlierSessions`; a Claude Code hook's own session stores nothing and is not counted), and then the notice tells the agent to say that the conversation's earlier sessions were included. The importer never reads a private transcript again, nor a sub-agent transcript whose parent is private (so one written after the marking is never read either): it checks before reading and again in each batch's write transaction, so a marking committed by another process while a Stop capture is between batches stops the capture there (`tests/hooks/stop-hook.test.ts`, the race test). A batch whose Debrief output names a private session as its scope drops what that transcript brought in and marks it private. Only `scope.sessionId` links (in every result it directly follows `headRevision`): recalled items name their writer's session, and recalling a private session's records does not make a transcript that session's. Marking twice does nothing more.
 
-Known limits: the host's own transcript file is untouched, and a resumed session gets a new Debrief session that starts non-private (its transcript, if it is the same file, stays private). Claude Code's session is known to the MCP server from its environment, or after `/clear` from the PreToolUse hook (see [Host hooks](#host-hooks)); with no hooks installed, "this session" after `/clear` is still the session the process started with.
+Known limits: the host's own transcript file is untouched. A host session is matched only by its id within one host: a Claude Code session that resumes under a new session id (`--fork-session`) is a different conversation to Debrief, and so is a host session with no id (a Claude Code process with neither `CLAUDE_CODE_SESSION_ID` nor hooks), which covers only its own Debrief session. Claude Code's session is known to the MCP server from its environment, or after `/clear` from the PreToolUse hook (see [Host hooks](#host-hooks)); with no hooks installed, "this session" after `/clear` is still the session the process started with.
 
 ## Handoff
 

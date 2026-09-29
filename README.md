@@ -100,7 +100,7 @@ The `debrief diag …` commands and `debrief mcp` are for diagnostics and for th
 | You want | Do |
 |---|---|
 | a passage never stored | wrap it in `<private>…</private>` in your prompt |
-| a whole session forgotten | tell the agent **"don't remember this session"**: Debrief forgets what the session stored, never imports its transcript, and refuses its later writes |
+| a whole session forgotten | tell the agent **"don't remember this session"**: Debrief forgets what the session stored (in a resumed conversation, what its earlier sessions stored too), never imports its transcript, and refuses its later writes |
 | a wrong memory fixed | say so ("that's wrong", "that changed"); the agent is instructed to correct or retract it with `memory_manage` |
 
 Claude Code's own transcript files still hold the conversation: that is Claude Code's data, not Debrief's.

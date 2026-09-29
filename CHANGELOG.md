@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Private sessions
+
+- **"Don't remember this session" covers a resumed conversation.** Resuming a Codex thread, or `claude --resume`, starts a new Debrief session with the same host session id. Marking it private used to forget only what the current Debrief session stored and what was imported from the transcript, while the sessions before the resume kept their records in recall, `memory_read` and timelines. Now every Debrief session of the conversation is forgotten and marked: what they wrote, the global preferences they confirmed and the questions they raised. The result's `earlierSessions` counts them and the notice asks the agent to tell the user they were included. A restored older copy of the database is marked again, even one taken before the resume. Another conversation, or another host's session with the same id, is untouched.
+
 ### Recall ranking
 
 - **Code identifiers.** A query for "rank sequence" finds memory that only says `rankSequence` or `RankSequence`, and a query for `rankSequence` still puts the record with that exact identifier first. Paths and file names (`freshness.ts`, `retrieval/freshness`) rank the memory that cites them first. Existing databases are reindexed once when this version first opens them (schema version 7); nothing is re-imported.
