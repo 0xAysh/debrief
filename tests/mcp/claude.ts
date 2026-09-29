@@ -17,7 +17,6 @@ import { CLI, NO_NETWORK } from "./harness.js";
 
 /** The Claude Code release these tests pin (native install, 2026-09). */
 export const CLAUDE_PINNED_VERSION = "2.1.283";
-export const CLAUDE_BIN = process.env["DEBRIEF_TEST_CLAUDE_BIN"] ?? onPath("claude") ?? join(homedir(), ".local/bin/claude");
 
 function onPath(name: string): string | undefined {
   return (process.env["PATH"] ?? "")
@@ -68,19 +67,54 @@ function guardProfile(): string {
 }
 
 function command(args: string[]): [string, string[]] {
-  return process.platform === "darwin" && existsSync(SANDBOX_EXEC) ? [SANDBOX_EXEC, ["-p", guardProfile(), CLAUDE_BIN, ...args]] : [CLAUDE_BIN, args];
+  return process.platform === "darwin" && existsSync(SANDBOX_EXEC) ? [SANDBOX_EXEC, ["-p", guardProfile(), claudeHost().bin, ...args]] : [claudeHost().bin, args];
+}
+
+export interface ClaudeResolution {
+  bin: string;
+  skip: string | null;
+}
+
+/**
+ * Which Claude Code binary the driven tests run, and why they are skipped when there is none at
+ * the pin. DEBRIEF_TEST_CLAUDE_BIN, when set, is used as given. Otherwise `bin` (the `claude` the
+ * developer runs) is used if it reports the pin; Claude Code auto-updates, so when it has moved
+ * on, the native installer's kept copy of the pinned build (`<versionsDir>/<pin>`) runs instead.
+ * The pin stays because it backs the README's "Tested with" column; a skip names every way out.
+ */
+export function resolveClaude(inputs: { bin: string; env: NodeJS.ProcessEnv; versionsDir: string; pinned?: string }): ClaudeResolution {
+  const pinned = inputs.pinned ?? CLAUDE_PINNED_VERSION;
+  const fixes = `set DEBRIEF_TEST_CLAUDE_BIN to a ${pinned} binary, or bump CLAUDE_PINNED_VERSION (tests/mcp/claude.ts, with the README and docs) once these suites pass on the new build with DEBRIEF_REQUIRE_HOSTS=1`;
+  const explicit = inputs.env["DEBRIEF_TEST_CLAUDE_BIN"];
+  const bin = explicit ?? inputs.bin;
+  const version = existsSync(bin) ? (claudeVersion(bin) ?? "unknown") : undefined;
+  if (version === pinned) return { bin, skip: null };
+  const found = version === undefined ? `no Claude Code binary at ${bin}` : `${bin} is Claude Code ${version}`;
+  if (explicit !== undefined) return { bin, skip: `${found} (DEBRIEF_TEST_CLAUDE_BIN); these tests pin ${pinned}: ${fixes}` };
+  const kept = join(inputs.versionsDir, pinned);
+  if (existsSync(kept) && claudeVersion(kept) === pinned) return { bin: kept, skip: null };
+  return { bin, skip: `${found}, and there is no ${kept}; these tests pin ${pinned}: ${fixes}` };
+}
+
+function claudeVersion(bin: string): string | undefined {
+  // Runs at collection time, outside any test, so it cleans up after itself.
+  const scratch = mkdtempSync(join(tmpdir(), "debrief-claude-version-"));
+  const run = spawnSync(bin, ["--version"], { env: claudeEnv({ home: scratch, configDir: scratch }), encoding: "utf8", timeout: 20_000 });
+  rmSync(scratch, { recursive: true, force: true });
+  return /^(\d+\.\d+\.\d+)/.exec(run.stdout)?.[1];
+}
+
+let resolved: ClaudeResolution | undefined;
+
+/** Resolved once per test file, on first use, so importing this module (for the pin) spawns nothing. */
+function claudeHost(): ClaudeResolution {
+  resolved ??= resolveClaude({ bin: onPath("claude") ?? join(homedir(), ".local/bin/claude"), env: process.env, versionsDir: join(homedir(), ".local/share/claude/versions") });
+  return resolved;
 }
 
 /** Null when the pinned binary is available; otherwise why the Claude Code tests are skipped. */
 export function claudeSkipReason(): string | null {
-  if (!existsSync(CLAUDE_BIN)) return `no Claude Code binary at ${CLAUDE_BIN} (set DEBRIEF_TEST_CLAUDE_BIN)`;
-  // Runs at collection time, outside any test, so it cleans up after itself.
-  const scratch = mkdtempSync(join(tmpdir(), "debrief-claude-version-"));
-  const run = spawnSync(CLAUDE_BIN, ["--version"], { env: claudeEnv({ home: scratch, configDir: scratch }), encoding: "utf8", timeout: 20_000 });
-  rmSync(scratch, { recursive: true, force: true });
-  const version = /^(\d+\.\d+\.\d+)/.exec(run.stdout)?.[1];
-  if (version !== CLAUDE_PINNED_VERSION) return `${CLAUDE_BIN} is Claude Code ${version ?? "unknown"}; these tests pin ${CLAUDE_PINNED_VERSION}`;
-  return null;
+  return claudeHost().skip;
 }
 
 export interface Run {
