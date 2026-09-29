@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
-import { resolveHome } from "./bootstrap/workspace-resolution.js";
+import { locateWorkspace, resolveHome } from "./bootstrap/workspace-resolution.js";
 import { DebriefError } from "./errors.js";
 import { HOOK_HOSTS, HOST_IDS, type HostId, HOSTS, hostDescriptor, type PluginFacts, TRANSCRIPT_HOSTS } from "./hosts.js";
 import { consentFacts } from "./import/reconcile.js";
+import { consentScreen, describeJevState, describeUsage, disableJev, enableJev, excludeRepository, jevAccessFromEnv, jevStatus } from "./judge/jev.js";
 import { openMemory, type Memory } from "./memory.js";
 import { IMPORT_CHOICES, type ImportChoice, LIMITS } from "./schemas.js";
 import { assertEmbeddedRuntime } from "./storage/database.js";
@@ -21,6 +22,8 @@ const USAGE = `Usage:
   debrief import [--set ${IMPORT_CHOICES.join("|")}]
                                                       Import past sessions' transcripts, as the user chose (--set records the choice)
   debrief delete-data [--yes]                         Delete all of Debrief's stored memory, after typing delete (--yes: without asking)
+  debrief jev [enable [--yes] | disable] [--here]     Opt-in Jev judgments (TypeSafe AI, your TYPESAFE_API_KEY): show, turn on
+                                                      after the consent screen, turn off (--here: this repository only)
   debrief mcp [--host ${HOST_IDS.join("|")}]
                                                       Serve MCP over stdio (started by the agent host)
   debrief hook stop --host ${HOOK_HOSTS.join("|")}
@@ -81,6 +84,12 @@ async function main(argv: string[]): Promise<number> {
   if (command === "status") {
     if (argv.length > 1) return usage(`unknown status argument ${argv.slice(1).join(" ")}`);
     return status();
+  }
+  if (command === "jev") {
+    const { values, positionals } = parseArgs({ args: argv.slice(1), options: { yes: { type: "boolean" }, here: { type: "boolean" } }, allowPositionals: true, strict: true });
+    const [action, ...rest] = positionals;
+    if (rest.length > 0 || (action !== undefined && action !== "enable" && action !== "disable")) return usage(`unknown jev command ${positionals.join(" ")}`);
+    return jev(action ?? null, values.here === true, values.yes === true);
   }
   if (command === "diag" && subcommand !== undefined) {
     const { values } = parseArgs({
@@ -242,19 +251,7 @@ async function deleteData(yes: boolean): Promise<number> {
       process.stderr.write("debrief: delete-data asks for confirmation on a terminal; pass --yes to delete without asking\n");
       return 64;
     }
-    const prompt = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
-    process.stdout.write("Type delete to confirm: ");
-    // Ctrl-D closes the input without an answer, and the question would never settle.
-    const answer = await new Promise<string | null>((resolve) => {
-      prompt.once("close", () => {
-        resolve(null);
-      });
-      prompt.question("").then(resolve, () => {
-        resolve(null);
-      });
-    });
-    prompt.close();
-    if (answer?.trim() !== "delete") {
+    if (!(await confirmTyped("delete"))) {
       process.stdout.write("Nothing was deleted.\n");
       return 1;
     }
@@ -265,6 +262,86 @@ async function deleteData(yes: boolean): Promise<number> {
   if (rewritten.length === 0) return 0;
   process.stdout.write(`A running session wrote ${rewritten.join(", ")} again while deleting: close Claude Code sessions and run debrief delete-data again.\n`);
   return 1;
+}
+
+/** Asks on a terminal for `word`; true only when the user typed it (Ctrl-D is a no). */
+async function confirmTyped(word: string): Promise<boolean> {
+  const prompt = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+  process.stdout.write(`Type ${word} to confirm: `);
+  // Ctrl-D closes the input without an answer, and the question would never settle.
+  const answer = await new Promise<string | null>((resolve) => {
+    prompt.once("close", () => {
+      resolve(null);
+    });
+    prompt.question("").then(resolve, () => {
+      resolve(null);
+    });
+  });
+  prompt.close();
+  return answer?.trim() === word;
+}
+
+/**
+ * `debrief jev`: Jev's state here and what it has cost; `enable` shows the consent screen and, once
+ * confirmed (typed on a terminal, or --yes), checks the key and records consent; `disable` turns it
+ * off; `--here` opts this repository out (disable) or back in (enable, without asking again).
+ */
+async function jev(action: "enable" | "disable" | null, here: boolean, yes: boolean): Promise<number> {
+  const home = resolveHome(undefined);
+  const access = jevAccessFromEnv(process.env);
+  let repositoryKey: string | null = null;
+  try {
+    repositoryKey = locateWorkspace(process.cwd(), home).repositoryKey;
+  } catch (error) {
+    if (!(error instanceof DebriefError)) throw error;
+  }
+  if (here && repositoryKey === null) {
+    process.stderr.write("debrief: --here needs a Git repository: run it inside the one to opt out or back in\n");
+    return 1;
+  }
+  const failed = (message: string): number => {
+    process.stderr.write(`debrief: ${message}\n`);
+    return 1;
+  };
+  if (action === "disable") {
+    if (here && repositoryKey !== null) {
+      const excluded = excludeRepository(home, repositoryKey, true);
+      if (!excluded.ok) return failed(excluded.message);
+      process.stdout.write("Jev is off in this repository; nothing from it is sent.\n");
+    } else {
+      disableJev(home);
+      process.stdout.write("Jev is off: nothing is sent to TypeSafe.\n");
+    }
+    return 0;
+  }
+  if (action === "enable" && here && repositoryKey !== null) {
+    const included = excludeRepository(home, repositoryKey, false);
+    if (!included.ok) return failed(included.message);
+    process.stdout.write("Jev is on in this repository again.\n");
+    return 0;
+  }
+  if (action === "enable") {
+    process.stdout.write(consentScreen(access.endpoint));
+    if (!yes) {
+      if (!process.stdin.isTTY) {
+        process.stderr.write("debrief: jev enable asks for confirmation on a terminal; pass --yes to turn it on without asking\n");
+        return 64;
+      }
+      if (!(await confirmTyped("enable"))) {
+        process.stdout.write("Nothing was changed: Jev stays off.\n");
+        return 1;
+      }
+    }
+    const enabled = await enableJev(home, access, repositoryKey, new Date());
+    if (!enabled.ok) return failed(enabled.message);
+    process.stdout.write("Jev is on. Stale memory an agent recalls is judged in the background from now on.\n");
+    return 0;
+  }
+  const report = jevStatus(home, access, repositoryKey, new Date());
+  const lines = [`debrief jev`, `  ${"jev".padEnd(15)}${describeJevState(report)}`, `  ${"today".padEnd(15)}${describeUsage(report.today)}`, `  ${"total".padEnd(15)}${describeUsage(report.total)}`];
+  for (const day of report.days.slice(0, 14)) lines.push(`  ${day.day.padEnd(15)}${describeUsage(day)}`);
+  process.stdout.write(lines.join("\n") + "\n");
+  return 0;
 }
 
 /** Each host Debrief installs into as a plugin, checked from this directory; exit 1 when any has a problem. */

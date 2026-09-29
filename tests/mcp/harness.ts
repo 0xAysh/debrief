@@ -46,6 +46,8 @@ export async function spawnServer(options: {
   elicitation?: { capability: Record<string, unknown>; respond: (request: ElicitRequest["params"]) => Promise<ElicitResult> };
   /** `DEBRIEF_ELICITATION_TIMEOUT_MS` for the server. */
   elicitationTimeoutMs?: number;
+  /** More environment for the server (the Jev tests: a key, the stub's endpoint, the guard's allowlist). */
+  env?: Record<string, string>;
 }): Promise<ServerHandle> {
   const args = [...(options.networkLog === undefined ? [] : ["--import", NO_NETWORK]), CLI, "mcp", ...(options.host === undefined ? [] : ["--host", options.host])];
   const transport = new StdioClientTransport({
@@ -61,6 +63,7 @@ export async function spawnServer(options: {
       CODEX_HOME: options.codexHome ?? resolve(options.home, "no-codex-home"),
       ...(options.networkLog === undefined ? {} : { DEBRIEF_NETWORK_LOG: options.networkLog }),
       ...(options.elicitationTimeoutMs === undefined ? {} : { DEBRIEF_ELICITATION_TIMEOUT_MS: String(options.elicitationTimeoutMs) }),
+      ...options.env,
     },
     stderr: "pipe",
   });

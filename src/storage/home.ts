@@ -14,13 +14,15 @@ import { join } from "node:path";
 /**
  * Everything Debrief writes at the top of its home: the per-repository databases, the global
  * database, the registry, the import choice and its lock, the hooks' run notes and logs, and the
- * temporary files their atomic writes leave for a moment.
+ * temporary files their atomic writes leave for a moment, and Jev's consent and ledger (verdicts and usage).
  */
 const OWNED = [
   /^workspaces$/,
   /^global\.sqlite(-wal|-shm|-journal)?$/,
   /^registry\.json(\.\d+\.[0-9a-f]+\.tmp)?$/,
   /^consent\.json(\.lock(\..+\.tmp)?)?$/,
+  /^jev\.json(\.\d+\.[0-9a-f]+\.tmp)?$/,
+  /^jev\.sqlite(-wal|-shm|-journal)?$/,
   /^hook-runs$/,
   /^(hook-failures|tool-sessions)(\.1)?\.jsonl$/,
 ];
