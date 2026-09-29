@@ -125,7 +125,7 @@ Without `delete-data`, your memory stays in `~/.debrief`.
 |---|---|---|
 | Node.js | `>=24` | 25.9.0 |
 | better-sqlite3 | `13.0.3` (installed with the package) | 13.0.3 |
-| Claude Code | `2.1.283` | 2.1.283 |
+| Claude Code | `2.1.284` | 2.1.284 |
 
 Tested on macOS (arm64). Other platforms and other Claude Code versions are untested: `debrief status` is the first check there.
 

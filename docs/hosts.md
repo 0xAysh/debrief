@@ -4,8 +4,8 @@ The one-command path is the Claude Code plugin (see the [README](../README.md#in
 
 | Host | Connect with | Session-start context, turn capture, sub-agents | Transcript import | Tested with |
 |---|---|---|---|---|
-| Claude Code | the plugin: `/plugin install debrief@debrief` | ✔ (hooks) | ✔ | 2.1.283 |
-| Claude Code, by hand | `claude mcp add` ([below](#connect-claude-code-by-hand-verified-with-claude-code-21283)) | ✘ MCP tools only | ✔ at bootstrap | 2.1.283 |
+| Claude Code | the plugin: `/plugin install debrief@debrief` | ✔ (hooks) | ✔ | 2.1.284 |
+| Claude Code, by hand | `claude mcp add` ([below](#connect-claude-code-by-hand-verified-with-claude-code-21284)) | ✘ MCP tools only | ✔ at bootstrap | 2.1.284 |
 | Codex | `codex mcp add` ([below](#connect-codex-verified-with-codex-cli-01480-alpha21)) | ✘ MCP tools only; hooks later ([#45](https://github.com/0xAysh/debrief/issues/45)) | ✔ legacy rollouts (paginated: [#27](https://github.com/0xAysh/debrief/issues/27)) | `codex-cli 0.148.0-alpha.21` |
 | Pi | not yet | – | – | – |
 
@@ -22,7 +22,7 @@ Codex ───codex mcp add─────────────────�
 - **Without `debrief` on `PATH`**, session start shows `◪ debrief · not running: the debrief command is not on PATH (npm install -g debrief-cli)` and every other hook exits 0 silently. The installed script needs `node` on that `PATH` too (`#!/usr/bin/env node`). If Claude Code is started from an IDE or with another `PATH` (nvm, for instance), check with `debrief status` from the same environment.
 - **Tool names.** Claude Code names the plugin's tools `mcp__plugin_debrief_debrief__memory_*`. The PreToolUse matcher, `debriefTool` in `src/hosts.ts` (auto-approval) and the transcript importer (Debrief's own output is never re-imported) all accept both that name and the user-scope `mcp__debrief__memory_*`.
 - **The import question** is asked at first use: session start tells the agent to put it to the user. `debrief import --set all|current_project|none` answers it from a terminal.
-- **Verified** against Claude Code 2.1.283 by `tests/hooks/claude-plugin.test.ts`: `claude plugin marketplace add <checkout>` and `claude plugin install debrief@debrief` in a temporary `CLAUDE_CONFIG_DIR` with no prompts; the `debrief` command from `npm pack`, installed offline into a temporary prefix; a first session with the context, the import question and a read-only call running without a prompt; the question not asked again; `debrief status` before the first session, when healthy, with a hook no longer registered, and with no `debrief` on `PATH`.
+- **Verified** against Claude Code 2.1.284 by `tests/hooks/claude-plugin.test.ts`: `claude plugin marketplace add <checkout>` and `claude plugin install debrief@debrief` in a temporary `CLAUDE_CONFIG_DIR` with no prompts; the `debrief` command from `npm pack`, installed offline into a temporary prefix; a first session with the context, the import question and a read-only call running without a prompt; the question not asked again; `debrief status` before the first session, when healthy, with a hook no longer registered, and with no `debrief` on `PATH`.
 - **Hook overhead** (`npm run measure:hooks`): each hook is a new Node process. The CLI ships as one bundled file (`dist/debrief.mjs`), which cut each hook's CPU time by about 45 ms and its in-process time by about 27 ms (p50) against the unbundled `dist/cli.js`. Numbers taken on a busy machine are not evidence; the script prints the load average and swap next to them.
 
 ## Connect Codex (verified with codex-cli 0.148.0-alpha.21)
@@ -63,9 +63,9 @@ codex mcp get debrief     # command, args, env (masked), timeouts
 
 Codex rollouts written by 0.125.0-alpha.3 – 0.142.x and by 0.148.0-alpha.21 (legacy history mode) are imported; see [Transcript import](architecture.md#transcript-import) for the table and known gaps.
 
-## Connect Claude Code by hand (verified with Claude Code 2.1.283)
+## Connect Claude Code by hand (verified with Claude Code 2.1.284)
 
-Tested against Claude Code `2.1.283` (native install; first verified on 2.1.281) by `tests/mcp/claude-connection.test.ts`, with `HOME` and `CLAUDE_CONFIG_DIR` in temporary directories. This registers the MCP server only: session-start context, turn capture and the rest of the hooks come with the plugin.
+Tested against Claude Code `2.1.284` (native install; first verified on 2.1.281) by `tests/mcp/claude-connection.test.ts`, with `HOME` and `CLAUDE_CONFIG_DIR` in temporary directories. This registers the MCP server only: session-start context, turn capture and the rest of the hooks come with the plugin.
 
 ```sh
 # With debrief installed on PATH (npm install -g); run by hand against 2.1.281 with debrief installed into a temporary prefix:
@@ -78,7 +78,7 @@ claude mcp get debrief     # Scope: User config …, Status: ✔ Connected, comm
 ```
 
 - **Use user scope (`-s user`).** Debrief serves every repository and finds the repository from its working directory. Claude Code starts a user-scope stdio server in the directory the session runs in: the test sees Debrief log `MCP server ready (cwd <repo>)`, and in a `claude -p` session its `memory_bootstrap` resolves that repository and branch. User and local scope are both stored in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` when that is set). The default, `-s local`, registers Debrief for the current directory only. Avoid `-s project`: it writes `.mcp.json` into the repository, with your local paths, and Debrief otherwise writes nothing there.
-- **`--host claude-code` is explicit, not required.** Claude Code 2.1.283 identifies itself as `claude-code` in the MCP handshake, which Debrief would accept. The flag keeps the host from depending on it.
+- **`--host claude-code` is explicit, not required.** Claude Code 2.1.284 identifies itself as `claude-code` in the MCP handshake, which Debrief would accept. The flag keeps the host from depending on it.
 - **Environment is inherited.** Unlike Codex, Claude Code passes its own environment to the servers it starts (adding `CLAUDE_PROJECT_DIR`, `CLAUDE_CODE_SESSION_ID`, …), so a `DEBRIEF_HOME` or `CLAUDE_CONFIG_DIR` set when you launch `claude` reaches Debrief. To pin one however Claude is launched, add `-e` after the server name (`-e` takes several values, so a name placed after it is read as another pair):
 
   ```sh

@@ -26,7 +26,7 @@ export function claudeConfigDir(): string {
 /**
  * Claude Code's record of an installed plugin: `plugins/installed_plugins.json` (version 2: id →
  * installs) and, for a user-scope install, `enabledPlugins` in `settings.json`, both in its config
- * directory. Pinned against Claude Code 2.1.283 (tests/hooks/claude-plugin.test.ts). Null when
+ * directory. Pinned against Claude Code 2.1.284 (tests/hooks/claude-plugin.test.ts). Null when
  * it is not installed; throws when the files cannot be read.
  */
 export function claudeCodePluginInstall(configDir: string, id: string): PluginInstall | null {
