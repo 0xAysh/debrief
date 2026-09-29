@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { onCleanup, tempDir } from "../helpers.js";
 import { CLI, NO_NETWORK } from "./harness.js";
+import { type StreamJson, streamJson } from "./stream-json.js";
 
 /**
  * Drives the real Claude Code CLI for connection tests: `claude mcp add|list|get` and a
@@ -153,54 +154,13 @@ export function claudeAsync(env: NodeJS.ProcessEnv, cwd: string, ...args: string
  * stream-json, so one Claude Code session can go on across them. `send` resolves when the
  * prompt's result arrives; `end` closes stdin and resolves when Claude exits.
  */
-export function claudeStream(
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-  ...args: string[]
-): { send: (text: string) => Promise<Record<string, unknown>>; end: () => Promise<Run>; kill: (signal: NodeJS.Signals) => Promise<Run>; post: (text: string) => void } {
+export function claudeStream(env: NodeJS.ProcessEnv, cwd: string, ...args: string[]): StreamJson {
   const [bin, argv] = command(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...args]);
-  const child = spawn(bin, argv, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  const stream = streamJson(bin, argv, { cwd, env });
   onCleanup(() => {
-    child.kill();
+    void stream.kill("SIGTERM");
   });
-  let stdout = "";
-  let stderr = "";
-  let seen = 0;
-  const waiting: ((result: Record<string, unknown>) => void)[] = [];
-  child.stdout.on("data", (chunk: Buffer) => {
-    stdout += chunk.toString();
-    const lines = stdout.split("\n");
-    lines.pop(); // the line still being written
-    const results = lines.filter((line) => line.includes('"type":"result"')).map((line) => JSON.parse(line) as Record<string, unknown>).filter((message) => message["type"] === "result");
-    while (seen < results.length) waiting.shift()?.(results[seen++] ?? {});
-  });
-  child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
-  const closed = new Promise<Run>((resolve) => child.on("close", (code) => { resolve({ code, stdout, stderr }); }));
-  const write = (text: string): void => {
-    child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`);
-  };
-  return {
-    /** Sends a prompt without waiting for its result (it may never come: see `kill`). */
-    post: write,
-    send: (text) =>
-      new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { reject(new Error(`no result for ${JSON.stringify(text)}; stderr: ${stderr}`)); }, 60_000);
-        waiting.push((result) => {
-          clearTimeout(timer);
-          resolve(result);
-        });
-        write(text);
-      }),
-    end: () => {
-      child.stdin.end();
-      return closed;
-    },
-    /** Kills Claude Code itself (sandbox-exec execs it in place): no hook runs after this. */
-    kill: (signal) => {
-      child.kill(signal);
-      return closed;
-    },
-  };
+  return stream;
 }
 
 /** The command `claude mcp add` registers: Debrief from this checkout's dist, with the no-network guard preloaded. */
