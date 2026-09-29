@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
+import { claudeCodeAdapter } from "../../src/import/adapters/claude.js";
+import type { TranscriptAdapter } from "../../src/import/normalized-event.js";
 import { git, initRepo, onCleanup, tempDir } from "../helpers.js";
 import { claudeBashStep, claudeConfigDir, claudeReadStep, claudeSession, codexHome, codexSession, codexThreadId, installCodexRollout, installTranscript, sedPrint, type SessionStep } from "./fixtures.js";
 
@@ -260,5 +262,58 @@ describe("what is stored", () => {
     // …and no line of the file, not even one token of it.
     for (let i = 1; i <= 12; i++) expect(bytes.includes(`zebra-quartz-${i}`)).toBe(false);
     expect(bytes.includes("marker1 =")).toBe(false);
+  });
+});
+
+describe("records imported before reads were fingerprinted", () => {
+  /** The adapter as it was before #54: the same events, identities and hashes, without the read and output facts. */
+  function withoutReadFacts(adapter: TranscriptAdapter): TranscriptAdapter {
+    return {
+      ...adapter,
+      read: (file, from, maxBytes) => {
+        const chunk = adapter.read(file, from, maxBytes);
+        return {
+          ...chunk,
+          events: chunk.events.map((event) => {
+            const copy = { ...event } as Record<string, unknown>;
+            delete copy["read"];
+            delete copy["output"];
+            return copy as typeof event;
+          }),
+        };
+      },
+    };
+  }
+
+  test("R8: they keep unknown and are neither relabelled nor imported again, while a read added later is fingerprinted", () => {
+    const repo = repoWith({ "src/gateway.ts": GATEWAY });
+    const path = join(repo, "src/gateway.ts");
+    const config = claudeConfigDir();
+    const home = tempDir();
+    const lines = claudeSession({ cwd: repo, sessionId: "5e55a000-0000-4000-8000-000000000008", steps: [claudeReadStep(path, GATEWAY), claudeReadStep(path, GATEWAY, { offset: 10, limit: 5 }), claudeReadStep(path, GATEWAY, { offset: 20, limit: 5 })] }).split(/(?<=\n)/);
+    // The prompt and the first two reads, imported by the old adapter.
+    const { path: transcript } = installTranscript(config, "", { cwd: repo, sessionId: "5e55a000-0000-4000-8000-000000000008", content: lines.slice(0, 5).join("") });
+    const old = openMemory({ cwd: repo, host: "claude-code", home, transcriptAdapter: withoutReadFacts(claudeCodeAdapter({ configDir: config })) });
+    expect(old.bootstrap({ importChoice: "current_project" }).import.state).toBe("complete");
+    const before = recordsOf(old, "Read");
+    expect(before).toHaveLength(2);
+    for (const id of before) expect(label(old, id)).toEqual(["unknown", "transcript_reference"]);
+    const records = old.status().counts?.records ?? 0;
+    old.close();
+
+    // Rewritten (a metadata line now leads, so the importer reads the whole file again) and grown by a third read.
+    writeFileSync(transcript, `${JSON.stringify({ type: "ai-title", sessionId: "5e55a000-0000-4000-8000-000000000008", aiTitle: "Gateway retries" })}\n${lines.join("")}`);
+    const memory = openMemory({ cwd: repo, host: "claude-code", home, claudeConfigDir: config });
+    onCleanup(() => {
+      memory.close();
+    });
+    const status = memory.bootstrap().import;
+    expect(status.state).toBe("complete");
+    expect(status.currentProject?.counters).toMatchObject({ rewrites: 1, conflicts: 0 });
+    expect(memory.status().counts?.records).toBe(records + 1);
+    const after = recordsOf(memory, "Read");
+    expect(after.slice(0, 2)).toEqual(before);
+    for (const id of before) expect(label(memory, id)).toEqual(["unknown", "transcript_reference"]);
+    expect(memory.read({ recordId: after[2] ?? "" }).externalRefs[0]).toMatchObject({ lines: [20, 24], freshness: "current" });
   });
 });
