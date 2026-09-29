@@ -158,3 +158,48 @@ describe("Claude Code Bash reads", () => {
     expect(label(memory, tail ?? "")).toEqual(["current", "changed_elsewhere"]);
   });
 });
+
+describe("reads and in-session edits", () => {
+  /**
+   * The rule the user approved (#54): a read's `current` says only that the file still holds the
+   * text that read showed, which is true whenever the fingerprints match, whatever the session
+   * did to the file after it. Imported claims carry no references, and labels never propagate.
+   */
+  const X = GATEWAY;
+  const Y = GATEWAY.replace("retry(3)", "retry(3, { idempotencyKey })");
+
+  function session(repo: string): { memory: Memory; before: string; edit: string; after: string; claim: string } {
+    const path = join(repo, "src/gateway.ts");
+    const memory = importClaude(repo, [
+      claudeReadStep(path, X),
+      { tool: "Edit", input: { file_path: path, old_string: "retry(3)", new_string: "retry(3, { idempotencyKey })" }, result: `The file ${path} has been updated successfully.` },
+      { say: "Step three now retries with an idempotency key." },
+      claudeReadStep(path, Y),
+    ]);
+    const [before, after] = recordsOf(memory, "Read");
+    const [edit] = recordsOf(memory, "Edit");
+    const claim = memory.recall({ query: "idempotency key", maxTokens: 8_000 }).items.find((item) => item.excerpt.includes("Step three now retries"));
+    return { memory, before: before ?? "", edit: edit ?? "", after: after ?? "", claim: claim?.recordId ?? "" };
+  }
+
+  test("R5a/R5d: the session edits the file to Y and today it holds Y: the read before the edit is stale, the read after it current", () => {
+    const repo = repoWith({ "src/gateway.ts": Y });
+    const { memory, before, after } = session(repo);
+    expect(label(memory, before)).toEqual(["stale", "changed"]);
+    expect(label(memory, after)).toEqual(["current", "unchanged"]);
+  });
+
+  test("R5b: the edit was reverted and today the file holds X again: the read before the edit is current, the one after it stale", () => {
+    const repo = repoWith({ "src/gateway.ts": X });
+    const { memory, before, after } = session(repo);
+    expect(label(memory, before)).toEqual(["current", "unchanged"]);
+    expect(label(memory, after)).toEqual(["stale", "changed"]);
+  });
+
+  test("R5c: the claim made after the edit carries no reference and stays unknown; the edit's own reference was never fingerprinted", () => {
+    const repo = repoWith({ "src/gateway.ts": Y });
+    const { memory, edit, claim } = session(repo);
+    expect(memory.read({ recordId: claim })).toMatchObject({ freshness: "unknown", externalRefs: [] });
+    expect(label(memory, edit)).toEqual(["unknown", "transcript_reference"]);
+  });
+});
