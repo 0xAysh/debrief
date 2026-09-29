@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type BootstrapResult } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
+import { hostGate } from "../host-skips.js";
 import { CLI, NO_NETWORK } from "./harness.js";
 import { CODEX_PINNED_VERSION, codex, codexAsync, CodexAppServer, codexEnv, codexSkipReason, debriefAddArgs, startStubResponses, useStubProvider } from "./codex.js";
 
-const SKIP = codexSkipReason();
-if (SKIP !== null) process.stderr.write(`codex connection tests skipped: ${SKIP}\n`);
+const SKIP = hostGate("codex connection tests", codexSkipReason());
 
 const TOOLS = ["memory_bootstrap", "memory_checkpoint", "memory_manage", "memory_read", "memory_recall", "memory_record", "memory_status"];
 

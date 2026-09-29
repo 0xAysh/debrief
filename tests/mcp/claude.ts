@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { onCleanup, tempDir } from "../helpers.js";
 import { CLI, NO_NETWORK } from "./harness.js";
+import { type StreamJson, streamJson } from "./stream-json.js";
 
 /**
  * Drives the real Claude Code CLI for connection tests: `claude mcp add|list|get` and a
@@ -17,7 +18,6 @@ import { CLI, NO_NETWORK } from "./harness.js";
 
 /** The Claude Code release these tests pin (native install, 2026-09). */
 export const CLAUDE_PINNED_VERSION = "2.1.283";
-export const CLAUDE_BIN = process.env["DEBRIEF_TEST_CLAUDE_BIN"] ?? onPath("claude") ?? join(homedir(), ".local/bin/claude");
 
 function onPath(name: string): string | undefined {
   return (process.env["PATH"] ?? "")
@@ -68,19 +68,54 @@ function guardProfile(): string {
 }
 
 function command(args: string[]): [string, string[]] {
-  return process.platform === "darwin" && existsSync(SANDBOX_EXEC) ? [SANDBOX_EXEC, ["-p", guardProfile(), CLAUDE_BIN, ...args]] : [CLAUDE_BIN, args];
+  return process.platform === "darwin" && existsSync(SANDBOX_EXEC) ? [SANDBOX_EXEC, ["-p", guardProfile(), claudeHost().bin, ...args]] : [claudeHost().bin, args];
+}
+
+export interface ClaudeResolution {
+  bin: string;
+  skip: string | null;
+}
+
+/**
+ * Which Claude Code binary the driven tests run, and why they are skipped when there is none at
+ * the pin. DEBRIEF_TEST_CLAUDE_BIN, when set, is used as given. Otherwise `bin` (the `claude` the
+ * developer runs) is used if it reports the pin; Claude Code auto-updates, so when it has moved
+ * on, the native installer's kept copy of the pinned build (`<versionsDir>/<pin>`) runs instead.
+ * The pin stays because it backs the README's "Tested with" column; a skip names every way out.
+ */
+export function resolveClaude(inputs: { bin: string; env: NodeJS.ProcessEnv; versionsDir: string; pinned?: string }): ClaudeResolution {
+  const pinned = inputs.pinned ?? CLAUDE_PINNED_VERSION;
+  const fixes = `set DEBRIEF_TEST_CLAUDE_BIN to a ${pinned} binary, or bump CLAUDE_PINNED_VERSION (tests/mcp/claude.ts, with the README and docs) once these suites pass on the new build with DEBRIEF_REQUIRE_HOSTS=1`;
+  const explicit = inputs.env["DEBRIEF_TEST_CLAUDE_BIN"];
+  const bin = explicit ?? inputs.bin;
+  const version = existsSync(bin) ? (claudeVersion(bin) ?? "unknown") : undefined;
+  if (version === pinned) return { bin, skip: null };
+  const found = version === undefined ? `no Claude Code binary at ${bin}` : `${bin} is Claude Code ${version}`;
+  if (explicit !== undefined) return { bin, skip: `${found} (DEBRIEF_TEST_CLAUDE_BIN); these tests pin ${pinned}: ${fixes}` };
+  const kept = join(inputs.versionsDir, pinned);
+  if (existsSync(kept) && claudeVersion(kept) === pinned) return { bin: kept, skip: null };
+  return { bin, skip: `${found}, and there is no ${kept}; these tests pin ${pinned}: ${fixes}` };
+}
+
+function claudeVersion(bin: string): string | undefined {
+  // Runs at collection time, outside any test, so it cleans up after itself.
+  const scratch = mkdtempSync(join(tmpdir(), "debrief-claude-version-"));
+  const run = spawnSync(bin, ["--version"], { env: claudeEnv({ home: scratch, configDir: scratch }), encoding: "utf8", timeout: 20_000 });
+  rmSync(scratch, { recursive: true, force: true });
+  return /^(\d+\.\d+\.\d+)/.exec(run.stdout)?.[1];
+}
+
+let resolved: ClaudeResolution | undefined;
+
+/** Resolved once per test file, on first use, so importing this module (for the pin) spawns nothing. */
+function claudeHost(): ClaudeResolution {
+  resolved ??= resolveClaude({ bin: onPath("claude") ?? join(homedir(), ".local/bin/claude"), env: process.env, versionsDir: join(homedir(), ".local/share/claude/versions") });
+  return resolved;
 }
 
 /** Null when the pinned binary is available; otherwise why the Claude Code tests are skipped. */
 export function claudeSkipReason(): string | null {
-  if (!existsSync(CLAUDE_BIN)) return `no Claude Code binary at ${CLAUDE_BIN} (set DEBRIEF_TEST_CLAUDE_BIN)`;
-  // Runs at collection time, outside any test, so it cleans up after itself.
-  const scratch = mkdtempSync(join(tmpdir(), "debrief-claude-version-"));
-  const run = spawnSync(CLAUDE_BIN, ["--version"], { env: claudeEnv({ home: scratch, configDir: scratch }), encoding: "utf8", timeout: 20_000 });
-  rmSync(scratch, { recursive: true, force: true });
-  const version = /^(\d+\.\d+\.\d+)/.exec(run.stdout)?.[1];
-  if (version !== CLAUDE_PINNED_VERSION) return `${CLAUDE_BIN} is Claude Code ${version ?? "unknown"}; these tests pin ${CLAUDE_PINNED_VERSION}`;
-  return null;
+  return claudeHost().skip;
 }
 
 export interface Run {
@@ -119,54 +154,13 @@ export function claudeAsync(env: NodeJS.ProcessEnv, cwd: string, ...args: string
  * stream-json, so one Claude Code session can go on across them. `send` resolves when the
  * prompt's result arrives; `end` closes stdin and resolves when Claude exits.
  */
-export function claudeStream(
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-  ...args: string[]
-): { send: (text: string) => Promise<Record<string, unknown>>; end: () => Promise<Run>; kill: (signal: NodeJS.Signals) => Promise<Run>; post: (text: string) => void } {
+export function claudeStream(env: NodeJS.ProcessEnv, cwd: string, ...args: string[]): StreamJson {
   const [bin, argv] = command(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...args]);
-  const child = spawn(bin, argv, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  const stream = streamJson(bin, argv, { cwd, env });
   onCleanup(() => {
-    child.kill();
+    void stream.kill("SIGTERM");
   });
-  let stdout = "";
-  let stderr = "";
-  let seen = 0;
-  const waiting: ((result: Record<string, unknown>) => void)[] = [];
-  child.stdout.on("data", (chunk: Buffer) => {
-    stdout += chunk.toString();
-    const lines = stdout.split("\n");
-    lines.pop(); // the line still being written
-    const results = lines.filter((line) => line.includes('"type":"result"')).map((line) => JSON.parse(line) as Record<string, unknown>).filter((message) => message["type"] === "result");
-    while (seen < results.length) waiting.shift()?.(results[seen++] ?? {});
-  });
-  child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
-  const closed = new Promise<Run>((resolve) => child.on("close", (code) => { resolve({ code, stdout, stderr }); }));
-  const write = (text: string): void => {
-    child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`);
-  };
-  return {
-    /** Sends a prompt without waiting for its result (it may never come: see `kill`). */
-    post: write,
-    send: (text) =>
-      new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { reject(new Error(`no result for ${JSON.stringify(text)}; stderr: ${stderr}`)); }, 60_000);
-        waiting.push((result) => {
-          clearTimeout(timer);
-          resolve(result);
-        });
-        write(text);
-      }),
-    end: () => {
-      child.stdin.end();
-      return closed;
-    },
-    /** Kills Claude Code itself (sandbox-exec execs it in place): no hook runs after this. */
-    kill: (signal) => {
-      child.kill(signal);
-      return closed;
-    },
-  };
+  return stream;
 }
 
 /** The command `claude mcp add` registers: Debrief from this checkout's dist, with the no-network guard preloaded. */

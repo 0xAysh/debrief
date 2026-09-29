@@ -75,4 +75,24 @@ describe("the published package", () => {
     expect(readme).toContain(`| better-sqlite3 | \`${manifest.dependencies["better-sqlite3"]}\` (installed with the package) | ${manifest.dependencies["better-sqlite3"]} |`);
     expect(readme).toContain(`| Claude Code | \`${CLAUDE_PINNED_VERSION}\` | ${CLAUDE_PINNED_VERSION} |`);
   });
+
+  test("V5: the docs name the Claude Code build the driven tests pin, wherever they say what was verified", () => {
+    // Every "Claude Code <version>" (or "Claude Code `<version>`") in these docs is a claim the
+    // driven suites back, as is the last column of the hosts table; a bump must carry all of them.
+    const claimed = (file: string): (string | undefined)[] => {
+      const text = readFileSync(join(ROOT, file), "utf8");
+      const prose = [...text.matchAll(/Claude Code `?(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
+      const table = [...text.matchAll(/^\| Claude Code[^\n]*\| `?(\d+\.\d+\.\d+)`? \|$/gm)].map((m) => m[1]);
+      return [...prose, ...table];
+    };
+    for (const file of ["README.md", "docs/hosts.md", "docs/development.md"]) {
+      const versions = claimed(file);
+      expect(versions.length, `${file} names no Claude Code version`).toBeGreaterThan(0);
+      expect(new Set(versions), file).toEqual(new Set([CLAUDE_PINNED_VERSION]));
+    }
+    // The hosts table links to the by-hand section, whose heading (and so its anchor) carries the version.
+    const hosts = readFileSync(join(ROOT, "docs/hosts.md"), "utf8");
+    expect(hosts).toContain(`## Connect Claude Code by hand (verified with Claude Code ${CLAUDE_PINNED_VERSION})`);
+    expect(hosts).toContain(`(#connect-claude-code-by-hand-verified-with-claude-code-${CLAUDE_PINNED_VERSION.replaceAll(".", "")})`);
+  });
 });

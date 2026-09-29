@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { locateWorkspace } from "../../src/bootstrap/workspace-resolution.js";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
+import { hostGate } from "../host-skips.js";
 import { claudeTurn, installTranscript } from "../import/fixtures.js";
 import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, claudeStream, firstUserText, debriefAddArgs, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
 import { CLI, NO_NETWORK } from "../mcp/harness.js";
@@ -15,7 +16,7 @@ import { CLI, NO_NETWORK } from "../mcp/harness.js";
  * against a localhost stub model. What the model received is read from the stub's request bodies.
  */
 
-const SKIP = claudeSkipReason();
+const SKIP = hostGate("debrief hook tests in claude code", claudeSkipReason());
 
 /** Every network log a Debrief process (hook or MCP server) in this file writes to; each is checked empty after its test. */
 const networkLogs: string[] = [];

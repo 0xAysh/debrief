@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { initRepo, snapshotTree, tempDir } from "../helpers.js";
+import { hostGate } from "../host-skips.js";
 import {
   CLAUDE_PINNED_VERSION,
   claude,
@@ -16,8 +17,7 @@ import {
   startStubMessages,
 } from "./claude.js";
 
-const SKIP = claudeSkipReason();
-if (SKIP !== null) process.stderr.write(`claude code connection tests skipped: ${SKIP}\n`);
+const SKIP = hostGate("claude code connection tests", claudeSkipReason());
 
 const TOOLS = ["memory_bootstrap", "memory_checkpoint", "memory_manage", "memory_read", "memory_recall", "memory_record", "memory_status"];
 

@@ -3,13 +3,13 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { BootstrapResult, CheckpointResult, ContextPack, RecordResult } from "../../src/memory.js";
 import { git, tempDir } from "../helpers.js";
+import { hostGate } from "../host-skips.js";
 import { claudeConfigDir, installTranscript } from "../import/fixtures.js";
 import { CODEX_PINNED_VERSION, codex, CodexAppServer, codexEnv, codexSkipReason, debriefAddArgs, startStubResponses, useStubProvider } from "../mcp/codex.js";
 import { spawnServer } from "../mcp/harness.js";
 import { writeArtifact } from "./artifacts.js";
 
-const SKIP = codexSkipReason();
-if (SKIP !== null) process.stderr.write(`real-Codex handoff test skipped: ${SKIP}\n`);
+const SKIP = hostGate("real-Codex handoff test", codexSkipReason());
 
 const DECISION = "Charge with a server-side idempotency key per order; remove client retries.";
 const RETRY_FACT = "src/retry.ts: backoff() retries every 5xx, including 504, with no idempotency key.";

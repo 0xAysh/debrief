@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
+import { hostGate } from "../host-skips.js";
 import { installPackedDebrief, installPlugin, pathWith, PLUGIN_TOOL, STUB_KEY } from "../hooks/plugin-install.js";
 import { CLAUDE_PINNED_VERSION, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, claudeStream, firstUserText, sessionToolTraffic, startStubMessages } from "../mcp/claude.js";
 import { NO_NETWORK } from "../mcp/harness.js";
@@ -17,8 +18,7 @@ import { NO_NETWORK } from "../mcp/harness.js";
  * session", compaction and resume behave.
  */
 
-const SKIP = claudeSkipReason();
-if (SKIP !== null) process.stderr.write(`claude code acceptance test skipped: ${SKIP}\n`);
+const SKIP = hostGate("claude code acceptance test", claudeSkipReason());
 
 const networkLogs: string[] = [];
 

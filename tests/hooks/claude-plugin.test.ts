@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
+import { hostGate } from "../host-skips.js";
 import { CLI } from "../mcp/harness.js";
 import { CLAUDE_PINNED_VERSION, claude, claudeAsync, claudeEnv, claudeSandbox, claudeSkipReason, startStubMessages } from "../mcp/claude.js";
 import { installPackedDebrief, installPlugin, pathWith, PLUGIN_TOOL, ROOT, streamEvents, STUB_KEY } from "./plugin-install.js";
@@ -14,8 +15,7 @@ import { installPackedDebrief, installPlugin, pathWith, PLUGIN_TOOL, ROOT, strea
  * (installed offline into a temporary prefix put on PATH, as `npm install -g` would).
  */
 
-const SKIP = claudeSkipReason();
-if (SKIP !== null) process.stderr.write(`claude code plugin tests skipped: ${SKIP}\n`);
+const SKIP = hostGate("claude code plugin tests", claudeSkipReason());
 
 const IMPORT_QUESTION = "Transcript import needs the user's answer";
 
