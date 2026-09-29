@@ -203,3 +203,40 @@ describe("reads and in-session edits", () => {
     expect(label(memory, edit)).toEqual(["unknown", "transcript_reference"]);
   });
 });
+
+describe("reads Debrief cannot rebuild exactly", () => {
+  /** Committed and never changed: a read wrongly fingerprinted would label current (or stale), never unknown. */
+  const FILE = Array.from({ length: 12 }, (_, i) => `export const line${i + 1} = ${i + 1};`).join("\n") + "\n";
+  const persisted = `<persisted-output>\nOutput too large (97.7KB). Full output saved to: /tmp/claude/tool-results/b1.txt\n\nPreview (first 2KB):\n${sedPrint(FILE, 1, 6)}...\n</persisted-output>`;
+  const gap = claudeReadStep("", FILE);
+  const cases: [string, (path: string) => SessionStep[], "claude-code" | "codex"][] = [
+    ["Claude Code output persisted to a file (only a preview reached the model)", (path) => [{ ...claudeBashStep(`sed -n '1,12p' ${path}`, FILE, { persistedOutputPath: "/tmp/claude/tool-results/b1.txt", persistedOutputSize: 100_000 }), result: persisted }], "claude-code"],
+    ["a Read line longer than Claude Code shows whole", (path) => [claudeReadStep(path, FILE.replace("line1 = 1", `line1 = "${"x".repeat(2_100)}"`))], "claude-code"],
+    ["Codex output cut to its token budget", (path) => [{ tool: "exec_command", input: { cmd: `cat ${path}` }, result: `${sedPrint(FILE, 1, 4)}…120 tokens truncated…${sedPrint(FILE, 9, 12)}` }], "codex"],
+    ["an image Read", (path) => [{ tool: "Read", input: { file_path: path }, result: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } }], toolUseResult: { type: "image", file: { base64: "iVBORw0KGgo=", type: "image/png", originalSize: 8 } } }], "claude-code"],
+    ["a multi-file cat", (path) => [{ tool: "exec_command", input: { cmd: `cat ${path.replace("read.ts", "other.ts")} ${path}` }, result: FILE + FILE }], "codex"],
+    ["output with echo separators", (path) => [{ tool: "exec_command", input: { cmd: `echo '== read.ts' && cat ${path}` }, result: `== read.ts\n${FILE}` }], "codex"],
+    ["line numbers that do not run consecutively", (path) => [{ ...gap, input: { file_path: path }, result: (gap.result as string).replace("4\t", "5\t") }], "claude-code"],
+    ["a regex range", (path) => [{ tool: "exec_command", input: { cmd: `sed -n '/line3/,/line9/p' ${path}` }, result: sedPrint(FILE, 3, 9) }], "codex"],
+    ["a range of fewer than 3 non-blank lines", (path) => [claudeReadStep(path, FILE.replace("export const line6 = 6;", ""), { offset: 5, limit: 3 })], "claude-code"],
+  ];
+
+  test.each(cases)("R6: %s stays unknown", (_name, steps, host) => {
+    const repo = repoWith({ "src/read.ts": FILE, "src/other.ts": FILE });
+    const path = join(repo, "src/read.ts");
+    let memory: Memory;
+    let tool: string;
+    if (host === "codex") {
+      memory = importCodex(repo, steps(path).map((step) => ({ cmd: ((step as { input: { cmd: string } }).input.cmd), output: (step as { result: string }).result })));
+      tool = "exec_command";
+    } else {
+      memory = importClaude(repo, steps(path));
+      tool = (steps(path)[0] as { tool: string }).tool;
+    }
+    const records = recordsOf(memory, tool);
+    expect(records).toHaveLength(1);
+    const refs = memory.read({ recordId: records[0] ?? "" }).externalRefs;
+    expect(refs.length).toBeGreaterThan(0);
+    for (const ref of refs) expect([ref.freshness, ref.reason]).toEqual(["unknown", "transcript_reference"]);
+  });
+});

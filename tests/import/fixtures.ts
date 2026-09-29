@@ -248,7 +248,7 @@ export function installCodexRollout(
 
 /** One step of a hand-written session: a tool call with its result as the model saw it, or an assistant reply. */
 export type SessionStep =
-  | { tool: string; input: object; result: string; toolUseResult?: object; isError?: boolean }
+  | { tool: string; input: object; result: string | object[]; toolUseResult?: object; isError?: boolean }
   | { say: string };
 
 /**
