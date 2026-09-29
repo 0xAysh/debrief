@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
@@ -30,10 +30,10 @@ function repoWith(files: Record<string, string>): string {
 }
 
 /** Imports one hand-written Claude Code session recorded in `repo`, returning the memory it was imported into. */
-function importClaude(repo: string, steps: readonly SessionStep[]): Memory {
+function importClaude(repo: string, steps: readonly SessionStep[], home = tempDir()): Memory {
   const config = claudeConfigDir();
   installTranscript(config, "", { cwd: repo, content: claudeSession({ cwd: repo, sessionId: "5e55a000-0000-4000-8000-000000000001", steps }) });
-  const memory = openMemory({ cwd: repo, host: "claude-code", home: tempDir(), claudeConfigDir: config });
+  const memory = openMemory({ cwd: repo, host: "claude-code", home, claudeConfigDir: config });
   onCleanup(() => {
     memory.close();
   });
@@ -42,11 +42,11 @@ function importClaude(repo: string, steps: readonly SessionStep[]): Memory {
 }
 
 /** Imports one hand-written Codex rollout recorded in `repo`, running `calls` there. */
-function importCodex(repo: string, calls: readonly { cmd: string; output: string }[]): Memory {
-  const home = codexHome();
+function importCodex(repo: string, calls: readonly { cmd: string; output: string }[], home = tempDir()): Memory {
+  const codex = codexHome();
   const threadId = codexThreadId();
-  installCodexRollout(home, "", { cwd: repo, threadId, content: codexSession({ cwd: repo, threadId, calls }) });
-  const memory = openMemory({ cwd: repo, host: "codex", home: tempDir(), codexHome: home });
+  installCodexRollout(codex, "", { cwd: repo, threadId, content: codexSession({ cwd: repo, threadId, calls }) });
+  const memory = openMemory({ cwd: repo, host: "codex", home, codexHome: codex });
   onCleanup(() => {
     memory.close();
   });
@@ -238,5 +238,27 @@ describe("reads Debrief cannot rebuild exactly", () => {
     const refs = memory.read({ recordId: records[0] ?? "" }).externalRefs;
     expect(refs.length).toBeGreaterThan(0);
     for (const ref of refs) expect([ref.freshness, ref.reason]).toEqual(["unknown", "transcript_reference"]);
+  });
+});
+
+describe("what is stored", () => {
+  test("R7: only fingerprints are stored: the database holds none of the text any read showed", () => {
+    const secret = Array.from({ length: 12 }, (_, i) => `export const marker${i + 1} = "zebra-quartz-${i + 1}";`).join("\n") + "\n";
+    const repo = repoWith({ "src/secret.ts": secret });
+    const path = join(repo, "src/secret.ts");
+    const home = tempDir();
+    const claude = importClaude(repo, [claudeReadStep(path, secret), claudeReadStep(path, secret, { offset: 3, limit: 6 }), claudeBashStep(`sed -n '2,9p' ${path}`, sedPrint(secret, 2, 9))], home);
+    const codex = importCodex(repo, [{ cmd: "cat src/secret.ts", output: secret }, { cmd: "nl -ba src/secret.ts | sed -n '4,10p'", output: numbered(secret, 4, 10) }], home);
+    for (const memory of [claude, codex]) {
+      for (const tool of ["Read", "Bash", "exec_command"]) for (const id of recordsOf(memory, tool)) expect(memory.read({ recordId: id }).freshness).toBe("current");
+    }
+
+    const dbPath = claude.status().storage.dbPath ?? "";
+    const bytes = Buffer.concat(["", "-wal", "-shm"].map((suffix) => (existsSync(dbPath + suffix) ? readFileSync(dbPath + suffix) : Buffer.alloc(0))));
+    // Five fingerprints were stored (not a vacuous pass)…
+    expect(bytes.toString("latin1").match(/"(?:observedHash|citedHash)":"sha256:[0-9a-f]{64}"/g)?.length).toBeGreaterThanOrEqual(5);
+    // …and no line of the file, not even one token of it.
+    for (let i = 1; i <= 12; i++) expect(bytes.includes(`zebra-quartz-${i}`)).toBe(false);
+    expect(bytes.includes("marker1 =")).toBe(false);
   });
 });
