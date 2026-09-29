@@ -175,7 +175,11 @@ export class JevClient {
       : parsed === null
         ? { ok: false, failure: "malformed", status: result.status, retryAfterMs: null }
         : { ok: true, ...parsed };
-    this.ledger?.count(now, outcome.ok ? outcome.usage : null);
+    try {
+      this.ledger?.count(now, outcome.ok ? outcome.usage : null);
+    } catch {
+      // The meter is best-effort: a busy ledger never turns an answer into a failure.
+    }
     return outcome;
   }
 
@@ -342,7 +346,7 @@ export interface JevStatus {
   model: string;
   today: JevUsage;
   total: JevUsage;
-  /** Per UTC day, newest first. */
+  /** Per UTC day, newest first (at most 30). */
   days: (JevUsage & { day: string })[];
 }
 
@@ -365,7 +369,7 @@ export function jevStatus(home: string, access: JevAccess, repositoryKey: string
     model: JEV.model,
     today: priced(summary.today),
     total: priced(summary.total),
-    days: days.map(priced),
+    days: days.slice(0, 30).map(priced),
   };
 }
 

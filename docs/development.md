@@ -30,6 +30,7 @@ src/
 ├── bootstrap/             # cwd → workspace → workstream → session
 ├── import/                # consent, transcript adapters (claude, codex), reconcile, privacy
 ├── integrity/             # checkpoints, lifecycle and taints, provenance, preferences, private sessions
+├── judge/                 # opt-in Jev: the seam (consent, pinned model, one request), its ledger, "changed, but still true"
 ├── retrieval/             # eligibility, search, freshness, context packs, index lines, timelines, digest, session-start text
 └── storage/               # SQLite, records, migrations, home-level logs, delete-data
 ```
@@ -55,6 +56,7 @@ tests/
 ├── mcp/         # ① the server and CLI; ② Claude Code and Codex connections
 ├── hooks/       # ② Claude Code's hooks, the plugin, sub-agents
 ├── handoff/     # ①② Claude → Codex → Claude
+├── jev/         # ①③ opt-in Jev judgments against a localhost stub of TypeSafe's API; real-API scenarios with a key
 └── release/     # the package, and the Claude-only acceptance scenario through the installed plugin
 ```
 
@@ -63,7 +65,9 @@ The driven host tests run only against the pinned builds and are skipped, with t
 - **Claude Code `2.1.283`**: the first `claude` on `PATH`, else `~/.local/bin/claude`; override with `DEBRIEF_TEST_CLAUDE_BIN`. `HOME` and `CLAUDE_CONFIG_DIR` are temporary directories. On macOS each `claude` also runs under `sandbox-exec` with a profile that denies `~/.claude.json`, `~/.claude`, Claude's cache, `~/.debrief`, and every connection except to localhost.
 - **`codex-cli 0.148.0-alpha.21`**: bundled at `/Applications/ChatGPT.app/Contents/Resources/codex`; override with `DEBRIEF_TEST_CODEX_BIN`. It runs in a temporary `CODEX_HOME`.
 
-Every Debrief process a driven test starts loads `tests/mcp/no-network.mjs`, which refuses and logs any socket, DNS lookup or fetch; the tests assert the logs are empty.
+Every Debrief process a driven test starts loads `tests/mcp/no-network.mjs`, which refuses and logs any socket, DNS lookup or fetch; the tests assert the logs are empty. `DEBRIEF_NETWORK_ALLOW` (`host:port`, comma-separated) lets exactly those endpoints through: the Jev tests allow only their stub, so an empty log proves nothing else was contacted.
+
+**Jev tests** (`tests/jev/`). TypeSafe's API is a localhost HTTP stub (`tests/jev/stub.ts`) that logs every request and answers as a test tells it (a verdict, a 429, a delay); Debrief is pointed at it with `DEBRIEF_JEV_ENDPOINT` and a placeholder `TYPESAFE_API_KEY`. `tests/jev/real-api.test.ts` asks the real API (four calls, about 2,500 input tokens, well under a cent) and runs only with a key: `TYPESAFE_API_KEY` in the environment, else in the repository's git-ignored `.env` (this checkout's, then the main checkout's). Without one it is skipped with the reason on stderr. Its verdicts are written to `tests/mcp/__artifacts__/jev/verdicts.json`.
 
 | Test | Drives |
 |---|---|
@@ -104,6 +108,7 @@ npx vitest run tests/handoff # the Claude → Codex → Claude packs and the ide
 debrief status                                      # is Debrief installed and working here? (exit 1 on a problem)
 debrief import [--set all|current_project|none]     # put the transcript question, or record the answer and import to completion
 debrief delete-data [--yes]                         # delete all stored memory, after typing delete (--yes: without asking)
+debrief jev [enable [--yes] | disable] [--here]     # opt-in Jev judgments: state and cost; consent screen and key check; off (--here: this repository)
 debrief mcp [--host claude-code|codex|pi|unknown]   # MCP server over stdio (the host starts this)
 debrief hook <event> --host claude-code             # a host hook (the plugin registers these; payload on stdin)
 debrief diag status                                 # runtime (SQLite/FTS5), storage, scope, counts (read-only)

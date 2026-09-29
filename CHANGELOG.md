@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Optional: Jev judgments ("changed, but still true")
+
+- **Off by default, with your own key.** `debrief jev enable` shows what is sent, to whom and TypeSafe's retention terms, checks `TYPESAFE_API_KEY` once, and records consent for that endpoint. `debrief jev disable` turns it off; `--here` opts one repository out (or back in). Nothing is sent without it, and the README's privacy row now says so: local by default; with Jev on, redacted memory text and bounded diffs go to TypeSafe AI.
+- **Stale memory gets a verdict.** When code a memory cites changed after Debrief saw it clean at a commit, the MCP server asks Jev (pinned `jev-1.13.0`) in the background, between requests, whether `git diff <commit> -- <file>` invalidates the claim. Recall and read then show `stale · still holds (0.91)` or `stale · invalidated (0.88)` (`judgment` on the item). Recall never waits for it, hooks never call Jev, and each pair of versions is asked once. A reference observed dirty, or imported from a transcript, has no old version to diff against and gets no verdict.
+- **Advisory.** Freshness is unchanged. The warning to re-read goes only for "still holds" at 0.9 or above; a timeout, rate limit or error leaves the plain label and adds a notice.
+- **Never sent:** private sessions, sensitive paths, withheld tool output, and any memory or diff holding a credential or a `[redacted]`/`[private]` marker (skipped, not redacted and sent).
+- **Visible cost.** `debrief status` and `debrief jev` show calls, tokens and estimated dollars ($0.042 per million input tokens), today and in total. A judgment is about 650 input tokens. `debrief delete-data` also removes Jev's consent and ledger.
+
 ### Recall ranking
 
 - **Code identifiers.** A query for "rank sequence" finds memory that only says `rankSequence` or `RankSequence`, and a query for `rankSequence` still puts the record with that exact identifier first. Paths and file names (`freshness.ts`, `retrieval/freshness`) rank the memory that cites them first. Existing databases are reindexed once when this version first opens them (schema version 7); nothing is re-imported.

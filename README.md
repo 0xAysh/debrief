@@ -8,7 +8,7 @@ How it differs from hosted memory plugins:
 
 | | What it means | How it is checked |
 |---|---|---|
-| **Local, no network** | memory is SQLite files in `~/.debrief`; Debrief never opens a connection | its driven tests run every Debrief process under a guard that refuses and logs any connection; the logs stay empty |
+| **Local by default** | memory is SQLite files in `~/.debrief`, and Debrief opens no connection. Only if you turn on [Jev judgments](#optional-jev-judgments) does it send redacted memory text and bounded diffs to TypeSafe AI, with your own key | its driven tests run every Debrief process under a guard that refuses and logs any connection; the logs stay empty, and with Jev on the only host allowed is TypeSafe's |
 | **Cited** | every memory records where it came from: a transcript passage, a command's output, the agent's inference, your direction | every recalled item carries its attribution and source (host, session, transcript); copies of one observation never count as corroboration |
 | **Flags stale memory** | memory pointing at code that has changed since is marked stale, and the agent is told to read the file again | freshness is checked against the file itself (its hash) at every recall and read |
 
@@ -92,8 +92,25 @@ Claude Code shows them to you; they are never sent to the model.
 | `debrief status` | Is it working here? Checks the plugin, the MCP handshake, each hook's last run, the last capture and the import choice; exit 1 on a problem. **The first thing to run when something seems off.** |
 | `debrief import [--set all\|current_project\|none]` | Shows the import question, or records your answer and imports to completion. |
 | `debrief delete-data [--yes]` | Deletes all stored memory after you type `delete` (see below). |
+| `debrief jev [enable [--yes] \| disable] [--here]` | Optional [Jev judgments](#optional-jev-judgments): show their state and cost, turn them on after the consent screen, or off (`--here`: this repository only). |
 
 The `debrief diag …` commands and `debrief mcp` are for diagnostics and for the host: see [docs/development.md](docs/development.md#commands).
+
+## Optional: Jev judgments
+
+Off by default. When code a memory cites changed after the memory was written, Debrief marks it `stale` and tells the agent to read the file again. With Jev, [TypeSafe AI](https://typesafe.ai)'s judgment model, recall can also say whether the change matters: `stale · still holds (0.91)` or `stale · invalidated (0.88)`.
+
+```sh
+export TYPESAFE_API_KEY=…      # your own key, from console.typesafe.ai
+debrief jev enable             # shows exactly what is sent, to whom and TypeSafe's retention terms, then asks
+```
+
+- **What is sent:** for a recalled memory whose cited file changed since Debrief saw it clean at a commit, the memory's title and text, the file's path and cited lines, and `git diff <commit> -- <file>` (at most 12,000 bytes). Never: private sessions, sensitive paths, withheld tool output, imported transcripts, or any text holding a credential or a `[redacted]`/`[private]` marker (such a memory is skipped, not redacted and sent).
+- **Retention:** TypeSafe says it does not train on API input; it keeps customer data "for as long as necessary" for the processing, with no fixed deletion period. Zero data retention is only on its enterprise plans.
+- **Never in the way:** judgments run in the MCP server's background, between requests; recall never waits for one, and hooks never call Jev. A timeout, rate limit or error leaves the plain `stale` label and a notice.
+- **Advisory:** freshness itself is unchanged. The re-read warning goes only for "still holds" at 0.9 or above.
+- **Cost:** $0.042 per million input tokens, output free, billed to your key; a judgment is about 650 tokens. `debrief status` shows calls, tokens and estimated dollars today and in total.
+- **Off again:** `debrief jev disable`; one repository only: `debrief jev disable --here`.
 
 ## Keeping things out of memory
 

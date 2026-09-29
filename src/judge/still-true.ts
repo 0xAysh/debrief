@@ -131,6 +131,15 @@ export class StillTrue {
    */
   annotate(subject: JudgeSubject, checked: RecordFreshness): RecordFreshness & { judgment: Judgment | null } {
     if (checked.freshness !== "stale" || this.closed) return { ...checked, judgment: null };
+    try {
+      return this.judged(subject, checked);
+    } catch {
+      // A ledger that cannot be read (busy, damaged) costs the label, never the recall.
+      return { ...checked, judgment: null };
+    }
+  }
+
+  private judged(subject: JudgeSubject, checked: RecordFreshness): RecordFreshness & { judgment: Judgment | null } {
     const verdicts: Judgment[] = [];
     // A stale test run has no text to judge; a record resting on one gets no verdict.
     let complete = checked.testRun?.applies !== "stale";
@@ -187,14 +196,18 @@ export class StillTrue {
     for (const [id, item] of [...this.queue]) {
       if (calls >= maxCalls || this.isClosed()) break;
       this.queue.delete(id);
-      if (this.ledger.verdict(item) !== undefined) continue;
+      if (this.cached(item)) continue;
       // Edited again since it was queued: the next recall queues the new pair.
       if (currentHash(this.worktree, item.path) !== item.current) continue;
       const text = source.memoryText(item.recordId);
       if (text === null) continue;
       const request = this.request(item, text);
       if ("skipped" in request) {
-        this.ledger.save(item, { verdict: null, probability: null, model: null, skipped: request.skipped }, this.now());
+        try {
+          this.ledger.save(item, { verdict: null, probability: null, model: null, skipped: request.skipped }, this.now());
+        } catch {
+          break;
+        }
         continue;
       }
       calls++;
@@ -214,7 +227,12 @@ export class StillTrue {
         break;
       }
       this.failure = null;
-      this.ledger.save(item, { verdict: answer.choice, probability: answer.probabilities[answer.choice] ?? null, model: result.model, skipped: null }, this.now());
+      try {
+        this.ledger.save(item, { verdict: answer.choice, probability: answer.probabilities[answer.choice] ?? null, model: result.model, skipped: null }, this.now());
+      } catch {
+        // Not cached: a later recall queues the pair again.
+        break;
+      }
     }
     return done(calls);
   }
@@ -223,6 +241,15 @@ export class StillTrue {
   close(): void {
     this.closed = true;
     this.queue.clear();
+  }
+
+  /** Whether the pair already has a verdict or a skip; a ledger that cannot be read counts as cached, so nothing is sent twice. */
+  private cached(key: VerdictKey): boolean {
+    try {
+      return this.ledger.verdict(key) !== undefined;
+    } catch {
+      return true;
+    }
   }
 
   /** Read through a call, so a close during an awaited request is seen. */

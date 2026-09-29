@@ -1372,7 +1372,13 @@ class LocalMemory implements Memory {
     if (this.judging === undefined) {
       // Without a key there is nothing to send, and no ledger means nothing cached to show.
       if (state === "no_key" && !existsSync(join(this.home, LEDGER_FILE))) return null;
-      const ledger = JevLedger.open(this.home, this.busyTimeoutMs);
+      let ledger: JevLedger;
+      try {
+        ledger = JevLedger.open(this.home, this.busyTimeoutMs);
+      } catch {
+        // Jev is optional: a ledger that cannot be opened means no verdicts, never a failed recall.
+        return null;
+      }
       const apiKey = this.jevAccess.apiKey;
       const client = state === "on" && apiKey !== null ? new JevClient({ endpoint: this.jevAccess.endpoint, apiKey, ledger }) : null;
       this.judging = { ledger, stillTrue: new StillTrue({ worktree: bound.scope.worktree, workspaceId: bound.scope.workspaceId, ledger, client, now: this.now }) };
