@@ -29,3 +29,5 @@ Placeholders, substituted by `tests/import/fixtures.ts`:
 | `2.1.281/redis-claim.jsonl` | 2.1.281 | a user claim later corrected (#21), an assistant reply, and a compaction summary written after it |
 | `2.1.183/basic.jsonl` | 2.1.183 (oldest observed) | the pre-2.1.200 key set (no `origin`, `slug`, `session_id` …) |
 | `unknown-version.jsonl` | 3.0.0 (not in the compatibility table) | a supported prefix followed by an unsupported version |
+
+File-read sessions (#54) are built in code rather than kept as files, since each test needs its own file text: `claudeSession`, `claudeReadStep`, `claudeBashStep` and `codexSession` in `tests/import/fixtures.ts` write 2.1.283 (Codex 0.142.5) entries in the observed key sets, with a `Read` window and `Bash` output metadata in `toolUseResult` as Claude Code records them.

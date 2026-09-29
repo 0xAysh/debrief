@@ -53,9 +53,15 @@ import type { ExternalRef, Freshness } from "../schemas.js";
  *   so every stored reference belongs to this repository. A path that resolves outside
  *   the current worktree (another repository, another worktree, a symlink escaping it) is
  *   never read: it is `unknown` / `outside_worktree`.
- * - **Imported transcript references were never fingerprinted.** Hashing the file at
- *   import time would certify whatever version exists *then*, not the one the transcript
- *   saw, so they stay `unknown` / `transcript_reference` and the agent reads live code.
+ * - **An imported read is fingerprinted from the text it showed, never from disk.** Hashing the
+ *   file at import time would certify whatever version exists *then*, not the one the transcript
+ *   saw. The transcript holds what the model saw, though, so a read Debrief can rebuild exactly
+ *   (`import/read-fingerprint.ts`) stores that text's fingerprint on the read's own record: a
+ *   whole file as `observedHash`, a line range as `citedHash` only (the rest of the file was never
+ *   seen, so there is no whole-file verdict to fall back to: text found more than once is
+ *   `unknown`). The label says only that the file still holds the text that read showed; it never
+ *   carries over to other records, and imported claims cite no files. Edits, and reads that
+ *   cannot be rebuilt, stay `unknown` / `transcript_reference`, and the agent reads live code.
  * - **Documents in the worktree are files.** A `document` reference whose path resolves inside
  *   the worktree (`docs/design.md`) is fingerprinted and checked exactly like code.
  * - **Remote references are historical.** Issues, PRs, URLs and documents behind a URL can
@@ -85,7 +91,7 @@ export const FRESHNESS_LIMITS = {
 export const FRESHNESS_REASONS = [
   /** current: the file's bytes (or its clean state at the observed commit) are unchanged. */
   "unchanged",
-  /** current: the file's bytes differ, but the cited `lines` hold the text observed, at the same line numbers. */
+  /** current: the cited `lines` hold the text observed, at the same line numbers; the file's bytes differ, or (an imported partial read) were never seen whole. */
   "changed_elsewhere",
   /** current: the cited `lines` hold the text observed, now at other line numbers (lines were added or removed above). */
   "lines_moved",
@@ -97,7 +103,7 @@ export const FRESHNESS_REASONS = [
   "lines_changed",
   /** unknown: nothing was fingerprinted when this reference was stored. */
   "not_observed",
-  /** unknown: a file a transcript read or edited; its content then was never fingerprinted. */
+  /** unknown: a file a transcript read or edited, with no fingerprint of what it saw (an edit, a read that could not be rebuilt), or a read line range whose text now occurs more than once. */
   "transcript_reference",
   /** unknown: the path resolves outside this worktree (another repository or worktree). */
   "outside_worktree",
@@ -178,7 +184,7 @@ export interface RecordFreshness {
 export interface FreshnessSubject {
   recordId: string;
   refs: readonly StoredRef[];
-  /** Imported from a transcript: its code references were never fingerprinted. */
+  /** Imported from a transcript: only a read's fingerprint of the text it showed, if any, was stored. */
   imported: boolean;
   testRun?: StoredTestRun | undefined;
 }

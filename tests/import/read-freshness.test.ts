@@ -278,7 +278,7 @@ describe("records imported before reads were fingerprinted", () => {
             const copy = { ...event } as Record<string, unknown>;
             delete copy["read"];
             delete copy["output"];
-            return copy as typeof event;
+            return copy as unknown as typeof event;
           }),
         };
       },

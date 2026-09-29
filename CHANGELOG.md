@@ -23,6 +23,7 @@
 
 - **Cited lines.** A memory that cites specific lines stays `current` while those lines' text is still in the file: after an edit elsewhere in the file (`changed_elsewhere`), or when lines above moved it (`lines_moved`, with `linesNow` saying where it is now). An edit to the cited lines themselves makes it `stale` (`lines_changed`). Only a fingerprint of the cited text is stored, never the text. References without lines, and memory recorded before this version, keep the whole-file rule.
 - **Inverted line ranges are refused.** `lines: [5, 3]` is `invalid_input`.
+- **Imported file reads.** A file an imported session read is no longer always `unknown`: when the transcript holds exactly what the agent read (Claude Code's `Read`; `cat`, `sed -n`, `head` and `nl -ba` through Claude Code's or Codex's shell), the read is `current` while the file still holds that text and `stale` once it does not. A whole-file read follows the whole file; a partial one only the lines read. Only a fingerprint is stored, never the text. Truncated, persisted or image output, several files at once, and ranges under 3 non-blank lines stay `unknown`, as do edits and the agent's own words. Sessions imported before this version keep `unknown`; nothing is re-imported.
 
 ## [0.1.0](https://github.com/0xAysh/debrief/releases/tag/v0.1.0) - 2026-09-27
 

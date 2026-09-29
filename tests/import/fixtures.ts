@@ -250,6 +250,7 @@ export function installCodexRollout(
 export type SessionStep =
   | { tool: string; input: object; result: string | object[]; toolUseResult?: object; isError?: boolean }
   | { say: string };
+export type ToolStep = Extract<SessionStep, { tool: string }>;
 
 /**
  * A Claude Code 2.1.283 session (newline-terminated lines): a typed prompt, then each step as an
@@ -298,7 +299,7 @@ export function claudeSession(options: { cwd: string; sessionId: string; at?: Da
  * window prefixed `N\t` in `message.content`, and the window in `toolUseResult.file`. A final
  * newline shows as a last, empty line, as Claude Code counts lines (`content.split("\n")`).
  */
-export function claudeReadStep(path: string, text: string, window: { offset?: number; limit?: number } = {}): SessionStep {
+export function claudeReadStep(path: string, text: string, window: { offset?: number; limit?: number } = {}): ToolStep {
   const all = text.split("\n");
   const start = window.offset ?? 1;
   const shown = all.slice(start - 1, window.limit === undefined ? undefined : start - 1 + window.limit);
@@ -311,7 +312,7 @@ export function claudeReadStep(path: string, text: string, window: { offset?: nu
 }
 
 /** A Claude Code `Bash` step whose stdout was `stdout`: the model sees it with leading blank lines dropped and the end trimmed, as Claude Code shows shell output. */
-export function claudeBashStep(command: string, stdout: string, extra: object = {}): SessionStep {
+export function claudeBashStep(command: string, stdout: string, extra: object = {}): ToolStep {
   const shown = stdout.replace(/^(?:[ \t]*\n)+/, "").trimEnd();
   return { tool: "Bash", input: { command, description: "Print the file" }, result: shown, toolUseResult: { stdout: shown, stderr: "", interrupted: false, isImage: false, noOutputExpected: false, ...extra } };
 }
