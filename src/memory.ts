@@ -1108,7 +1108,7 @@ class LocalMemory implements Memory {
           v: 1,
           action: "private_session",
           sessionId: scope.sessionId,
-          alreadyPrivate: marked.alreadyPrivate,
+          alreadyPrivate: marked.alreadyPrivate && (globally?.forgotten.length ?? 0) === 0,
           forgotten: [...marked.forgotten, ...(globally?.forgotten ?? [])],
           transcripts: marked.transcripts,
           earlierSessions,

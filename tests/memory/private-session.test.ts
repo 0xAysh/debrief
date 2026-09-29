@@ -1,5 +1,6 @@
 import { copyFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { type ManageResult, type Memory, openMemory } from "../../src/memory.js";
 import { catchDebriefError, initRepo, onCleanup, tempDir } from "../helpers.js";
@@ -307,5 +308,52 @@ describe("don't remember this session, in a resumed conversation", () => {
 
     expect(markPrivate(resumed).forgotten).toContain(global.recordId);
     expect(open(initRepo(), e, { host: "claude-code" }).bootstrap().preferences.items).toEqual([]);
+  });
+
+  test("a thread marked before this covered resumed conversations is repaired when the user marks it again", () => {
+    const repo = initRepo();
+    const e = env();
+    const threadId = codexThreadId();
+    const first = open(repo, e, { host: "codex", hostSessionId: threadId });
+    first.bootstrap({ importChoice: "none" });
+    const r1 = note(first, "Thread note one: the ledger flush is batched.");
+    const question = first.record({ kind: "preference", body: "Use bun instead of npm.", attribution: "user_direction" }).preference;
+    const global = first.settlePreference({ candidateId: question.candidateId ?? "", reply: { action: "accept", label: "Everywhere" } }).recordId ?? "";
+    const resumed = open(repo, e, { host: "codex", hostSessionId: threadId });
+    const resumedId = resumed.bootstrap().scope.sessionId;
+    // What 0.1.0 left: the resumed session and the thread's transcript marked, the earlier session's memory active.
+    const db = new Database(resumed.status().storage.dbPath ?? "");
+    db.prepare("UPDATE sessions SET private = 1 WHERE id = ?").run(resumedId);
+    db.prepare("INSERT INTO private_transcripts (host, transcript_id, session_id, created_at) VALUES ('codex', ?, ?, ?)").run(threadId, resumedId, new Date().toISOString());
+    db.close();
+    const reader = open(repo, e, { host: "claude-code" });
+    expect(reader.read({ recordId: r1 }).recordId).toBe(r1);
+
+    const repaired = markPrivate(resumed);
+    expect(repaired).toMatchObject({ alreadyPrivate: false, earlierSessions: 1 });
+    expect(repaired.forgotten).toEqual(expect.arrayContaining([r1, global]) as unknown);
+    expect(repaired.notice).toMatch(/earlier session/i);
+    gone(reader, r1);
+    expect(open(initRepo(), e, { host: "claude-code" }).bootstrap().preferences.items).toEqual([]);
+    // Now nothing is left: marking again changes nothing.
+    expect(markPrivate(resumed)).toMatchObject({ alreadyPrivate: true, forgotten: [] });
+  });
+
+  test("the repair counts a global preference the earlier session left, even when nothing else is left", () => {
+    const repo = initRepo();
+    const e = env();
+    const threadId = codexThreadId();
+    const first = open(repo, e, { host: "codex", hostSessionId: threadId });
+    first.bootstrap({ importChoice: "none" });
+    const question = first.record({ kind: "preference", body: "Use bun instead of npm.", attribution: "user_direction" }).preference;
+    const global = first.settlePreference({ candidateId: question.candidateId ?? "", reply: { action: "accept", label: "Everywhere" } }).recordId ?? "";
+    const resumed = open(repo, e, { host: "codex", hostSessionId: threadId });
+    const resumedId = resumed.bootstrap().scope.sessionId;
+    const db = new Database(resumed.status().storage.dbPath ?? "");
+    db.prepare("UPDATE sessions SET private = 1 WHERE id = ?").run(resumedId);
+    db.prepare("INSERT INTO private_transcripts (host, transcript_id, session_id, created_at) VALUES ('codex', ?, ?, ?)").run(threadId, resumedId, new Date().toISOString());
+    db.close();
+
+    expect(markPrivate(resumed)).toMatchObject({ alreadyPrivate: false, forgotten: [global], earlierSessions: 1 });
   });
 });

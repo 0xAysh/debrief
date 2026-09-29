@@ -300,6 +300,10 @@ export interface ForgetSessionResult {
  * marks those sessions and transcripts private (writes refused, never imported again), and
  * ledgers all of it so a restored older copy is marked again. `sessions` names them instead
  * where this database cannot link them (global.sqlite keeps no host session ids).
+ *
+ * It is already private only when nothing of the host session is left to forget: a thread
+ * marked before marking covered a resumed conversation (0.1.0) left its earlier sessions'
+ * memory active, and marking it again forgets that.
  */
 export function forgetSession(
   db: Db,
@@ -310,7 +314,11 @@ export function forgetSession(
   requireTransaction(db, "forgetSession");
   const transcripts = transcriptsOf(db, { host: session.host, hostSessionId: session.hostSessionId, sessions });
   const done = { transcripts: transcripts.length, sessions: [...sessions] };
-  if (sessionIsPrivate(db, session) && transcripts.every((t) => isPrivateTranscript(db, t.host, t.transcriptId))) {
+  if (
+    sessionIsPrivate(db, session) &&
+    transcripts.every((t) => isPrivateTranscript(db, t.host, t.transcriptId)) &&
+    leftToForget(db, { writtenBy: sessions, transcripts }).length === 0
+  ) {
     return { alreadyPrivate: true, forgotten: [], ...done, earlierSessions: [] };
   }
   const forgotten = forgetPrivate(db, { sessionId: session.sessionId, sessions, host: session.host, transcripts, workstreamId: session.workstreamId, writtenBy: sessions }, actor);
@@ -342,14 +350,12 @@ export function forgetTranscript(db: Db, transcript: { host: string; transcriptI
   );
 }
 
-/** Forgets what was imported from `transcripts` (and written by `writtenBy`), marks `sessions` and `transcripts` private, and ledgers it. */
-function forgetPrivate(
+/** The records not yet forgotten that `writtenBy` wrote or that were imported from `transcripts`. */
+function leftToForget(
   db: Db,
-  target: { sessionId: string; sessions: readonly string[]; host: string; transcripts: { host: string; transcriptId: string }[]; workstreamId: string; writtenBy: readonly string[] },
-  actor: LiveActor,
-): string[] {
-  const at = new Date().toISOString();
-  const left = prepared(
+  target: { writtenBy: readonly string[]; transcripts: { host: string; transcriptId: string }[] },
+): { id: string; workstream_id: string | null }[] {
+  return prepared(
     db,
     `SELECT r.id, r.workstream_id FROM records r
      WHERE r.lifecycle <> 'forgotten' AND (r.session_id IN (SELECT value FROM json_each($writers)) OR r.source_id IN (
@@ -357,9 +363,18 @@ function forgetPrivate(
          ON c.host = json_extract(t.value, '$.host') AND c.transcript_id = json_extract(t.value, '$.transcriptId')))
      ORDER BY r.seq`,
   ).all({ writers: JSON.stringify(target.writtenBy), transcripts: JSON.stringify(target.transcripts) }) as { id: string; workstream_id: string | null }[];
+}
+
+/** Forgets what was imported from `transcripts` (and written by `writtenBy`), marks `sessions` and `transcripts` private, and ledgers it. */
+function forgetPrivate(
+  db: Db,
+  target: { sessionId: string; sessions: readonly string[]; host: string; transcripts: { host: string; transcriptId: string }[]; workstreamId: string; writtenBy: readonly string[] },
+  actor: LiveActor,
+): string[] {
+  const at = new Date().toISOString();
   // Grouped by workstream, so each group is in the scope it is forgotten from.
   const groups = new Map<string, string[]>();
-  for (const row of left) {
+  for (const row of leftToForget(db, target)) {
     const workstreamId = row.workstream_id ?? target.workstreamId;
     groups.set(workstreamId, [...(groups.get(workstreamId) ?? []), row.id]);
   }
