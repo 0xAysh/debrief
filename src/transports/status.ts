@@ -1,6 +1,7 @@
 import { sep } from "node:path";
 import { checkPlugin, type Launch, type PluginCheck } from "../host-health.js";
 import type { HostId, PluginFacts } from "../hosts.js";
+import { describeJevState, describeUsage } from "../judge/jev.js";
 import type { StatusResult } from "../memory.js";
 
 /**
@@ -85,6 +86,12 @@ function renderStatus(host: HostId, facts: PluginFacts, status: StatusResult, pl
   else if (imported.state === "consent_required") row("import", "not answered yet: the agent asks at the next session start");
   else row("import", imported.consent?.choice ?? imported.state);
   row("preferences", status.preferenceQuestions === 0 ? "no questions waiting" : `${status.preferenceQuestions} question${status.preferenceQuestions === 1 ? "" : "s"} waiting for the user`);
+  // Opt-in and billed to the user's key: what it costs is always visible once it is on or was used.
+  row("jev", describeJevState(status.jev));
+  if (status.jev.state !== "off" || status.jev.total.calls > 0) {
+    row("jev today", describeUsage(status.jev.today));
+    row("jev total", describeUsage(status.jev.total));
+  }
   row("storage", status.storage.dbPath ?? status.storage.home);
   if (status.problem !== null && imported !== null) row("storage", `${status.problem.code}: ${status.problem.message}`, "✘");
 
