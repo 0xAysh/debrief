@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
 import { git, initRepo, onCleanup, tempDir } from "../helpers.js";
-import { claudeConfigDir, claudeReadStep, claudeSession, installTranscript, type SessionStep } from "./fixtures.js";
+import { claudeBashStep, claudeConfigDir, claudeReadStep, claudeSession, codexHome, codexSession, codexThreadId, installCodexRollout, installTranscript, sedPrint, type SessionStep } from "./fixtures.js";
 
 /**
  * Imported file reads get freshness from the text the agent read (#54): the transcript holds
@@ -39,6 +39,28 @@ function importClaude(repo: string, steps: readonly SessionStep[]): Memory {
   });
   expect(memory.bootstrap({ importChoice: "current_project" }).import.state).toBe("complete");
   return memory;
+}
+
+/** Imports one hand-written Codex rollout recorded in `repo`, running `calls` there. */
+function importCodex(repo: string, calls: readonly { cmd: string; output: string }[]): Memory {
+  const home = codexHome();
+  const threadId = codexThreadId();
+  installCodexRollout(home, "", { cwd: repo, threadId, content: codexSession({ cwd: repo, threadId, calls }) });
+  const memory = openMemory({ cwd: repo, host: "codex", home: tempDir(), codexHome: home });
+  onCleanup(() => {
+    memory.close();
+  });
+  expect(memory.bootstrap({ importChoice: "current_project" }).import.state).toBe("complete");
+  return memory;
+}
+
+/** `nl -ba`'s output for lines `a`..`b` of `text`: each line numbered right-aligned in 6 columns, then a tab. */
+function numbered(text: string, a: number, b: number): string {
+  return sedPrint(text, a, b)
+    .split("\n")
+    .slice(0, -1)
+    .map((line, i) => `${String(a + i).padStart(6)}\t${line}\n`)
+    .join("");
 }
 
 /** Ids of the imported records whose title starts with `tool`, oldest first. */
@@ -87,5 +109,52 @@ describe("Claude Code Read", () => {
 
     writeFile(repo, "src/gateway.ts", GATEWAY.replace("retry(12)", "retry(120)"));
     expect(label(memory, read ?? "")).toEqual(["stale", "lines_changed"]);
+  });
+});
+
+describe("Codex shell reads", () => {
+  test("R3: `sed -n 'a,bp'` and `nl -ba | sed -n` fingerprint the lines printed, `cat` the whole file", () => {
+    const retry = "export function retry(n) {\n  for (let i = 0; i < n; i++) attempt();\n}\n";
+    const repo = repoWith({ "src/gateway.ts": GATEWAY, "src/retry.ts": retry });
+    const memory = importCodex(repo, [
+      { cmd: "sed -n '10,14p' src/gateway.ts", output: sedPrint(GATEWAY, 10, 14) },
+      { cmd: "cat src/retry.ts", output: retry },
+      { cmd: "nl -ba src/gateway.ts | sed -n '20,24p'", output: numbered(GATEWAY, 20, 24) },
+    ]);
+    const [sed, cat, nl] = recordsOf(memory, "exec_command");
+    expect(memory.read({ recordId: sed ?? "" }).externalRefs[0]).toMatchObject({ path: "src/gateway.ts", lines: [10, 14], freshness: "current" });
+    expect(memory.read({ recordId: nl ?? "" }).externalRefs[0]).toMatchObject({ path: "src/gateway.ts", lines: [20, 24], freshness: "current" });
+    expect(label(memory, cat ?? "")).toEqual(["current", "unchanged"]);
+
+    writeFile(repo, "src/gateway.ts", GATEWAY.replace("retry(12)", "retry(120)"));
+    expect(label(memory, sed ?? "")).toEqual(["stale", "lines_changed"]);
+    expect(label(memory, nl ?? "")).toEqual(["current", "changed_elsewhere"]);
+    writeFile(repo, "src/retry.ts", retry.replace("n)", "count)"));
+    expect(label(memory, cat ?? "")).toEqual(["stale", "changed"]);
+  });
+});
+
+describe("Claude Code Bash reads", () => {
+  /** Lines 10–11 and 19–20 are blank; the file ends at line 25. */
+  const BLANKS = [...Array.from({ length: 9 }, (_, i) => `const a${i + 1} = ${i + 1};`), "", "", ...Array.from({ length: 7 }, (_, i) => `const b${i + 1} = ${i + 1};`), "", "", ...Array.from({ length: 5 }, (_, i) => `const c${i + 1} = ${i + 1};`)].join("\n") + "\n";
+
+  test("R4: a range starting or ending on blank lines, or past the end of the file, is placed by the range asked for, and current while unchanged", () => {
+    const repo = repoWith({ "src/blanks.ts": BLANKS });
+    const memory = importClaude(repo, [
+      claudeBashStep("sed -n '10,20p' src/blanks.ts", sedPrint(BLANKS, 10, 20)),
+      claudeBashStep("head -n 11 src/blanks.ts", sedPrint(BLANKS, 1, 11)),
+      claudeBashStep("sed -n '21,40p' src/blanks.ts", sedPrint(BLANKS, 21, 40)),
+    ]);
+    const [middle, head, tail] = recordsOf(memory, "Bash");
+    expect(memory.read({ recordId: middle ?? "" }).externalRefs[0]).toMatchObject({ path: "src/blanks.ts", lines: [10, 20], freshness: "current", reason: "changed_elsewhere" });
+    expect(memory.read({ recordId: head ?? "" }).externalRefs[0]).toMatchObject({ lines: [1, 11], freshness: "current", reason: "changed_elsewhere" });
+    expect(memory.read({ recordId: tail ?? "" }).externalRefs[0]).toMatchObject({ lines: [21, 40], freshness: "current", reason: "changed_elsewhere" });
+
+    // The fingerprint is of the lines read: moved by a line above, then edited.
+    writeFile(repo, "src/blanks.ts", `// header\n${BLANKS}`);
+    expect(label(memory, middle ?? "")).toEqual(["current", "lines_moved", [13, 19]]);
+    writeFile(repo, "src/blanks.ts", BLANKS.replace("b4 = 4", "b4 = 40"));
+    expect(label(memory, middle ?? "")).toEqual(["stale", "lines_changed"]);
+    expect(label(memory, tail ?? "")).toEqual(["current", "changed_elsewhere"]);
   });
 });

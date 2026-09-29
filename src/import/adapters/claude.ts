@@ -368,7 +368,7 @@ function describeCall(name: string, input: Entry, cwd: string): { summary: strin
   switch (name) {
     case "Bash":
       // A command that only prints files inside the cwd is a file read, like Read (see shell-reads.ts).
-      return { summary: `$ ${str("command") ?? ""}`, urls: [], ...shellCall(str("command"), cwd, cwd) };
+      return { summary: `$ ${str("command") ?? ""}`, urls: [], ...shellCall(str("command"), cwd, cwd, true) };
     case "Grep":
     case "Glob": {
       const path = str("path");
