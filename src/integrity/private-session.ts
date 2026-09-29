@@ -6,10 +6,13 @@ import type { PrivateSessionEntry } from "./ledger.js";
  * which also forgets what the session left behind, is `forgetSession` in lifecycle.ts.
  *
  * A session is private when its own row says so, or when another session of the same host
- * session is private (a resumed Codex thread starts a new Debrief session with the same thread
- * id). Its transcripts are found two ways: the host session id is the transcript id (Codex), or
- * the transcript's Debrief output names the session (`transcript_sessions`, recorded at import;
- * Claude Code sends no session id). A private transcript is never imported again.
+ * session is private (a resumed Codex thread, or `claude --resume`, starts a new Debrief session
+ * with the same host session id). "This session" is that whole host session
+ * ({@link sameHostSession}): marking one of its Debrief sessions forgets and marks all of them.
+ * Its transcripts are found two ways: the host session id is the transcript id, or the
+ * transcript's Debrief output names one of its sessions (`transcript_sessions`, recorded at
+ * import; a Claude Code session may have sent no session id). A private transcript is never
+ * imported again.
  */
 
 /**
@@ -20,7 +23,13 @@ import type { PrivateSessionEntry } from "./ledger.js";
  */
 const SCOPE_SESSION = /"headRevision":\d+,"sessionId":"(ses_[0-9a-f]{32})"/g;
 
-export function sessionIsPrivate(db: Db, session: { sessionId: string; host: string; hostSessionId: string | undefined }): boolean {
+export interface SessionIdentity {
+  sessionId: string;
+  host: string;
+  hostSessionId: string | undefined;
+}
+
+export function sessionIsPrivate(db: Db, session: SessionIdentity): boolean {
   return (
     prepared(db, "SELECT 1 FROM sessions WHERE private = 1 AND (id = $id OR ($hostSessionId IS NOT NULL AND host = $host AND host_session_id = $hostSessionId)) LIMIT 1").get({
       id: session.sessionId,
@@ -28,6 +37,22 @@ export function sessionIsPrivate(db: Db, session: { sessionId: string; host: str
       hostSessionId: session.hostSessionId ?? null,
     }) !== undefined
   );
+}
+
+/**
+ * The Debrief sessions of `session`'s host session, oldest first: itself, and every session of the
+ * same host with the same host session id (its earlier and later resumptions, and the import
+ * session of its transcript). Exactly the sessions whose mark makes it private in `sessionIsPrivate`.
+ */
+export function sameHostSession(db: Db, session: SessionIdentity): string[] {
+  const rows = prepared(
+    db,
+    `SELECT id FROM sessions WHERE id = $id OR ($hostSessionId IS NOT NULL AND host = $host AND host_session_id = $hostSessionId)
+     ORDER BY started_at, id`,
+  ).all({ id: session.sessionId, host: session.host, hostSessionId: session.hostSessionId ?? null }) as { id: string }[];
+  const ids = rows.map((row) => row.id);
+  // A session this database has no row for is still itself.
+  return ids.includes(session.sessionId) ? ids : [...ids, session.sessionId];
 }
 
 export function isPrivateTranscript(db: Db, host: string, transcriptId: string): boolean {
@@ -54,12 +79,15 @@ export function linkTranscriptSessions(db: Db, host: string, transcriptId: strin
 }
 
 /**
- * The transcripts that belong to a session: its host session id, every transcript whose Debrief
- * output named it, and the imported transcripts of their sub-agents (the importer gives those the
- * parent's session). Sub-agent transcripts not imported yet are covered by their parent's marker.
+ * The transcripts that belong to a host session: its host session id, every transcript whose
+ * Debrief output named one of its Debrief `sessions`, and the imported transcripts of their
+ * sub-agents (the importer gives those the parent's session). Sub-agent transcripts not imported
+ * yet are covered by their parent's marker.
  */
-export function transcriptsOf(db: Db, session: { sessionId: string; host: string; hostSessionId: string | undefined }): { host: string; transcriptId: string }[] {
-  const linked = prepared(db, "SELECT host, transcript_id AS transcriptId FROM transcript_sessions WHERE session_id = ?").all(session.sessionId) as { host: string; transcriptId: string }[];
+export function transcriptsOf(db: Db, session: { host: string; hostSessionId: string | undefined; sessions: readonly string[] }): { host: string; transcriptId: string }[] {
+  const linked = prepared(db, "SELECT host, transcript_id AS transcriptId FROM transcript_sessions WHERE session_id IN (SELECT value FROM json_each(?))").all(
+    JSON.stringify(session.sessions),
+  ) as { host: string; transcriptId: string }[];
   const own = session.hostSessionId === undefined ? [] : [{ host: session.host, transcriptId: session.hostSessionId }];
   // Found through the import session's host session id, which is the parent's: it holds even when the parent's own transcript was never imported.
   const sameSession = prepared(
@@ -71,17 +99,29 @@ export function transcriptsOf(db: Db, session: { sessionId: string; host: string
   return [...new Map(sessions.map((t) => [`${t.host}\u0000${t.transcriptId}`, t])).values()];
 }
 
-/** Marks the session and its transcripts private (live, or replayed from the ledger into a restored copy). */
+/** The Debrief sessions an entry marks: every session of its host session (older entries name only `sessionId`). */
+function markedSessions(entry: PrivateSessionEntry): string[] {
+  return [...new Set([entry.sessionId, ...(entry.sessions ?? [])])];
+}
+
+/**
+ * Marks the sessions and their transcripts private (live, or replayed from the ledger into a
+ * restored copy, which may hold only the earlier sessions of the host session: those keep it private).
+ */
 export function applyPrivateSession(db: Db, entry: PrivateSessionEntry): void {
   requireTransaction(db, "applyPrivateSession");
-  prepared(db, "UPDATE sessions SET private = 1 WHERE id = ?").run(entry.sessionId);
+  const markSession = prepared(db, "UPDATE sessions SET private = 1 WHERE id = ?");
+  for (const sessionId of markedSessions(entry)) markSession.run(sessionId);
   const mark = prepared(db, "INSERT OR IGNORE INTO private_transcripts (host, transcript_id, session_id, created_at) VALUES (?, ?, ?, ?)");
   for (const transcript of entry.transcripts) mark.run(transcript.host, transcript.transcriptId, entry.sessionId, entry.at);
 }
 
 /** Whether a ledger entry's markers are all present (a restored older copy lacks them). */
 export function privateSessionApplied(db: Db, entry: PrivateSessionEntry): boolean {
-  const session = prepared(db, "SELECT private FROM sessions WHERE id = ?").get(entry.sessionId) as { private: number } | undefined;
-  if (session !== undefined && session.private !== 1) return false;
+  const session = prepared(db, "SELECT private FROM sessions WHERE id = ?");
+  for (const sessionId of markedSessions(entry)) {
+    const row = session.get(sessionId) as { private: number } | undefined;
+    if (row !== undefined && row.private !== 1) return false;
+  }
   return entry.transcripts.every((transcript) => isPrivateTranscript(db, transcript.host, transcript.transcriptId));
 }

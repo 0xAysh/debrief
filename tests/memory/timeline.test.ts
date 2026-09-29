@@ -100,32 +100,32 @@ describe("a timeline around a read record", () => {
     expect([...(timeline?.before ?? []), ...(timeline?.after ?? [])].map(idOf)).not.toContain(checkpoint);
   });
 
-  test("a private session's records never appear, even when it shares the host session id (a resumed Codex thread)", () => {
+  test("a private session's records never appear, nor those of the earlier sessions of its host session (a resumed Codex thread)", () => {
     const time = clock();
     const repo = initRepo();
     const home = tempDir();
     const threadId = codexThreadId();
     const first = open(repo, home, { ...time, host: "codex", hostSessionId: threadId });
-    const kept: string[] = [];
+    const before: string[] = [];
     for (let i = 0; i < 3; i++) {
-      kept.push(first.record({ kind: "note", body: `before the resume ${i}`, attribution: "agent_inference" }).recordId);
+      before.push(first.record({ kind: "note", body: `before the resume ${i}`, attribution: "agent_inference" }).recordId);
       time.tick();
     }
     // Resuming the thread starts a new Debrief session with the same thread id.
     const resumed = open(repo, home, { ...time, host: "codex", hostSessionId: threadId });
     expect(resumed.status().scope?.sessionId).not.toBe(first.status().scope?.sessionId);
-    const hidden: string[] = [];
+    const after: string[] = [];
     for (let i = 0; i < 2; i++) {
-      hidden.push(resumed.record({ kind: "note", body: `after the resume ${i}`, attribution: "agent_inference" }).recordId);
+      after.push(resumed.record({ kind: "note", body: `after the resume ${i}`, attribution: "agent_inference" }).recordId);
       time.tick();
     }
+    const reader = open(repo, home, time);
+    expect(reader.read({ recordId: before[2] ?? "", around: 5 }).timeline?.before.map(idOf)).toEqual([before[0], before[1]]);
+
+    // "This session" is the whole thread: both Debrief sessions' records go (#60).
     resumed.manage({ action: "private_session" });
 
-    const reader = open(repo, home, time);
-    const timeline = reader.read({ recordId: kept[2] ?? "", around: 5 }).timeline;
-    expect(timeline?.before.map(idOf)).toEqual([kept[0], kept[1]]);
-    expect(timeline?.after).toEqual([]);
-    for (const id of hidden) expect(catchDebriefError(() => reader.read({ recordId: id, around: 5 })).code).toBe("not_found");
+    for (const id of [...before, ...after]) expect(catchDebriefError(() => reader.read({ recordId: id, around: 5 })).code).toBe("not_found");
   });
 
   test("another workstream's records never appear; workspace-level records of the same session do", () => {

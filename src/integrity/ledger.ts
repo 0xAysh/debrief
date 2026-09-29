@@ -39,7 +39,10 @@ export interface PrivateSessionEntry {
   v: 1;
   kind: "private_session";
   id: string;
+  /** The session the user asked in. */
   sessionId: string;
+  /** Every Debrief session of its host session, all marked (a resumed conversation). Absent in entries written before it was recorded. */
+  sessions?: string[];
   host: string;
   transcripts: { host: string; transcriptId: string }[];
   at: string;

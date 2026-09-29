@@ -495,10 +495,12 @@ export type ManageResult =
       sessionId: string;
       /** It was already private; nothing more was done. */
       alreadyPrivate: boolean;
-      /** What was forgotten: records this session wrote, and what was imported from its transcripts. */
+      /** What was forgotten: records this session (every Debrief session of its host session) wrote, and what was imported from its transcripts. */
       forgotten: string[];
       /** Transcripts of this session that will never be imported. */
       transcripts: number;
+      /** Earlier Debrief sessions of the same host session (a resumed Codex thread, `claude --resume`), forgotten and marked with it. */
+      earlierSessions: number;
       notice: string;
     };
 
@@ -704,8 +706,14 @@ const OPERATIONS = Object.keys(OPERATION_SCHEMAS);
 /** A result before `idempotent` adds `replayed` (distributes over union members). */
 type Unreplayed<T> = T extends unknown ? Omit<T, "replayed"> : never;
 const INSPECT_BODY_BYTES = 4_096;
-const PRIVATE_NOTICE =
-  "This session will not be remembered: what it stored was forgotten, its transcript will not be imported, and Debrief refuses its writes. Tell the user so in one line. Its content may still be in the host's own transcript files.";
+/** What the agent tells the user after "don't remember this session"; a resumed conversation's earlier sessions are named, since they went too. */
+function privateNotice(earlierSessions: number): string {
+  const resumed =
+    earlierSessions === 0
+      ? ""
+      : ` This conversation was resumed, so its earlier ${earlierSessions === 1 ? "session was" : `sessions (${earlierSessions}) were`} included: what ${earlierSessions === 1 ? "it" : "they"} stored was forgotten too.`;
+  return `This session will not be remembered: what it stored was forgotten, its transcript will not be imported, and Debrief refuses its writes.${resumed} Tell the user so in one line. Its content may still be in the host's own transcript files.`;
+}
 const FORGET_NOTICE =
   "Nothing has been removed yet. Show the user the targets and the impact, and ask them to confirm explicitly; only then call memory_manage with action forget and this confirmToken. Forgetting cannot be undone. Records listed as invalidated or quarantined keep their own content (forget them too if the user wants). Host transcripts, loaded model contexts, exports and backups are not erased.";
 const DEFAULT_IMPORT_BUDGET_MS = 3_000;
@@ -1086,14 +1094,26 @@ class LocalMemory implements Memory {
         const session = { sessionId: scope.sessionId, host: scope.host, hostSessionId: this.hostSessionId, workstreamId: scope.workstreamId };
         const actor = { sessionId: scope.sessionId, host: scope.host, attribution: "user_direction" as const, reason: "The user asked not to remember this session." };
         // Everything the session stored: memory and the questions it raised here, and any global preference it confirmed.
+        // "This session" is the host session: in a resumed conversation, every Debrief session of it (`forgetSession`).
         const marked = writeTransaction(db, () => {
           const result = forgetSession(db, session, actor);
-          dropSessionCandidates(db, scope.sessionId);
+          for (const sessionId of result.sessions) dropSessionCandidates(db, sessionId);
           return result;
         });
+        // global.sqlite keeps no host session ids: it is told which sessions they are.
         const global = existsSync(this.globalDbPath()) ? stores.global() : null;
-        const globally = global === null ? [] : writeTransaction(global, () => forgetSession(global, { ...session, hostSessionId: undefined }, actor)).forgotten;
-        return { v: 1, action: "private_session", sessionId: scope.sessionId, ...marked, forgotten: [...marked.forgotten, ...globally], notice: PRIVATE_NOTICE };
+        const globally = global === null ? [] : writeTransaction(global, () => forgetSession(global, { ...session, hostSessionId: undefined }, actor, marked.sessions)).forgotten;
+        const { alreadyPrivate, transcripts, earlierSessions } = marked;
+        return {
+          v: 1,
+          action: "private_session",
+          sessionId: scope.sessionId,
+          alreadyPrivate,
+          forgotten: [...marked.forgotten, ...globally],
+          transcripts,
+          earlierSessions,
+          notice: privateNotice(earlierSessions),
+        };
       }
       if (parsed.action !== "inspect" && parsed.action !== "forget_preview") this.refuseIfPrivate(db, scope);
       if (parsed.action === "answer_preference") {

@@ -149,3 +149,155 @@ describe("don't remember this session", () => {
     expect(later.status().counts?.records).toBe(0);
   });
 });
+
+/**
+ * A resumed conversation is one session to the user: Codex resumes a thread, and Claude Code a
+ * session (`claude --resume`), as a new Debrief session with the same host session id. "Don't
+ * remember this session" in any of them forgets the whole conversation (#60).
+ */
+describe("don't remember this session, in a resumed conversation", () => {
+  const note = (memory: Memory, body: string): string => memory.record({ kind: "note", body, attribution: "agent_inference" }).recordId;
+  const gone = (reader: Memory, id: string): void => {
+    expect(catchDebriefError(() => reader.read({ recordId: id, around: 5 })).code).toBe("not_found");
+  };
+
+  test("a resumed Codex thread forgets what its earlier session wrote and what was imported from the thread", () => {
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const e = env();
+    const threadId = codexThreadId();
+    installCodexRollout(e.codex, "0.142.5/basic.jsonl", { cwd: repo, threadId });
+    const first = open(repo, e, { host: "codex", hostSessionId: threadId });
+    first.bootstrap({ importChoice: "all" });
+    const imported = first.recall({ query: "checkout double charges gateway" }).items.map((item) => item.recordId);
+    expect(imported.length).toBeGreaterThan(0);
+    const r1 = note(first, "Thread note one: the ledger flush is batched.");
+    const r2 = note(first, "Thread note two: the flush interval is five seconds.");
+    const firstSession = first.status().scope?.sessionId;
+    first.close();
+    const resumed = open(repo, e, { host: "codex", hostSessionId: threadId });
+    resumed.bootstrap();
+    expect(resumed.status().scope?.sessionId).not.toBe(firstSession);
+    const r3 = note(resumed, "Thread note three: flushing on shutdown is missing.");
+    const reader = open(repo, e, { host: "claude-code" });
+    // Before the mark, the timeline around r1 reaches r2.
+    expect(reader.read({ recordId: r1, around: 5 }).timeline?.after.map((line) => line.slice(0, line.indexOf(" ")))).toContain(r2);
+
+    markPrivate(resumed);
+
+    expect(reader.recall({ query: "thread note ledger flush interval shutdown" }).items).toEqual([]);
+    expect(reader.recall({ query: "checkout double charges gateway" }).items).toEqual([]);
+    for (const id of [r1, r2, r3, ...imported]) gone(reader, id);
+  });
+
+  test("a resumed Claude Code session forgets what its earlier session wrote and what was imported from its transcript", () => {
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const e = env();
+    const hostSessionId = "5e550000-0000-4000-8000-0000000000f1";
+    installTranscript(e.config, "2.1.281/basic.jsonl", { cwd: repo, sessionId: hostSessionId });
+    const first = open(repo, e);
+    first.bootstrap({ importChoice: "all", hostSessionId });
+    const imported = first.recall({ query: "checkout double charges gateway" }).items.map((item) => item.recordId);
+    expect(imported.length).toBeGreaterThan(0);
+    const r1 = note(first, "Session note one: the ledger flush is batched.");
+    const r2 = note(first, "Session note two: the flush interval is five seconds.");
+    const firstSession = first.status().scope?.sessionId;
+    first.close();
+    // `claude --resume` keeps Claude's session id and starts a new MCP server: a new Debrief session.
+    const resumed = open(repo, e);
+    resumed.bootstrap({ hostSessionId });
+    expect(resumed.status().scope?.sessionId).not.toBe(firstSession);
+    const r3 = note(resumed, "Session note three: flushing on shutdown is missing.");
+
+    markPrivate(resumed);
+
+    const reader = open(repo, e, { host: "codex" });
+    expect(reader.recall({ query: "session note ledger flush interval shutdown" }).items).toEqual([]);
+    expect(reader.recall({ query: "checkout double charges gateway" }).items).toEqual([]);
+    for (const id of [r1, r2, r3, ...imported]) gone(reader, id);
+  });
+
+  test("another thread's sessions, and another host's session with the same host session id, are left alone", () => {
+    const repo = initRepo();
+    const e = env();
+    const threadId = codexThreadId();
+    const first = open(repo, e, { host: "codex", hostSessionId: threadId });
+    first.bootstrap({ importChoice: "none" });
+    const mine = note(first, "Thread note: the ledger flush is batched.");
+    const otherThread = open(repo, e, { host: "codex", hostSessionId: codexThreadId() });
+    const theirs = note(otherThread, "Other thread note: the cache warms on boot.");
+    // Claude Code with a session id that happens to equal the Codex thread id: a different host session.
+    const colliding = open(repo, e);
+    colliding.bootstrap({ hostSessionId: threadId });
+    const collided = note(colliding, "Colliding note: the queue drains nightly.");
+    const resumed = open(repo, e, { host: "codex", hostSessionId: threadId });
+
+    expect(markPrivate(resumed).forgotten).toEqual([mine]);
+
+    const reader = open(repo, e, { host: "claude-code" });
+    for (const id of [theirs, collided]) expect(reader.read({ recordId: id }).recordId).toBe(id);
+    expect(reader.recall({ query: "cache warms boot" }).items.map((item) => item.recordId)).toEqual([theirs]);
+    expect(reader.recall({ query: "queue drains nightly" }).items.map((item) => item.recordId)).toEqual([collided]);
+    for (const other of [otherThread, colliding]) expect(note(other, "still writes")).toMatch(/^rec_/);
+  });
+
+  test("a restored older copy, taken before the resume, loses the earlier session's records and keeps the thread private", () => {
+    const repo = initRepo();
+    const e = env();
+    const threadId = codexThreadId();
+    const first = open(repo, e, { host: "codex", hostSessionId: threadId });
+    first.bootstrap({ importChoice: "none" });
+    const r1 = note(first, "Thread note one: the ledger flush is batched.");
+    const r2 = note(first, "Thread note two: the flush interval is five seconds.");
+    const dbPath = first.status().storage.dbPath ?? "";
+    first.close();
+    const backup = join(tempDir(), "backup.sqlite");
+    copyFileSync(dbPath, backup);
+    const resumed = open(repo, e, { host: "codex", hostSessionId: threadId });
+    note(resumed, "Thread note three: flushing on shutdown is missing.");
+    markPrivate(resumed);
+    resumed.close();
+    for (const suffix of ["", "-wal", "-shm"]) if (existsSync(dbPath + suffix)) rmSync(dbPath + suffix);
+    copyFileSync(backup, dbPath);
+
+    const reader = open(repo, e, { host: "claude-code" });
+    expect(reader.recall({ query: "thread note ledger flush interval" }).items).toEqual([]);
+    for (const id of [r1, r2]) gone(reader, id);
+    // The copy never saw the resumed session: the thread is private through the earlier one.
+    const again = open(repo, e, { host: "codex", hostSessionId: threadId });
+    expect(catchDebriefError(() => note(again, "x")).code).toBe("session_private");
+  });
+
+  test("the result lists the earlier session's records and the notice says earlier sessions were included", () => {
+    const repo = initRepo();
+    const e = env();
+    const threadId = codexThreadId();
+    const first = open(repo, e, { host: "codex", hostSessionId: threadId });
+    first.bootstrap({ importChoice: "none" });
+    const r1 = note(first, "Thread note one.");
+    const resumed = open(repo, e, { host: "codex", hostSessionId: threadId });
+    const r2 = note(resumed, "Thread note two.");
+
+    const marked = markPrivate(resumed);
+    expect(marked.forgotten).toEqual(expect.arrayContaining([r1, r2]) as unknown);
+    expect(marked.notice).toMatch(/earlier session/i);
+    // A session with no earlier sessions says nothing of them.
+    const alone = open(initRepo(), e, { host: "codex", hostSessionId: codexThreadId() });
+    alone.bootstrap({ importChoice: "none" });
+    expect(markPrivate(alone).notice).not.toMatch(/earlier session/i);
+  });
+
+  test("a global preference the earlier session confirmed is forgotten too", () => {
+    const repo = initRepo();
+    const e = env();
+    const threadId = codexThreadId();
+    const first = open(repo, e, { host: "codex", hostSessionId: threadId });
+    first.bootstrap({ importChoice: "none" });
+    const question = first.record({ kind: "preference", body: "Use bun instead of npm.", attribution: "user_direction" }).preference;
+    const global = first.settlePreference({ candidateId: question.candidateId ?? "", reply: { action: "accept", label: "Everywhere" } });
+    expect(global).toMatchObject({ state: "active", scope: "global" });
+    const resumed = open(repo, e, { host: "codex", hostSessionId: threadId });
+
+    expect(markPrivate(resumed).forgotten).toContain(global.recordId);
+    expect(open(initRepo(), e, { host: "claude-code" }).bootstrap().preferences.items).toEqual([]);
+  });
+});

@@ -5,7 +5,7 @@ import type { Attribution, LinkRelation, RecordKind } from "../schemas.js";
 import { type Db, openDatabase, prepared, requireTransaction, writeTransaction } from "../storage/database.js";
 import { appendRecord, type StoredApplicability } from "../storage/records.js";
 import { appendLedger, type LedgerEntry, type PrivateSessionEntry, readLedger } from "./ledger.js";
-import { applyPrivateSession, isPrivateTranscript, privateSessionApplied, sessionIsPrivate, transcriptsOf } from "./private-session.js";
+import { applyPrivateSession, isPrivateTranscript, privateSessionApplied, sameHostSession, type SessionIdentity, sessionIsPrivate, transcriptsOf } from "./private-session.js";
 import { excerpt } from "./lifecycle-views.js";
 import { findDependents, insertTaints, type Propagation } from "./taints.js";
 
@@ -279,26 +279,45 @@ export function confirmForget(db: Db, scope: ChangeScope, key: ConfirmationKey, 
 export interface ForgetSessionResult {
   /** The session was already private: nothing more was done. */
   alreadyPrivate: boolean;
-  /** Records forgotten: what the session wrote, and what was imported from its transcripts. */
+  /** Records forgotten: what the host session's Debrief sessions wrote, and what was imported from its transcripts. */
   forgotten: string[];
-  /** Transcripts of this session that will never be imported again. */
+  /** Transcripts of the host session that will never be imported again. */
   transcripts: number;
+  /** The Debrief sessions of the host session, this one included, all marked private. */
+  sessions: string[];
+  /** Of those, the live ones other than this one: the rest of a resumed conversation. */
+  earlierSessions: number;
 }
 
 /**
- * "Don't remember this session", in the caller's write transaction: forgets what the session
- * wrote and what was already imported from its transcripts (no preview: the request is its own
- * confirmation), marks the session and those transcripts private (writes refused, never
- * imported again), and ledgers all of it so a restored older copy is marked again.
+ * "Don't remember this session", in the caller's write transaction. "This session" is the host
+ * session ({@link sameHostSession}): a resumed conversation is one session to the user, and
+ * `sessionIsPrivate` already treats it as one. Forgets what its Debrief sessions wrote and what
+ * was already imported from its transcripts (no preview: the request is its own confirmation),
+ * marks those sessions and transcripts private (writes refused, never imported again), and
+ * ledgers all of it so a restored older copy is marked again. `sessions` names them instead
+ * where this database cannot link them (global.sqlite keeps no host session ids).
  */
-export function forgetSession(db: Db, session: { sessionId: string; host: string; hostSessionId: string | undefined; workstreamId: string }, actor: LiveActor): ForgetSessionResult {
+export function forgetSession(
+  db: Db,
+  session: SessionIdentity & { workstreamId: string },
+  actor: LiveActor,
+  sessions: readonly string[] = sameHostSession(db, session),
+): ForgetSessionResult {
   requireTransaction(db, "forgetSession");
-  const transcripts = transcriptsOf(db, session);
+  const transcripts = transcriptsOf(db, { host: session.host, hostSessionId: session.hostSessionId, sessions });
+  const earlierSessions = (
+    prepared(db, "SELECT count(*) AS n FROM sessions WHERE id IN (SELECT value FROM json_each(?)) AND id <> ? AND json_extract(capabilities, '$.imported') IS NOT 1").get(
+      JSON.stringify(sessions),
+      session.sessionId,
+    ) as { n: number }
+  ).n;
+  const done = { transcripts: transcripts.length, sessions: [...sessions], earlierSessions };
   if (sessionIsPrivate(db, session) && transcripts.every((t) => isPrivateTranscript(db, t.host, t.transcriptId))) {
-    return { alreadyPrivate: true, forgotten: [], transcripts: transcripts.length };
+    return { alreadyPrivate: true, forgotten: [], ...done };
   }
-  const forgotten = forgetPrivate(db, { sessionId: session.sessionId, host: session.host, transcripts, workstreamId: session.workstreamId, alsoWrittenBy: session.sessionId }, actor);
-  return { alreadyPrivate: false, forgotten, transcripts: transcripts.length };
+  const forgotten = forgetPrivate(db, { sessionId: session.sessionId, sessions, host: session.host, transcripts, workstreamId: session.workstreamId, writtenBy: sessions }, actor);
+  return { alreadyPrivate: false, forgotten, ...done };
 }
 
 /**
@@ -309,26 +328,33 @@ export function forgetTranscript(db: Db, transcript: { host: string; transcriptI
   requireTransaction(db, "forgetTranscript");
   return forgetPrivate(
     db,
-    { sessionId: transcript.privateSessionId, host: transcript.host, transcripts: [{ host: transcript.host, transcriptId: transcript.transcriptId }], workstreamId: transcript.workstreamId, alsoWrittenBy: null },
+    {
+      sessionId: transcript.privateSessionId,
+      sessions: [transcript.privateSessionId],
+      host: transcript.host,
+      transcripts: [{ host: transcript.host, transcriptId: transcript.transcriptId }],
+      workstreamId: transcript.workstreamId,
+      writtenBy: [],
+    },
     actor,
   );
 }
 
-/** Forgets what was imported from `transcripts` (and written by `alsoWrittenBy`), marks them private, and ledgers it. */
+/** Forgets what was imported from `transcripts` (and written by `writtenBy`), marks `sessions` and `transcripts` private, and ledgers it. */
 function forgetPrivate(
   db: Db,
-  target: { sessionId: string; host: string; transcripts: { host: string; transcriptId: string }[]; workstreamId: string; alsoWrittenBy: string | null },
+  target: { sessionId: string; sessions: readonly string[]; host: string; transcripts: { host: string; transcriptId: string }[]; workstreamId: string; writtenBy: readonly string[] },
   actor: LiveActor,
 ): string[] {
   const at = new Date().toISOString();
   const left = prepared(
     db,
     `SELECT r.id, r.workstream_id FROM records r
-     WHERE r.lifecycle <> 'forgotten' AND (r.session_id = $writer OR r.source_id IN (
+     WHERE r.lifecycle <> 'forgotten' AND (r.session_id IN (SELECT value FROM json_each($writers)) OR r.source_id IN (
        SELECT c.source_id FROM import_cursors c JOIN json_each($transcripts) t
          ON c.host = json_extract(t.value, '$.host') AND c.transcript_id = json_extract(t.value, '$.transcriptId')))
      ORDER BY r.seq`,
-  ).all({ writer: target.alsoWrittenBy, transcripts: JSON.stringify(target.transcripts) }) as { id: string; workstream_id: string | null }[];
+  ).all({ writers: JSON.stringify(target.writtenBy), transcripts: JSON.stringify(target.transcripts) }) as { id: string; workstream_id: string | null }[];
   // Grouped by workstream, so each group is in the scope it is forgotten from.
   const groups = new Map<string, string[]>();
   for (const row of left) {
@@ -342,7 +368,16 @@ function forgetPrivate(
     forgotten.push(...applied.result.forgotten);
     entries.push(...applied.entries);
   }
-  const marker: PrivateSessionEntry = { v: 1, kind: "private_session", id: `led_${randomUUID().replaceAll("-", "")}`, sessionId: target.sessionId, host: target.host, transcripts: target.transcripts, at };
+  const marker: PrivateSessionEntry = {
+    v: 1,
+    kind: "private_session",
+    id: `led_${randomUUID().replaceAll("-", "")}`,
+    sessionId: target.sessionId,
+    sessions: [...target.sessions],
+    host: target.host,
+    transcripts: target.transcripts,
+    at,
+  };
   applyPrivateSession(db, marker);
   entries.push(marker);
   // Only once every effect succeeded: an entry must never describe a change that rolled back.
