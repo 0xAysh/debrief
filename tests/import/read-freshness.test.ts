@@ -99,9 +99,11 @@ describe("Claude Code Read", () => {
 
   test("R2: a Read with offset/limit fingerprints the lines read: an edit elsewhere or lines moved leave it current, an edit to them makes it stale", () => {
     const repo = repoWith({ "src/gateway.ts": GATEWAY });
-    const memory = importClaude(repo, [claudeReadStep(join(repo, "src/gateway.ts"), GATEWAY, { offset: 10, limit: 5 })]);
-    const [read] = recordsOf(memory, "Read");
+    const memory = importClaude(repo, [claudeReadStep(join(repo, "src/gateway.ts"), GATEWAY, { offset: 10, limit: 5 }), claudeReadStep(join(repo, "src/gateway.ts"), GATEWAY, { offset: 27 })]);
+    const [read, toEnd] = recordsOf(memory, "Read");
     expect(memory.read({ recordId: read ?? "" }).externalRefs[0]).toMatchObject({ path: "src/gateway.ts", lines: [10, 14], freshness: "current" });
+    // Read to the end: the last line Claude Code shows for a final newline is not a line of the file.
+    expect(memory.read({ recordId: toEnd ?? "" }).externalRefs[0]).toMatchObject({ lines: [27, 30], freshness: "current", reason: "changed_elsewhere" });
 
     writeFile(repo, "src/gateway.ts", GATEWAY.replace("retry(25)", "retry(250)"));
     expect(label(memory, read ?? "")).toEqual(["current", "changed_elsewhere"]);

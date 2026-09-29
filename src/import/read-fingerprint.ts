@@ -54,10 +54,12 @@ export function readFingerprint(read: FileRead, text: string, output: OutputFact
 }
 
 function readTool(text: string, window: OutputFacts["window"]): ReadFingerprint | null {
-  if (window === undefined || window.numLines < 1) return null;
+  if (window === undefined || window.numLines < 1 || window.startLine < 1) return null;
   const lines = unnumber(text.split("\n"), window.startLine);
   if (lines === null || lines.length !== window.numLines || lines.some((line) => line.length > LONG_LINE)) return null;
   if (window.startLine === 1 && window.numLines === window.totalLines) return whole(lines.join("\n"));
+  // A window that reaches the end shows a final newline as a last, empty line, which is not a line of the file.
+  if (window.startLine + window.numLines - 1 === window.totalLines && lines.at(-1) === "") lines.pop();
   return range(window.startLine, lines);
 }
 
