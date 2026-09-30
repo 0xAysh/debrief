@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { type ContextPack, type Memory, openMemory } from "../../src/memory.js";
 import type { RecordInput } from "../../src/schemas.js";
@@ -31,6 +31,10 @@ const S1 = "5e550000-0000-4000-8000-0000000000b1";
 const S2 = "5e550000-0000-4000-8000-0000000000b2";
 const S3 = "5e550000-0000-4000-8000-0000000000b3";
 const S4 = "5e550000-0000-4000-8000-0000000000b4";
+
+const ON_PTY = resolve(import.meta.dirname, "on-pty.py");
+const PYTHON = spawnSync("python3", ["--version"]).status === 0 ? "python3" : null;
+if (PYTHON === null) process.stderr.write("report terminal test skipped: python3 (for a pty) is not on PATH\n");
 
 function open(e: Env, hostSessionId?: string): Memory {
   const memory = openMemory({ cwd: e.repo, home: e.home, host: "claude-code", claudeConfigDir: e.config, now: () => clock.at, ...(hostSessionId === undefined ? {} : { hostSessionId }) });
@@ -422,5 +426,51 @@ describe("debrief report", () => {
 
       for (const out of [ok(e), ok(e, ["--review"], "")]) expect(out.toLowerCase(), change).not.toContain("quokka");
     }
+  });
+
+  test("R11: a restored older copy of the database shows no query a later forget or private_session erased, nor a note about it", () => {
+    for (const change of ["forget", "private"] as const) {
+      const e = env();
+      const writer = open(e);
+      const secret = note(writer, "Quokka rotation: keys rotate on Fridays.");
+      const dbPath = writer.status().storage.dbPath ?? "";
+      writer.close();
+      const session = open(e, S1);
+      recall(session, "quokka rotation", base());
+      session.close();
+      ok(e, ["--review"], "p\nquokka schedule was missing\n");
+      const backup = join(tempDir(), "backup.sqlite");
+      copyFileSync(dbPath, backup);
+
+      const after = open(e, S1);
+      if (change === "forget") forget(after, secret);
+      else after.manage({ action: "private_session" });
+      after.close();
+      for (const suffix of ["", "-wal", "-shm"]) if (existsSync(dbPath + suffix)) rmSync(dbPath + suffix);
+      copyFileSync(backup, dbPath);
+
+      // The report is the first thing to open the restored copy.
+      expect(ok(e).toLowerCase(), change).not.toContain("quokka");
+    }
+  });
+
+  test.skipIf(PYTHON === null)("R12: on a terminal, --review exits once the last search is rated", () => {
+    const e = env();
+    const writer = open(e);
+    note(writer, "Tern fact: the cache warms at boot.");
+    writer.close();
+    const session = open(e, S1);
+    recall(session, "tern", base());
+    recall(session, "cache", base() + MINUTE);
+    session.close();
+
+    const run = spawnSync(PYTHON ?? "python3", [ON_PTY, "--prompt", "> ", "g\ng", process.execPath, CLI, "report", "--review"], {
+      cwd: e.repo,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { ...process.env, DEBRIEF_HOME: e.home, CLAUDE_CONFIG_DIR: e.config },
+    });
+    expect(run.stdout).toContain("Stored 2 ratings.");
+    expect(run.status).toBe(0);
   });
 });
