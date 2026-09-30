@@ -58,12 +58,12 @@ tests/
 └── release/     # the package, and the Claude-only acceptance scenario through the installed plugin
 ```
 
-The driven host tests run only against the pinned builds. When a host is missing or reports another version, its suites are skipped with the reason on stderr, and the run ends with a banner naming every skipped suite and why. Set `DEBRIEF_REQUIRE_HOSTS=1` to make each skip a collection failure instead (a release, a pin bump):
+The driven host tests run only against the pinned builds. When a host is missing or reports another version, its suites are skipped with the reason on stderr, and the run ends with a banner naming every skipped suite and why. `DEBRIEF_REQUIRE_HOSTS` makes a required host's skips collection failures instead (a release, a pin bump): `1` requires Claude Code, the supported host, and Codex suites still skip; a list (`codex`, `claude,codex`) names the hosts to require. The pinned builds:
 
 - **Claude Code `2.1.284`**: `DEBRIEF_TEST_CLAUDE_BIN` when set, used as given. Otherwise the first `claude` on `PATH` (else `~/.local/bin/claude`) when it reports the pin; Claude Code auto-updates, so when it has moved on, the native installer's kept copy `~/.local/share/claude/versions/2.1.284` runs instead. `HOME` and `CLAUDE_CONFIG_DIR` are temporary directories. On macOS each `claude` also runs under `sandbox-exec` with a profile that denies `~/.claude.json`, `~/.claude`, Claude's cache, `~/.debrief`, and every connection except to localhost.
 - **`codex-cli 0.148.0-alpha.21`**: bundled at `/Applications/ChatGPT.app/Contents/Resources/codex`; override with `DEBRIEF_TEST_CODEX_BIN`. It runs in a temporary `CODEX_HOME`. Codex updates with the ChatGPT app and keeps no older build, so a drifted Codex has no fallback.
 
-To move a pin, change the constant (`CLAUDE_PINNED_VERSION` in `tests/mcp/claude.ts`, `CODEX_PINNED_VERSION` in `tests/mcp/codex.ts`), run that host's suites with `DEBRIEF_REQUIRE_HOSTS=1`, and keep it only if they all pass. `tests/release/package.test.ts` then fails until the README, `docs/hosts.md` and this page name the new Claude Code build.
+To move a pin, change the constant (`CLAUDE_PINNED_VERSION` in `tests/mcp/claude.ts`, `CODEX_PINNED_VERSION` in `tests/mcp/codex.ts`), run that host's suites with `DEBRIEF_REQUIRE_HOSTS=claude` or `=codex`, and keep it only if they all pass. `tests/release/package.test.ts` then fails until the README, `docs/hosts.md` and this page name the new Claude Code build.
 
 Every Debrief process a driven test starts loads `tests/mcp/no-network.mjs`, which refuses and logs any socket, DNS lookup or fetch; the tests assert the logs are empty.
 

@@ -15,7 +15,7 @@ import { installPackedDebrief, installPlugin, pathWith, PLUGIN_TOOL, ROOT, strea
  * (installed offline into a temporary prefix put on PATH, as `npm install -g` would).
  */
 
-const SKIP = hostGate("claude code plugin tests", claudeSkipReason());
+const SKIP = hostGate("claude code plugin tests", "claude", claudeSkipReason());
 
 const IMPORT_QUESTION = "Transcript import needs the user's answer";
 

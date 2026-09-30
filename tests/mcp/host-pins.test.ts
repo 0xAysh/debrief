@@ -60,45 +60,69 @@ describe("resolving the pinned Claude Code", () => {
   });
 });
 
+/**
+ * A real vitest run of the two real connection suites with neither host there, and only the
+ * host-skip half of the global setup (nothing to build: every test is skipped or fails collection).
+ */
+function hostSuitesRun(require: Record<string, string>): { code: number | null; output: string } {
+  const dir = tempDir("debrief-require-hosts-");
+  const setup = join(dir, "host-skips-setup.ts");
+  writeFileSync(setup, `export { recordHostSkips as default } from ${JSON.stringify(join(ROOT, "tests/host-skips.ts"))};\n`);
+  const config = join(dir, "vitest.config.mjs");
+  writeFileSync(config, `export default { test: { include: ["tests/mcp/claude-connection.test.ts", "tests/mcp/codex-connection.test.ts"], globalSetup: [${JSON.stringify(setup)}] } };\n`);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST") && key !== "DEBRIEF_REQUIRE_HOSTS"));
+  const run = spawnSync(process.execPath, [join(ROOT, "node_modules/vitest/vitest.mjs"), "run", "--root", ROOT, "--config", config], {
+    env: { ...env, DEBRIEF_TEST_CLAUDE_BIN: "/nonexistent/claude", DEBRIEF_TEST_CODEX_BIN: "/nonexistent/codex", ...require },
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  return { code: run.status, output: run.stdout + run.stderr };
+}
+
 describe("host suites that cannot run", () => {
-  test("V3: with DEBRIEF_REQUIRE_HOSTS=1, a missing Claude Code or Codex fails collection with the reason instead of skipping", () => {
-    // A real vitest run of two real host suites, with no global setup (nothing to build: collection fails first).
-    const config = join(tempDir("debrief-require-hosts-"), "vitest.config.mjs");
-    writeFileSync(config, `export default { test: { include: ["tests/mcp/claude-connection.test.ts", "tests/mcp/codex-connection.test.ts"] } };\n`);
-    const vitest = (require: Record<string, string>): { code: number | null; output: string } => {
-      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST") && key !== "DEBRIEF_REQUIRE_HOSTS"));
-      const run = spawnSync(process.execPath, [join(ROOT, "node_modules/vitest/vitest.mjs"), "run", "--root", ROOT, "--config", config], {
-        env: { ...env, DEBRIEF_TEST_CLAUDE_BIN: "/nonexistent/claude", DEBRIEF_TEST_CODEX_BIN: "/nonexistent/codex", ...require },
-        encoding: "utf8",
-        timeout: 60_000,
-      });
-      return { code: run.status, output: run.stdout + run.stderr };
-    };
-
-    const skipped = vitest({});
+  test("R1: with DEBRIEF_REQUIRE_HOSTS=1, a missing Claude Code fails collection with the reason, while a missing Codex is still skipped and named in the banner", () => {
+    const skipped = hostSuitesRun({});
     expect(skipped.code, skipped.output).toBe(0);
-    expect(skipped.output).toMatch(/skipped/);
+    expect(skipped.output).toContain("2 HOST SUITES SKIPPED");
 
-    const required = vitest({ DEBRIEF_REQUIRE_HOSTS: "1" });
+    const required = hostSuitesRun({ DEBRIEF_REQUIRE_HOSTS: "1" });
     expect(required.code, required.output).not.toBe(0);
-    expect(required.output).toContain("no Claude Code binary at /nonexistent/claude");
-    expect(required.output).toContain("no Codex binary at /nonexistent/codex");
-    expect(required.output).toContain("DEBRIEF_REQUIRE_HOSTS=1");
+    expect(required.output).toContain("claude code connection tests cannot run: no Claude Code binary at /nonexistent/claude");
+    expect(required.output).toContain("(DEBRIEF_REQUIRE_HOSTS=1 makes this a failure, not a skip)");
+    expect(required.output).toMatch(/Test Files {2}1 failed \| 1 skipped/);
+    expect(required.output).not.toContain("claude code connection tests skipped");
+    expect(required.output).toContain("1 HOST SUITE SKIPPED");
+    expect(required.output).toContain("codex connection tests: no Codex binary at /nonexistent/codex");
+  });
+
+  test("R2: DEBRIEF_REQUIRE_HOSTS=claude,codex fails collection for both missing hosts", () => {
+    const required = hostSuitesRun({ DEBRIEF_REQUIRE_HOSTS: "claude,codex" });
+    expect(required.code, required.output).not.toBe(0);
+    expect(required.output).toContain("claude code connection tests cannot run: no Claude Code binary at /nonexistent/claude");
+    expect(required.output).toContain("codex connection tests cannot run: no Codex binary at /nonexistent/codex");
+    expect(required.output).toContain("(DEBRIEF_REQUIRE_HOSTS=claude,codex makes this a failure, not a skip)");
     expect(required.output).toMatch(/Test Files {2}2 failed/);
+    expect(required.output).not.toContain("HOST SUITE");
+
+    // A value that names no host fails every host suite, the ones whose host is there included, instead of requiring nothing.
+    for (const value of ["true", "claude,codx"]) {
+      expect(() => hostGate("example suite (R2)", "claude", null, { env: { DEBRIEF_REQUIRE_HOSTS: value } })).toThrow(`DEBRIEF_REQUIRE_HOSTS=${value} names no host`);
+    }
   });
 
   test("V4: a run that skipped host suites ends with a banner naming each one and why", () => {
     const dir = tempDir("debrief-host-skips-");
     expect(hostSkipBanner(readHostSkips(dir))).toBe("");
 
-    expect(hostGate("example claude suite (V4)", null, { env: {}, dir })).toBeNull();
-    expect(hostGate("example claude suite (V4)", "claude is Claude Code 2.1.285", { env: {}, dir })).toBe("claude is Claude Code 2.1.285");
-    hostGate("example codex suite (V4)", "codex is codex-cli 0.150.0", { env: {}, dir });
+    expect(hostGate("example claude suite (V4)", "claude", null, { env: {}, dir })).toBeNull();
+    expect(hostGate("example claude suite (V4)", "claude", "claude is Claude Code 2.1.285", { env: {}, dir })).toBe("claude is Claude Code 2.1.285");
+    hostGate("example codex suite (V4)", "codex", "codex is codex-cli 0.150.0", { env: {}, dir });
 
     const banner = hostSkipBanner(readHostSkips(dir));
     expect(banner).toContain("2 HOST SUITES SKIPPED");
     expect(banner).toContain("example claude suite (V4): claude is Claude Code 2.1.285");
     expect(banner).toContain("example codex suite (V4): codex is codex-cli 0.150.0");
     expect(banner).toContain("DEBRIEF_REQUIRE_HOSTS=1");
+    expect(banner).toContain("DEBRIEF_REQUIRE_HOSTS=claude,codex");
   });
 });

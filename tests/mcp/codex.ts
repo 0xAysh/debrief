@@ -27,7 +27,7 @@ export function codexSkipReason(): string | null {
   const run = spawnSync(CODEX_BIN, ["--version"], { encoding: "utf8", timeout: 20_000 });
   const version = /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)/.exec(run.stdout)?.[1];
   if (version !== CODEX_PINNED_VERSION)
-    return `${CODEX_BIN} is codex-cli ${version ?? "unknown"}; these tests pin ${CODEX_PINNED_VERSION}: set DEBRIEF_TEST_CODEX_BIN to a ${CODEX_PINNED_VERSION} binary, or bump CODEX_PINNED_VERSION (tests/mcp/codex.ts, with the docs) once these suites pass on the new build with DEBRIEF_REQUIRE_HOSTS=1`;
+    return `${CODEX_BIN} is codex-cli ${version ?? "unknown"}; these tests pin ${CODEX_PINNED_VERSION}: set DEBRIEF_TEST_CODEX_BIN to a ${CODEX_PINNED_VERSION} binary, or bump CODEX_PINNED_VERSION (tests/mcp/codex.ts, with the docs) once these suites pass on the new build with DEBRIEF_REQUIRE_HOSTS=codex`;
   return null;
 }
 

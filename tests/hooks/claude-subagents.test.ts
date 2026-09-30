@@ -14,7 +14,7 @@ import { type HookEvent, type HookOutput, type HookRecord, hookRig, sanitize } f
  * git-ignored `__artifacts__/` as evidence.
  */
 
-const SKIP = hostGate("claude code sub-agent tests", claudeSkipReason());
+const SKIP = hostGate("claude code sub-agent tests", "claude", claudeSkipReason());
 
 const ARTIFACT = join(import.meta.dirname, "__artifacts__", `claude-${CLAUDE_PINNED_VERSION}-subagents.json`);
 const evidence: Record<string, unknown> = { claudeCode: CLAUDE_PINNED_VERSION, mode: "claude -p", registration: "--settings <file> with a top-level hooks object" };

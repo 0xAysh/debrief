@@ -16,7 +16,7 @@ import { CLI, NO_NETWORK } from "../mcp/harness.js";
  * against a localhost stub model. What the model received is read from the stub's request bodies.
  */
 
-const SKIP = hostGate("debrief hook tests in claude code", claudeSkipReason());
+const SKIP = hostGate("debrief hook tests in claude code", "claude", claudeSkipReason());
 
 /** Every network log a Debrief process (hook or MCP server) in this file writes to; each is checked empty after its test. */
 const networkLogs: string[] = [];
