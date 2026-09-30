@@ -6,8 +6,8 @@
  * A row holds ids and labels, never a record's body: what a recall asked (`query`), the records
  * it returned in order (`returned`: id, kind, freshness, position), sizes, omissions and timings.
  * Forgetting a record blanks the query of the rows that returned or wrote it, and a private
- * session blanks its rows' query, parameters and returned ids (`erased` says which). Nothing
- * refers to this table: a row never keeps anything else alive.
+ * session blanks its rows' query, parameters and returned ids (`erased` says which). A row never
+ * keeps anything else alive (since version 9 the user's rating of a search refers to its row).
  */
 export const sql = /* sql */ `
 CREATE TABLE call_log (

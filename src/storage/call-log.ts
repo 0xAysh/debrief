@@ -87,13 +87,16 @@ export function appendCall(db: Db, row: CallRow): void {
   });
 }
 
-/** Forgetting records blanks what the calls that returned or wrote them asked; their ids stay, as tombstones do. */
+/**
+ * Forgetting records blanks what the calls that returned or wrote them asked, and the user's
+ * notes on those calls; their ids stay, as tombstones do.
+ */
 export function forgetCallsReturning(db: Db, recordIds: readonly string[]): void {
-  prepared(
-    db,
-    `UPDATE call_log SET query = NULL, erased = coalesce(erased, 'forgotten')
-     WHERE EXISTS (SELECT 1 FROM json_each(call_log.returned) r WHERE json_extract(r.value, '$.id') IN (SELECT value FROM json_each(?)))`,
-  ).run(JSON.stringify(recordIds));
+  const returning = `SELECT id FROM call_log WHERE EXISTS (
+    SELECT 1 FROM json_each(call_log.returned) r WHERE json_extract(r.value, '$.id') IN (SELECT value FROM json_each($ids)))`;
+  const ids = JSON.stringify(recordIds);
+  prepared(db, `UPDATE call_reviews SET note = NULL WHERE call_id IN (${returning})`).run({ ids });
+  prepared(db, `UPDATE call_log SET query = NULL, erased = coalesce(erased, 'forgotten') WHERE id IN (${returning})`).run({ ids });
 }
 
 /**
@@ -101,13 +104,12 @@ export function forgetCallsReturning(db: Db, recordIds: readonly string[]): void
  * and outcome. Rows are found by Debrief session, and by host session (a hook's row may name only that).
  */
 export function forgetSessionCalls(db: Db, host: string, sessions: readonly string[]): void {
-  prepared(
-    db,
-    `UPDATE call_log SET query = NULL, params = '{}', returned = '[]', omitted = '{}', erased = 'private'
-     WHERE session_id IN (SELECT value FROM json_each($sessions))
-        OR (host = $host AND host_session_id IN (
-          SELECT host_session_id FROM sessions WHERE id IN (SELECT value FROM json_each($sessions)) AND host_session_id IS NOT NULL))`,
-  ).run({ host, sessions: JSON.stringify(sessions) });
+  const inSession = `session_id IN (SELECT value FROM json_each($sessions))
+    OR (host = $host AND host_session_id IN (
+      SELECT host_session_id FROM sessions WHERE id IN (SELECT value FROM json_each($sessions)) AND host_session_id IS NOT NULL))`;
+  const params = { host, sessions: JSON.stringify(sessions) };
+  prepared(db, `UPDATE call_reviews SET note = NULL WHERE call_id IN (SELECT id FROM call_log WHERE ${inSession})`).run(params);
+  prepared(db, `UPDATE call_log SET query = NULL, params = '{}', returned = '[]', omitted = '{}', erased = 'private' WHERE ${inSession}`).run(params);
 }
 
 interface Described {
