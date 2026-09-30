@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 issue: "#51"
 ---
 
@@ -13,7 +13,18 @@ Every figure below was measured by a throwaway spike on 2026-09-29 (Apple M4 Pro
 
 Debrief's recall is a well-tokenized BM25 with tiers (phrases, time windows, "now") and trust bands. On LongMemEval_S it misses questions that share no words with their answer: "doctors" against "Dr. Patel", "photography setup" against "Sony A7R IV". Every competitor searches by meaning. #51 asks for meaning search across all memory without giving up what recall guarantees today: eligibility before ranking, budgets, the frozen continuation order, citations, freshness, and no network.
 
-The spike had to settle six choices: runtime, model, vector storage, delivery, retrieval unit and fusion. The user signs off on delivery before PR 2 starts.
+The spike had to settle six choices: runtime, model, vector storage, delivery, retrieval unit and fusion. The user signed off on delivery (bundled) on 2026-09-30.
+
+## Decided on 2026-09-30
+
+The user accepted this record with four decisions that change how it is delivered:
+
+| Decision | Consequence |
+|---|---|
+| **Build before dogfooding.** Every competitor searches by meaning; Debrief ships it before the user starts using it daily | "What would make this not worth it" (below) is no longer a gate. The agent-rephrasing measurement goes in PR 2's body as evidence |
+| **RAM: +150 MB at peak and about 0 when idle is a target, not a gate** | PR 2 ships at whatever it measures and reports it. #51 stays open until the target is met. The lean design to try then: one thread in the server, bulk embedding in a short-lived separate process, the model unloaded when idle |
+| **One PR, not two.** The background fill embeds any chunk without a current-model vector, so it is the backfill of existing and imported memory too | #51's PR 2 and PR 3 are one PR. Rebuilding vectors (`diag reindex`) and the integrity checks for vectors move to #22, beside the keyword index's |
+| **Session start carries no work context** (#33). The agent recalls at the start of each task through `memory_recall`, which is where meaning search runs | Hooks still never load the model. Automatic per-prompt recall stays keyword-only and is held (#33) |
 
 ## Decisions
 
@@ -22,7 +33,7 @@ The spike had to settle six choices: runtime, model, vector storage, delivery, r
 | Runtime | `onnxruntime-web` 1.30 (WASM) + `@huggingface/tokenizers`, bundled by esbuild; the 14.2 MB `.wasm` ships beside `dist/debrief.mjs` and is loaded only by `debrief mcp` | moderate |
 | Model | `Snowflake/snowflake-arctic-embed-xs`, int8 (`onnx/model_quantized.onnx`, 23.0 MB, Apache-2.0), 384 dimensions, CLS pooling, query prefix, 512 tokens | low–moderate (the small models are within noise of each other on quality; speed decides) |
 | Storage | a `chunk_vectors` table in `memory.sqlite`: (model id, chunk text hash) → int8 vector + scale; brute-force scan in the server; no `sqlite-vec` | high |
-| Delivery | model files inside the npm package; no download, no new host; privacy row unchanged | moderate–high (the user signs off) |
+| Delivery | model files inside the npm package; no download, no new host; privacy row unchanged | moderate–high (signed off by the user) |
 | Unit | the search chunk (≤ 1,000 bytes); a record scores its best chunk; no round vectors | moderate |
 | Fusion | reciprocal rank fusion, k = 60, equal weights, of page 1's keyword order (after tiers and trust) and the vector order over eligible records; tier-lifted records stay ahead; frozen as today | moderate |
 
@@ -189,24 +200,26 @@ Bundling costs about 38 MB of disk per install and needs no new trust boundary. 
 
 - **Privacy row:** unchanged. The README should add, in "How it works", that meaning search runs a bundled model in the MCP server and sends nothing anywhere.
 - **Install:** about 38 MB more unpacked (about 20 MB more to download) on every platform, and no new native code. Intel Macs and Windows on ARM keep working. They would not with a current native runtime.
-- **Memory:** the MCP server holds about 0.5–0.75 GB more while the model is loaded under WASM (measured about 660 MB resident with the model; native would be about 160 MB). Every host session starts its own server. PR 2 must load the model lazily (first recall with a query, or a fill step) and unload it after an idle period. It must also let only one server per workspace fill at a time.
+- **Memory:** the MCP server holds about 0.5–0.75 GB more while the model is loaded under WASM (measured about 660 MB resident with the model; native would be about 160 MB). Every host session starts its own server. PR 2 must load the model lazily (first recall with a query, or a fill step) and unload it after an idle period. It must also let only one server per workspace fill at a time. The target is +150 MB at peak and about 0 when idle; see "Decided on 2026-09-30".
 - **CPU:** embedding new memory is small. A turn's worth of records (tens of chunks) is under a second at 72 chunks/s. Backfill is not small: 10k imported records (16.4k chunks) is about 4 minutes of 4 cores under WASM (native: about 50 s). 100k records is about 40 minutes.
 - **Disk:** about +7.5 MB per 10k records with int8 vectors (+16% on today's database).
 - **Latency:** page 1 of a recall with a query adds one query embedding (4.7 ms p50 WASM) and one scan (3.8 ms per 10k chunks in memory) to today's page 1, which measured 20–40 ms on LongMemEval haystacks. Later pages add nothing, because they load the frozen order.
 - **Offline:** unaffected; there is nothing to fetch.
 - **Recall quality:** on LongMemEval_S, R@5 goes from 94.3 to 98.1 and preference R@5 from 63.3 to 90.0–100. On hand-written code memory, R@1 goes from 15 to 21 (of 30). Identifier lookups are unchanged, and stale-versus-current is unchanged.
 
-## What PR 2 builds
+## What PR 2 builds (new and existing memory)
 
 - **An embedder seam in the memory module.** `embed(texts, kind: "query" | "document") → Int8Array[]`, with `modelId` (e.g. `snowflake-arctic-embed-xs@q8`) and `dimensions`. `openMemory` accepts one, as it accepts `now`. Transports and adapters never see vectors. Tests use the real model, with no mocks.
-- **Vectors as a rebuildable derived projection.** A vector is a pure function of chunk text and model, so migration 0008 keys it that way: `chunk_vectors(model, text_hash, scale, vec, PRIMARY KEY (model, text_hash))`, and `chunks` gains `text_hash`. With that key, `rebuildSearchIndex` (which renumbers chunk ids) keeps valid vectors, identical chunks (copies of one host event) are embedded once, and a different model id is a different key: vectors from different models are never mixed or compared. Vectors that no chunk references are garbage; the integrity check reports them (PR 3).
-- **Background fill.** The MCP server embeds chunks without vectors between requests, in bounded steps (as `continueImport` does), newest first and current workstream first. Hooks never load the model and never embed. Only one server per workspace fills at a time.
+- **Vectors as a rebuildable derived projection.** A vector is a pure function of chunk text and model, so the next migration (0010; `main` is at schema 9) keys it that way: `chunk_vectors(model, text_hash, scale, vec, PRIMARY KEY (model, text_hash))`, and `chunks` gains `text_hash`. With that key, `rebuildSearchIndex` (which renumbers chunk ids) keeps valid vectors, identical chunks (copies of one host event) are embedded once, and a different model id is a different key: vectors from different models are never mixed or compared. Vectors that no chunk references are garbage; the integrity check reports them (#22).
+- **Background fill, which is also the backfill.** The MCP server embeds chunks without vectors between requests, in bounded steps (as `continueImport` does), newest first and current workstream first. That covers existing records and approved imports as well as new memory. Vectors are written in short transactions keyed by (model, text hash), so a restart or kill loses and repeats nothing, and ineligible records are skipped. Hooks never load the model and never embed. Only one server per workspace fills at a time.
 - **Fusion on page 1.** After `rankSequence` and `orderByTrust`, records the tiers lifted (phrase, window, now) keep their places at the head. The rest of the keyword order is fused by RRF (k = 60) with the vector order over **eligible** records only (the same `RECALL_ELIGIBLE_SQL` scope, applied before the scan). That way a retracted, forgotten, superseded or other-workstream record can neither be returned nor displace an eligible one. The fused order is capped at `SEQUENCE_CAP` and frozen into the continuation. A record ranked above its keyword position by meaning (or found only by meaning) gets a `why` (e.g. `meaning`). That needs a new `RANKED_BY` bit, and its continuation digit must be able to hold it. Recall without a query is unchanged.
 - **Keyword-only fallback with a notice.** No model, a model that fails to load, or vectors still missing all mean recall ranks by keywords exactly as today. It adds a one-line notice (e.g. "meaning search unavailable: …" or "meaning search covers 62% of memory"), and never errors or returns less than keyword search would.
 - **Forget and delete-data.** In its transaction, `forget` deletes every vector of the forgotten chunks that no remaining chunk shares (a vector can be inverted into a rough paraphrase, so it counts as content), and `secure_delete` zeroes the pages; a test reads the file. `delete-data` needs nothing new, because the vectors live in `memory.sqlite`.
-- **Status.** `debrief status` and `memory_status` show the model id and vector coverage (chunks with current-model vectors / chunks).
-- **Measure again in the PR body:** LongMemEval_S against 0.1.0 and `main`, the code-memory set, recall latency during a fill, `measure:hooks`, and the server's RSS with the model loaded and after unload.
+- **Status.** `debrief status` and `memory_status` show the model id and vector coverage (chunks with current-model vectors / chunks), per repository.
+- **Measure again in the PR body:** LongMemEval_S against 0.1.0 and `main`, the code-memory set, recall latency during a fill, `measure:hooks`, the server's RSS with the model loaded and after unload (against the +150 MB target), and a driven run of agents rephrasing their own queries on the misses.
 
 ## What would make this not worth it
 
 The strongest case against: LongMemEval_S is chat, most of its gain is in preference questions ("suggest something for my evening"), and those barely exist in coding memory. The code-memory set is only 30 questions, and they were written by the same person who chose the options, with paraphrases deliberately stripped of shared words. The price is real and permanent: about 38 MB per install, about 0.6 GB of resident memory per active session while the model is loaded, tens of minutes of background CPU to backfill a large history, and a model to maintain. The caller is itself a language model. It could expand its own query ("doctor OR physician OR Dr") at no install cost, and that alternative was **not measured**. If a driven run shows agents recovering these misses by rephrasing, meaning search buys little for coding work.
+
+The user decided on 2026-09-30 to build it anyway. The rephrasing run is reported in PR 2's body; it no longer decides whether PR 2 ships.
