@@ -3,6 +3,7 @@ import { DebriefError } from "../errors.js";
 import { eligibilityOf, IN_SCOPE_SQL, type Lifecycle, type RecordRow, requireInScopeRecord, type Taint } from "../retrieval/eligibility.js";
 import type { Attribution, LinkRelation, RecordKind } from "../schemas.js";
 import { type Db, openDatabase, prepared, requireTransaction, writeTransaction } from "../storage/database.js";
+import { forgetCallsReturning } from "../storage/call-log.js";
 import { appendRecord, type StoredApplicability } from "../storage/records.js";
 import { appendLedger, type LedgerEntry, type PrivateSessionEntry, readLedger } from "./ledger.js";
 import { applyPrivateSession, callArgumentsLeft, FORGOTTEN_CALL_META, isPrivateTranscript, privateSessionApplied, sameHostSession, type SessionIdentity, sessionIsPrivate, transcriptsOf } from "./private-session.js";
@@ -607,7 +608,8 @@ function effectsOnEvents(db: Db, entry: LedgerEntry, records: readonly string[])
 /**
  * Deletes what a forgotten record said: title, body, references, applicability and content
  * hash, its search chunks (and their FTS entries, then merged away), its links, the summary its
- * tool call left in import bookkeeping (and every Debrief call's that named it), and the reasons of its earlier lifecycle changes (they
+ * tool call left in import bookkeeping (and every Debrief call's that named it), what the calls
+ * that returned or wrote it asked (the call log), and the reasons of its earlier lifecycle changes (they
  * may quote it). Ids, kind, host, times and provenance ids stay as the tombstone.
  */
 function removePayload(db: Db, records: readonly string[], events: readonly { host: string; eventId: string }[]): void {
@@ -640,6 +642,7 @@ function removePayload(db: Db, records: readonly string[], events: readonly { ho
          AND c.disposition = 'tool_call' AND json_extract(c.meta, '$.callId') = json_extract(e.meta, '$.callId')
        WHERE e.disposition = 'echo' AND EXISTS (SELECT 1 FROM json_each(e.meta, '$.references') r WHERE r.value IN (SELECT value FROM json_each(?))))`,
   ).run(ids);
+  forgetCallsReturning(db, records);
 }
 
 // ── internals ──

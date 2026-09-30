@@ -153,6 +153,57 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     expect(JSON.stringify(stub.requests)).not.toContain("◪ debrief");
   }, 120_000);
 
+  test("D1 (#69): the call log holds the session start, a recall and the stop, named by Claude Code's session and, for the recall, its tool_use id in the transcript", async () => {
+    const sandbox = claudeSandbox();
+    const repo = initRepo({ branch: "fix/double-charge" });
+    const debriefHome = tempDir();
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: guardedNetworkLog() }));
+    expect(added.code, added.stderr).toBe(0);
+    const setup = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
+    onCleanup(() => {
+      setup.close();
+    });
+    setup.bootstrap({ importChoice: "current_project" });
+    const policy = setup.record({ kind: "decision", body: "Retry policy: never retry a 504 without an idempotency key.", attribution: "user_direction" }).recordId;
+    setup.close();
+
+    const stub = await startStubMessages({ calls: [{ tool: "memory_recall", input: { query: "retry policy" } }], reply: "Never without a key." });
+    const run = await claudeAsync(
+      claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" }),
+      repo,
+      "-p",
+      "What is our retry policy?",
+      "--output-format",
+      "json",
+      "--settings",
+      hooksSettings(debriefHome),
+    );
+    expect(run.code, run.stderr).toBe(0);
+    const sessionId = (JSON.parse(run.stdout) as { session_id: string }).session_id;
+    const traffic = sessionToolTraffic(sandbox, sessionId);
+    expect(traffic.uses).toEqual(["mcp__debrief__memory_recall"]);
+
+    const db = new Database(locateWorkspace(repo, debriefHome).dbPath, { readonly: true });
+    const rows = db.prepare("SELECT source, name, outcome, host_session_id AS hostSessionId, tool_use_id AS toolUseId, query, returned FROM call_log ORDER BY id").all() as {
+      source: string;
+      name: string;
+      outcome: string;
+      hostSessionId: string;
+      toolUseId: string | null;
+      query: string | null;
+      returned: string;
+    }[];
+    db.close();
+    expect(rows.map((row) => [row.source, row.name, row.outcome, row.hostSessionId])).toEqual([
+      ["hook", "session-start", "ok", sessionId],
+      ["tool", "memory_recall", "ok", sessionId],
+      ["hook", "stop", "ok", sessionId],
+    ]);
+    const [started, recall] = rows;
+    expect(recall).toMatchObject({ toolUseId: traffic.ids[0], query: "retry policy" });
+    for (const row of [started, recall]) expect((JSON.parse(row?.returned ?? "[]") as { id: string }[]).map((r) => r.id)).toContain(policy);
+  }, 120_000);
+
   test("the fifth turn of work with no checkpoint: the stop is blocked once, the model gets the reason, and the continued stop ends the turn", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });

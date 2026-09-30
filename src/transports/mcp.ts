@@ -11,7 +11,8 @@ import { resolveHome } from "../bootstrap/workspace-resolution.js";
 import { DebriefError } from "../errors.js";
 import type { HostReply, Memory, PreferenceQuestion } from "../memory.js";
 import { openMemory } from "../memory.js";
-import { OPERATION_SCHEMAS, type OperationName } from "../schemas.js";
+import { hostDescriptor } from "../hosts.js";
+import { LIMITS, OPERATION_SCHEMAS, type OperationName } from "../schemas.js";
 import { PROTOCOL } from "../protocol.js";
 
 /**
@@ -132,6 +133,13 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     return memory;
   };
 
+  /** The host's id for this tool call (Claude Code's `_meta`), which names the call in the host's transcript. */
+  const toolUseOf = (meta: Record<string, unknown> | undefined): { toolUseId?: string } => {
+    const key = hostDescriptor(options.host ?? server.getClientVersion()?.name)?.toolUseMetaKey ?? null;
+    const id = key === null ? undefined : meta?.[key];
+    return typeof id === "string" && id.length > 0 && id.length <= LIMITS.hostSessionIdChars ? { toolUseId: id } : {};
+  };
+
   // Approved history beyond what bootstrap imported continues here, a bounded step at a time
   // between requests (SQLite calls are synchronous, so each step briefly holds the event loop).
   // A failed step (e.g. storage_busy) is retried with backoff; a bug stops the loop until the next bootstrap.
@@ -225,9 +233,19 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     const name = request.params.name;
     if (!isOperation(name)) throw new McpError(ErrorCode.InvalidParams, `Unknown tool ${name}`);
     const spec = TOOLS[name];
+    const args = request.params.arguments ?? {};
+    const started = performance.now();
+    let served: Memory | undefined;
+    // One call-log row per call (never failing it): time until the call's own work is done, so a
+    // question put to the user is not counted; size of what the host gets back.
+    const note = (reply: string, ms: number, outcome: { result: unknown } | { error: string }): void => {
+      served?.noteCall({ source: "tool", name, args, ...outcome, ms, bytes: Buffer.byteLength(reply, "utf8"), ...toolUseOf(request.params._meta), ...(memorySession === undefined ? {} : { hostSessionId: memorySession }) });
+    };
     try {
       const memory = getMemory(request.params._meta);
-      const result = spec.run(memory, request.params.arguments ?? {}) as Record<string, unknown>;
+      served = memory;
+      const result = spec.run(memory, args) as Record<string, unknown>;
+      const ms = performance.now() - started;
       if (name === "memory_bootstrap" && (result["import"] as { state?: unknown } | undefined)?.state === "in_progress") {
         failures = 0;
         scheduleBackfill(BACKFILL_PAUSE_MS);
@@ -248,14 +266,20 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
         const preferences = result["preferences"] as { pending: PreferenceQuestion[] };
         preferences.pending = await ask(memory, preferences.pending);
       }
-      return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
+      const text = JSON.stringify(result);
+      note(text, ms, { result });
+      return { content: [{ type: "text", text }], structuredContent: result };
     } catch (error) {
+      const ms = performance.now() - started;
       if (!(error instanceof DebriefError)) {
         log(`internal error in ${request.params.name}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+        note("", ms, { error: "internal" });
         throw new McpError(ErrorCode.InternalError, "Debrief hit an internal error; the outcome is unknown, so recall before retrying a write.");
       }
       const envelope = error.toEnvelope();
-      return { isError: true, content: [{ type: "text", text: JSON.stringify(envelope) }], structuredContent: { ...envelope } };
+      const text = JSON.stringify(envelope);
+      note(text, ms, { error: error.code });
+      return { isError: true, content: [{ type: "text", text }], structuredContent: { ...envelope } };
     }
   });
 

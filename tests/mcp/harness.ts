@@ -16,9 +16,10 @@ export interface ToolOutcome {
 export interface ServerHandle {
   client: Client;
   pid: number;
-  call(name: string, args?: Record<string, unknown>): Promise<ToolOutcome>;
+  /** `meta` is sent as this call's `_meta`, instead of the server's (a host's per-call tool-use id). */
+  call(name: string, args?: Record<string, unknown>, meta?: Record<string, unknown>): Promise<ToolOutcome>;
   /** Result of a call that must succeed. */
-  ok<T = Record<string, unknown>>(name: string, args?: Record<string, unknown>): Promise<T>;
+  ok<T = Record<string, unknown>>(name: string, args?: Record<string, unknown>, meta?: Record<string, unknown>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -74,8 +75,8 @@ export async function spawnServer(options: {
   const pid = transport.pid;
   if (pid === null) throw new Error("server did not start");
 
-  const call = async (name: string, callArgs: Record<string, unknown> = {}): Promise<ToolOutcome> => {
-    const result = await client.callTool({ name, arguments: callArgs, ...(options.meta === undefined ? {} : { _meta: options.meta }) });
+  const call = async (name: string, callArgs: Record<string, unknown> = {}, meta = options.meta): Promise<ToolOutcome> => {
+    const result = await client.callTool({ name, arguments: callArgs, ...(meta === undefined ? {} : { _meta: meta }) });
     const content = result.content as { type: string; text?: string }[];
     return {
       isError: result.isError === true,
@@ -87,8 +88,8 @@ export async function spawnServer(options: {
     client,
     pid,
     call,
-    ok: async <T,>(name: string, callArgs: Record<string, unknown> = {}): Promise<T> => {
-      const outcome = await call(name, callArgs);
+    ok: async <T,>(name: string, callArgs: Record<string, unknown> = {}, meta?: Record<string, unknown>): Promise<T> => {
+      const outcome = await call(name, callArgs, meta ?? options.meta);
       if (outcome.isError) throw new Error(`${name} failed: ${outcome.text}`);
       return outcome.structured as T;
     },

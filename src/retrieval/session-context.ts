@@ -1,6 +1,7 @@
 import type { HookFailure } from "../import/hook-failures.js";
 import type { PreferenceBlock } from "../integrity/preferences.js";
 import type { BootstrapResult, ContextPack } from "../memory.js";
+import type { Returned } from "../storage/call-log.js";
 import type { SessionDigest } from "./digest.js";
 import { checkpointLabel, itemLabel } from "./label.js";
 
@@ -27,13 +28,19 @@ export interface SessionStart {
   notice: string;
   /** The error code when memory could not be loaded (the context then says so; also on record as a hook failure). */
   failure: string | null;
+  /** The records the context shows, in order (for the call log): what the caps cut is not among them. */
+  records: Shown[];
 }
+
+export type Shown = Omit<Returned, "position">;
 
 /** A sub-agent's start: context for its model only (the user sees the parent's session start). */
 export interface SubagentStart {
   context: string;
   /** The error code when memory could not be loaded (the context then says so; also on record as a hook failure). */
   failure: string | null;
+  /** The records the context shows, in order (for the call log). */
+  records: Shown[];
 }
 
 /**
@@ -89,7 +96,13 @@ export function renderSessionStart(boot: BootstrapResult, input: { protocol: str
   // Preferences are listed above; the pack carries them too.
   const listed = new Set([...preferences.items.map((p) => p.recordId), ...(digest?.recordIds ?? [])]);
   const { text, shown } = withItems(fixed.join("\n\n"), pack, listed, SESSION_CONTEXT_CHARS, CUT, input.now);
-  return { context: text, notice: notice(boot, shown, empty, input), failure: null };
+  const records = [
+    ...checkpointShown(pack),
+    ...(digest?.recordIds ?? []).map((id) => ({ id, kind: null, freshness: null })),
+    ...preferences.items.map((p) => ({ id: p.recordId, kind: "preference", freshness: null })),
+    ...shown,
+  ];
+  return { context: text, notice: notice(boot, shown.length, empty, input), failure: null, records };
 }
 
 /**
@@ -105,7 +118,13 @@ export function renderSubagentStart(input: { scope: BootstrapResult["scope"]; pa
   if (preferences.items.length > 0) fixed.push(preferencesSection(preferences));
   if (pack.empty && preferences.items.length === 0) fixed.push(input.newWorkspace ? "No memory for this repository yet." : "No memory for this workstream yet.");
   const listed = new Set(preferences.items.map((p) => p.recordId));
-  return { context: withItems(fixed.join("\n\n"), pack, listed, SUBAGENT_CONTEXT_CHARS, SUBAGENT_CUT, input.now).text, failure: null };
+  const { text, shown } = withItems(fixed.join("\n\n"), pack, listed, SUBAGENT_CONTEXT_CHARS, SUBAGENT_CUT, input.now);
+  const records = [...checkpointShown(pack), ...preferences.items.map((p) => ({ id: p.recordId, kind: "preference", freshness: null })), ...shown];
+  return { context: text, failure: null, records };
+}
+
+function checkpointShown(pack: ContextPack): Shown[] {
+  return pack.checkpoint === null ? [] : [{ id: pack.checkpoint.recordId, kind: "checkpoint", freshness: pack.checkpoint.freshness }];
 }
 
 function checkpointSection(checkpoint: NonNullable<ContextPack["checkpoint"]>, maxChars: number, now: Date): string {
@@ -119,9 +138,9 @@ function preferencesSection(preferences: PreferenceBlock): string {
 }
 
 /** Items fill what the fixed parts leave, up to `cap`; whatever does not fit is named, never silently dropped. */
-function withItems(fixed: string, pack: ContextPack, listed: ReadonlySet<string>, cap: number, cut: string, now: Date): { text: string; shown: number } {
+function withItems(fixed: string, pack: ContextPack, listed: ReadonlySet<string>, cap: number, cut: string, now: Date): { text: string; shown: Shown[] } {
   let text = fixed;
-  let shown = 0;
+  const shown: Shown[] = [];
   const items = pack.items.filter((item) => !listed.has(item.recordId));
   if (items.length > 0) {
     text += "\n\n## Recent memory";
@@ -131,10 +150,10 @@ function withItems(fixed: string, pack: ContextPack, listed: ReadonlySet<string>
       const line = `\n- [${itemLabel(item, now)}] ${body} (${item.recordId})${warning}`;
       if (text.length + line.length + TAIL_RESERVE > cap) break;
       text += line;
-      shown++;
+      shown.push({ id: item.recordId, kind: item.kind, freshness: item.freshness });
     }
   }
-  const hidden = items.length - shown + pack.omissions.reduce((n, o) => n + o.count, 0);
+  const hidden = items.length - shown.length + pack.omissions.reduce((n, o) => n + o.count, 0);
   if (hidden > 0) text += `\n${hidden} more not shown: use memory_recall.`;
   if (text.length > cap) text = text.slice(0, cap - cut.length) + cut;
   return { text, shown };
@@ -165,7 +184,7 @@ const SUBAGENT_CUT = "\n[cut by Debrief to fit sub-agent context: use memory_rec
 
 /** A sub-agent cannot tell the user; its parent's session start already did, and its report can. */
 export function unreadableSubagentStart(code: string): SubagentStart {
-  return { context: `Memory could not be loaded (${code}). Do not assume this project has none; say so in your report.`, failure: code };
+  return { context: `Memory could not be loaded (${code}). Do not assume this project has none; say so in your report.`, failure: code, records: [] };
 }
 
 export function unreadableSessionStart(code: string): SessionStart {
@@ -173,6 +192,7 @@ export function unreadableSessionStart(code: string): SessionStart {
     context: `Memory could not be loaded (${code}). Do not assume this project has none. Tell the user, and do not rely on memory tools this session unless memory_status reports storage healthy.`,
     notice: userNotice(`memory could not be loaded (${code})`),
     failure: code,
+    records: [],
   };
 }
 
