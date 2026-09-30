@@ -27,6 +27,7 @@ Placeholders, substituted by `tests/import/fixtures.ts`:
 | `2.1.281/large-and-sensitive.jsonl` | 2.1.281 | an oversized message and tool output (`{{LARGE_MESSAGE}}`, `{{LARGE_OUTPUT}}`, generated at render time), a `.env` read, credentials in assistant text |
 | `2.1.281/shell-reads.jsonl` | 2.1.281 | `Bash` commands that only print files (`cat`, `sed -n` with `echo` separators, `2>/dev/null \| head`) and ones that do not (a `cat >` heredoc write, a read chained with `grep`) |
 | `2.1.281/redis-claim.jsonl` | 2.1.281 | a user claim later corrected (#21), an assistant reply, and a compaction summary written after it |
+| `2.1.284/task-notification.jsonl` | 2.1.284 (key set observed on `claude -p` sessions against the test stub) | a background sub-agent's launch receipt and its `<task-notification>` prompt, whose `origin` gains `producer: "session-task"`, plus the `turnPosition` key 2.1.284 adds to prompts |
 | `2.1.183/basic.jsonl` | 2.1.183 (oldest observed) | the pre-2.1.200 key set (no `origin`, `slug`, `session_id` …) |
 | `unknown-version.jsonl` | 3.0.0 (not in the compatibility table) | a supported prefix followed by an unsupported version |
 

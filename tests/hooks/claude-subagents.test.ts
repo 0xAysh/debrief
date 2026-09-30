@@ -229,7 +229,7 @@ describe.skipIf(SKIP !== null)(`real Claude Code ${CLAUDE_PINNED_VERSION} around
     const agentId = String(records.find((r) => r.event === "SubagentStart")?.payload?.["agent_id"]);
     // In the transcript that prompt is marked as the host's, not a person's; the Agent result is only a launch receipt.
     const parent = lines(join(project, `${sessionId}.jsonl`)) as (Line & { toolUseResult?: Record<string, unknown> })[];
-    expect(parent.filter((l) => l.type === "user" && typeof l.message?.content === "string").map((l) => l.origin)).toEqual([undefined, { kind: "task-notification" }]);
+    expect(parent.filter((l) => l.type === "user" && typeof l.message?.content === "string").map((l) => l.origin)).toEqual([undefined, { kind: "task-notification", producer: "session-task" }]);
     expect(parent.find((l) => l.toolUseResult?.["agentId"] === agentId)?.toolUseResult).toMatchObject({ isAsync: true, status: "async_launched", agentId });
     const meta = JSON.parse(readFileSync(join(project, sessionId, "subagents", `agent-${agentId}.meta.json`), "utf8")) as Record<string, unknown>;
     expect(meta["requestShape"]).toBe("background");

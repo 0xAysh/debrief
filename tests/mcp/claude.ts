@@ -17,7 +17,7 @@ import { type StreamJson, streamJson } from "./stream-json.js";
  */
 
 /** The Claude Code release these tests pin (native install, 2026-09). */
-export const CLAUDE_PINNED_VERSION = "2.1.283";
+export const CLAUDE_PINNED_VERSION = "2.1.284";
 
 function onPath(name: string): string | undefined {
   return (process.env["PATH"] ?? "")

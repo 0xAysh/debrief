@@ -98,7 +98,7 @@ export interface HookOutput {
   allowTool(notice: string | null): string;
 }
 
-/** Pinned against Claude Code 2.1.283 (tests/hooks/claude-hooks.test.ts, tests/hooks/claude-subagents.test.ts). */
+/** Pinned against Claude Code 2.1.284 (tests/hooks/claude-hooks.test.ts, tests/hooks/claude-subagents.test.ts). */
 const CLAUDE_CODE_HOOKS: HookOutput = {
   sessionStart: (start) => JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: start.context }, systemMessage: start.notice }),
   // Only additionalContext reaches the sub-agent; plain stdout does not (tests/hooks/claude-subagents.test.ts).

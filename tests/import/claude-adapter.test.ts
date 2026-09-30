@@ -4,7 +4,7 @@ import { describe, expect, test } from "vitest";
 import { claudeCodeAdapter } from "../../src/import/adapters/claude.js";
 import type { NormalizedEvent, TranscriptFile } from "../../src/import/normalized-event.js";
 import { OPERATION_SCHEMAS } from "../../src/schemas.js";
-import { claudeConfigDir, claudeToolExchange, installTranscript } from "./fixtures.js";
+import { claudeConfigDir, claudeToolExchange, installTranscript, renderFixture } from "./fixtures.js";
 
 const CWD = "/work/store";
 
@@ -96,6 +96,28 @@ describe("Claude Code adapter", () => {
       ["result", "toolu_0402", "src/export.ts:88:  const pages = Math.fl", false],
       ["assistant", "The export uses Math.floor for the page count, so a partial last page is dropped; it should be Math.ceil."],
     ]);
+  });
+
+  test("2.1.284's task-notification prompt, whose origin also names a producer, is left out as injected context like 2.1.283's", () => {
+    const { chunk } = readAll("2.1.284/task-notification.jsonl");
+    expect(chunk.stop).toBeNull();
+    const events = chunk.events.map(shape);
+    expect(events).toEqual([
+      ["user", "Find where the retry budget is set; hand it to a helper."],
+      ["call", "Agent", "Agent: retry budget", "other", []],
+      ["assistant", "The helper is looking; I will report when it finishes."],
+      ["assistant", "The retry budget is three attempts, in retry.ts."],
+    ]);
+    expect(chunk.excluded).toEqual({ injected_context: 1, subagent_report: 1 });
+
+    // Only origin.kind is read: without the producer (2.1.283's shape) the events are the same.
+    const config = claudeConfigDir();
+    const withProducer = renderFixture("2.1.284/task-notification.jsonl", { cwd: CWD, sessionId: "s" });
+    expect(withProducer).toContain('"origin":{"kind":"task-notification","producer":"session-task"}');
+    const { path, sessionId } = installTranscript(config, "", { cwd: CWD, content: withProducer.replace(',"producer":"session-task"', "") });
+    const without = claudeCodeAdapter({ configDir: config }).read(fileOf(path, sessionId), 0, 1 << 20);
+    expect(without.events.map(shape)).toEqual(events);
+    expect(without.excluded).toEqual(chunk.excluded);
   });
 
   test("a rewind fork keeps both children, and a sidechain gets its own branch", () => {
