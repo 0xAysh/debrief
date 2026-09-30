@@ -91,6 +91,8 @@ Claude Code shows them to you; they are never sent to the model.
 |---|---|
 | `debrief status` | Is it working here? Checks the plugin, the MCP handshake, each hook's last run, the last capture and the import choice; exit 1 on a problem. **The first thing to run when something seems off.** |
 | `debrief import [--set all\|current_project\|none]` | Shows the import question, or records your answer and imports to completion. |
+| `debrief report [--since 7d] [--all]` | Did Debrief help? Searches per session, which returned records the agent went on to use, which turned out wrong, how fresh they were, what it cost. This repository by default; `--all` for every one. Offline, from this machine's data only. It never estimates tokens "saved". |
+| `debrief report --review` | Rate up to 10 random searches from the window: good, partial or missed something, with an optional note. The next report shows your ratings. |
 | `debrief delete-data [--yes]` | Deletes all stored memory after you type `delete` (see below). |
 
 The `debrief diag …` commands and `debrief mcp` are for diagnostics and for the host: see [docs/development.md](docs/development.md#commands).
