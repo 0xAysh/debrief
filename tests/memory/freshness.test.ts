@@ -287,7 +287,7 @@ describe("local code freshness", () => {
     expect(recallItem(memory, recordId).externalRefs.map((ref) => ref.freshness)).toEqual(["unknown", "unknown"]);
   });
 
-  test("files a transcript read or edited were never fingerprinted, so they are unknown and must be read live", () => {
+  test("files a transcript read or edited are never hashed from disk: a read the transcript cannot rebuild is unknown and must be read live", () => {
     const repo = repoWithGateway();
     const config = claudeConfigDir();
     installTranscript(config, "2.1.281/basic.jsonl", { cwd: repo });
@@ -300,7 +300,8 @@ describe("local code freshness", () => {
     const read = memory.recall({ query: "gateway.ts", maxTokens: 8_000 }).items.find((item) => item.title?.startsWith("Read"));
     expect(read).toMatchObject({ freshness: "unknown", externalRefs: [{ kind: "code", path: "src/gateway.ts", freshness: "unknown", reason: "transcript_reference" }] });
     expect(read?.warning).toMatch(/read the current file/i);
-    // Import never hashed the file: that would certify today's bytes, not what the transcript saw.
+    // Import never hashed the file: that would certify today's bytes, not what the transcript saw. This
+    // Read carries no window (toolUseResult.file line counts), so its text cannot be rebuilt (see tests/import/read-freshness.test.ts).
     expect(read?.externalRefs[0]).not.toHaveProperty("commit");
     expect(read?.externalRefs[0]).not.toHaveProperty("observedAt");
   });

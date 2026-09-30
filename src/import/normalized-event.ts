@@ -58,6 +58,8 @@ export type NormalizedEvent = EventOrigin &
         paths: string[];
         urls: string[];
         toolKind: ToolKind;
+        /** Set when the call prints one file's text in a form Debrief can rebuild exactly (see `read-fingerprint.ts`). */
+        read?: FileRead;
       }
     | {
         type: "tool_result";
@@ -65,8 +67,34 @@ export type NormalizedEvent = EventOrigin &
         /** The textual output; binary parts were excluded by the adapter. */
         text: string;
         isError: boolean;
+        /** What the host recorded about the output beside its text (never its content); absent when it recorded nothing usable. */
+        output?: OutputFacts;
       }
   );
+
+/** One file a tool call prints, and how its output shows the file's lines. */
+export interface FileRead {
+  /** Absolute path. */
+  path: string;
+  /**
+   * `read_tool`: the host's read tool (each line prefixed `N\t`, the window in the result's
+   * {@link OutputFacts}) · `plain`: the lines as printed · `numbered`: each line prefixed by
+   * `nl -ba` / `cat -n` (`N\t`, right-aligned in 6 columns).
+   */
+  format: "read_tool" | "plain" | "numbered";
+  /** The 1-based lines the command asked for (`sed -n 'a,bp'`, `head -n N` → [1, N]); absent: from the first line to the end. */
+  lines?: [number, number];
+  /** The host drops leading blank lines and trims the end of shell output (Claude Code); otherwise the output is byte-exact (Codex). */
+  trimmed: boolean;
+}
+
+/** What the host recorded about a tool's output, from metadata only. */
+export interface OutputFacts {
+  /** False when the model saw less or other than the command's output: truncated, persisted to a file, an image, interrupted, or mixed with stderr or a host note. */
+  intact: boolean;
+  /** A read tool's window: the first line shown, how many lines were shown, and how many the file has. */
+  window?: { startLine: number; numLines: number; totalLines: number };
+}
 
 /** Why an adapter left an entry (or part of one) out. Counted per transcript and reported as gaps. */
 export const EXCLUSION_REASONS = [

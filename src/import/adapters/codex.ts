@@ -7,6 +7,7 @@ import type {
   CompatibilityRow,
   EventOrigin,
   ExclusionReason,
+  FileRead,
   NormalizedEvent,
   ToolKind,
   TranscriptAdapter,
@@ -78,7 +79,9 @@ const CONTEXT_SCAN_BYTES = [64 << 10, 256 << 10, 1 << 20];
 /** Debrief's own tools (every operation it offers), under whatever name the user gave the MCP server (Codex may append `_<12 hex>` on a name collision). */
 const DEBRIEF_TOOL = new RegExp(`^mcp__.+__(${Object.keys(OPERATION_SCHEMAS).join("|")})(?:_[0-9a-f]{12})?$`);
 /** Codex's framing of a tool output: exec (`Process exited with code N`), apply_patch (`Exit code: N`) and MCP (`Wall time`). */
-const OUTPUT_HEADER = /^(?:Chunk ID: [^\n]*\n)?(?:Exit code: (-?\d+)\n)?Wall time: [^\n]*\n(?:Process exited with code (-?\d+)\n|Process running with session ID [^\n]*\n)?(?:Original token count: [^\n]*\n)?Output:\n/;
+const OUTPUT_HEADER = /^(?:Chunk ID: [^\n]*\n)?(?:Exit code: (-?\d+)\n)?Wall time: [^\n]*\n(?:Process exited with code (-?\d+)\n|(Process running with session ID [^\n]*\n))?(?:Original token count: [^\n]*\n)?Output:\n/;
+/** Where Codex cut a long output down to its token budget (every output carries `Original token count`, so only this marks a cut). */
+const TRUNCATED = /…\d+ tokens truncated…/;
 /** Codex's local-compaction summary starts with this sentence (`prompts/templates/compact/summary_prefix.md`), then a newline. */
 const SUMMARY_PREFIX = "Another language model started to solve this problem";
 /** Blocks Codex injects into user turns (`core/src/context/contextual_user_message.rs`); counted, never imported. */
@@ -517,7 +520,10 @@ function responseItem(p: Entry, ctx: LineContext, line: { start: number; end: nu
       // Codex does not persist a success flag; the exit code in its own output header is the only error signal.
       const header = OUTPUT_HEADER.exec(text);
       const exitCode = header?.[1] ?? header?.[2];
-      out.push({ ...at(0), type: "tool_result", callId, text: header === null ? text : text.slice(header[0].length), isError: exitCode !== undefined && exitCode !== "0" });
+      const body = header === null ? text : text.slice(header[0].length);
+      // An exec output is what the command printed only when it finished and was not cut; unframed output is not known to be whole.
+      const facts = header === null || typeof output !== "string" ? {} : { output: { intact: header[2] !== undefined && header[3] === undefined && !TRUNCATED.test(body) } };
+      out.push({ ...at(0), type: "tool_result", callId, text: body, isError: exitCode !== undefined && exitCode !== "0", ...facts });
       return;
     }
     case "image_generation_call":
@@ -537,7 +543,7 @@ function isContextual(content: unknown): boolean {
 }
 
 /** One-line description, touched paths and semantic kind of a call. `input` is null when the model's arguments were not JSON. */
-function describeCall(tool: string, input: unknown, raw: unknown, cwd: string): { summary: string; paths: string[]; urls: string[]; toolKind: ToolKind; inputDigest?: string } {
+function describeCall(tool: string, input: unknown, raw: unknown, cwd: string): { summary: string; paths: string[]; urls: string[]; toolKind: ToolKind; inputDigest?: string; read?: FileRead } {
   const debrief = DEBRIEF_TOOL.exec(tool);
   if (debrief !== null) return { summary: `${debrief[1] ?? tool} ${JSON.stringify(input ?? {})}`, paths: [], urls: [], toolKind: "debrief" };
   const args = asObject(input);
@@ -566,14 +572,14 @@ function describeCall(tool: string, input: unknown, raw: unknown, cwd: string): 
     // A command that only prints files inside the turn's cwd is a file read (see shell-reads.ts);
     // its paths resolve against the call's own workdir, which Codex runs it in, else that cwd.
     case "exec_command":
-      return { summary: `$ ${str("cmd") ?? ""}`, urls: [], ...shellCall(str("cmd"), at(str("workdir") ?? cwd), cwd) };
+      return { summary: `$ ${str("cmd") ?? ""}`, urls: [], ...shellCall(str("cmd"), at(str("workdir") ?? cwd), cwd, false) };
     case "shell": {
       const command = args["command"];
       const argv = Array.isArray(command) ? (command as unknown[]) : null;
-      return { summary: `$ ${argv === null ? "" : argv.filter((c) => typeof c === "string").join(" ")}`, urls: [], ...shellCall(argv, at(str("workdir") ?? cwd), cwd) };
+      return { summary: `$ ${argv === null ? "" : argv.filter((c) => typeof c === "string").join(" ")}`, urls: [], ...shellCall(argv, at(str("workdir") ?? cwd), cwd, false) };
     }
     case "shell_command":
-      return { summary: `$ ${str("command") ?? ""}`, urls: [], ...shellCall(str("command"), at(str("workdir") ?? cwd), cwd) };
+      return { summary: `$ ${str("command") ?? ""}`, urls: [], ...shellCall(str("command"), at(str("workdir") ?? cwd), cwd, false) };
     case "write_stdin": {
       // What was typed into a running process can be a password; only the session is described.
       const session = args["session_id"];

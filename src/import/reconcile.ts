@@ -9,12 +9,14 @@ import { isPrivateTranscript, linkTranscriptSessions } from "../integrity/privat
 import { quarantineLateSummary, suppressedEvent } from "../integrity/taints.js";
 import { restatable, restates } from "../integrity/restatement.js";
 import { IN_SCOPE_SQL } from "../retrieval/eligibility.js";
-import { type ExternalRef, IMPORT_CHOICES, type ImportChoice } from "../schemas.js";
+import type { StoredRef } from "../retrieval/freshness.js";
+import { IMPORT_CHOICES, type ImportChoice } from "../schemas.js";
 import { type Db, prepared, toStorageError, writeTransaction } from "../storage/database.js";
 import { appendRecord } from "../storage/records.js";
 import { approves, type Consent, readConsent, writeConsent } from "./consent.js";
-import type { CompatibilityRow, ExclusionReason, NormalizedEvent, ToolKind, TranscriptAdapter, TranscriptFile } from "./normalized-event.js";
+import type { CompatibilityRow, ExclusionReason, FileRead, NormalizedEvent, ToolKind, TranscriptAdapter, TranscriptFile } from "./normalized-event.js";
 import { boundPassage, PASSAGE_LIMITS, redactSecrets, removePrivate, touchesSensitivePath } from "./privacy.js";
+import { readFingerprint } from "./read-fingerprint.js";
 
 /**
  * Transcript import: approved host history → attributed evidence in the right workspace.
@@ -200,6 +202,12 @@ interface CallMeta {
   /** URL origins only: credentials, queries, fragments and remote paths are never canonical. */
   urls: string[];
   sensitive: boolean;
+  /**
+   * The one file the call prints, as {@link FileRead} with a workspace-relative path (one of
+   * `paths`), so its result can be fingerprinted in a later batch too. Absent for every other call,
+   * and for calls imported before reads were fingerprinted: their results stay unfingerprinted.
+   */
+  read?: FileRead;
 }
 
 class Contended extends Error {}
@@ -932,7 +940,7 @@ interface Draft {
   title: string | null;
   body: string;
   attribution: "user_direction" | "direct_observation" | "agent_inference";
-  externalRefs: ExternalRef[];
+  externalRefs: StoredRef[];
 }
 
 /**
@@ -968,8 +976,13 @@ function toolResultRecord(batch: Batch, call: CallMeta | null, event: Extract<No
   } else {
     output = event.text.trim() === "" ? "(no text output)" : passage(batch, event.text, PASSAGE_LIMITS.toolOutputBytes);
   }
-  const refs: ExternalRef[] = [];
-  for (const path of call?.paths ?? []) refs.push({ kind: "code", locator: path, path });
+  // A file read's reference carries the fingerprint of the text it showed (see read-fingerprint.ts): only hashes.
+  const read = call?.retention === "reference_only" && !call.sensitive && !event.isError && call.read !== undefined ? call.read : null;
+  const fingerprint = read === null ? null : readFingerprint(read, event.text, event.output);
+  const refs: StoredRef[] = [];
+  for (const path of call?.paths ?? []) {
+    refs.push({ kind: "code", locator: path, path, ...(fingerprint !== null && path === read?.path ? { observedAt: event.observedAt, ...fingerprint } : {}) });
+  }
   for (const url of call?.urls ?? []) refs.push({ kind: "url", locator: url });
   return { kind: "evidence", title, body: `${summary}\n\n${output}`, attribution: "direct_observation", externalRefs: refs.slice(0, 10) };
 }
@@ -1108,7 +1121,10 @@ function safeCallMeta(batch: Batch, event: Extract<NormalizedEvent, { type: "too
   else if (event.urls.length > 0) summary = `${tool} ${urls[0] ?? "[external URL omitted]"}`;
   else if (event.paths.length > 0) summary = `${tool} ${paths[0] ?? "[external path omitted]"}`;
   else summary = boundPassage(redactedSummary.text.trim(), PASSAGE_LIMITS.callSummaryBytes).text;
-  return { callId: event.callId, tool, summary, retention: retentionFor(event.toolKind), paths, urls, sensitive: sensitivePath };
+  // The read's path, as it is stored in `paths` (unredacted and in the worktree, or not at all).
+  const readPath = event.read === undefined || sensitiveArguments || !isWithin(event.read.path, batch.worktree) ? null : relative(batch.worktree, event.read.path);
+  const read = event.read !== undefined && readPath !== null && paths.includes(readPath) ? { read: { ...event.read, path: readPath } } : {};
+  return { callId: event.callId, tool, summary, retention: retentionFor(event.toolKind), paths, urls, sensitive: sensitivePath, ...read };
 }
 
 function safeUrlOrigin(raw: string): string | null {
@@ -1125,7 +1141,16 @@ function parseCallMeta(json: string): CallMeta {
   const stored = JSON.parse(json) as Omit<CallMeta, "retention" | "sensitive"> & { retention?: OutputRetention; output?: OutputRetention; sensitive?: boolean };
   const retention = stored.retention ?? stored.output;
   if (retention === undefined) throw new Error("Imported tool-call metadata has no retention classification");
-  return { callId: stored.callId, tool: stored.tool, summary: stored.summary, retention, paths: stored.paths, urls: stored.urls, sensitive: stored.sensitive ?? touchesSensitivePath([stored.summary, ...stored.paths]) };
+  return {
+    callId: stored.callId,
+    tool: stored.tool,
+    summary: stored.summary,
+    retention,
+    paths: stored.paths,
+    urls: stored.urls,
+    sensitive: stored.sensitive ?? touchesSensitivePath([stored.summary, ...stored.paths]),
+    ...(stored.read === undefined ? {} : { read: stored.read }),
+  };
 }
 
 /** Hash of what an event says (not where it sits), so a moved line is a replay and an edited one a version. */

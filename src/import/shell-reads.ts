@@ -1,5 +1,5 @@
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import type { ToolKind } from "./normalized-event.js";
+import type { FileRead, ToolKind } from "./normalized-event.js";
 
 /**
  * Recognises shell commands that only print files (`sed -n '40,87p' src/a.ts`, `nl -ba a.ts |
@@ -206,13 +206,95 @@ export function shellFileReads(command: string | readonly string[], cwd: string,
 /**
  * Paths and kind of a shell tool call run in `cwd`: a pure read of files inside `root` (the
  * event's working directory) is `artifact_access` (its output is stored as a reference only,
- * like the host's read tool); anything else is `other`.
+ * like the host's read tool); anything else is `other`. A read of one file whose output
+ * Debrief can rebuild (see {@link shellRead}) also names it as `read`; `trimmed` says whether
+ * the host trims shell output (Claude Code) or delivers it byte-exact (Codex).
  */
-export function shellCall(command: string | readonly unknown[] | null, cwd: string, root: string): { paths: string[]; toolKind: ToolKind } {
-  let reads: string[] | null = null;
-  if (typeof command === "string") reads = shellFileReads(command, cwd, root);
-  else if (command !== null && command.every((c): c is string => typeof c === "string")) reads = shellFileReads(command, cwd, root);
-  return reads === null ? { paths: [], toolKind: "other" } : { paths: reads, toolKind: "artifact_access" };
+export function shellCall(command: string | readonly unknown[] | null, cwd: string, root: string, trimmed: boolean): { paths: string[]; toolKind: ToolKind; read?: FileRead } {
+  let argv: string | readonly string[] | null = null;
+  if (typeof command === "string") argv = command;
+  else if (command !== null && command.every((c): c is string => typeof c === "string")) argv = command;
+  const reads = argv === null ? null : shellFileReads(argv, cwd, root);
+  if (argv === null || reads === null) return { paths: [], toolKind: "other" };
+  const read = shellRead(argv, cwd, root);
+  return { paths: reads, toolKind: "artifact_access", ...(read === null ? {} : { read: { ...read, trimmed } }) };
+}
+
+/**
+ * The one file a pure read prints, when its output is that file's lines in an order Debrief can
+ * rebuild: `cat F`, `cat -n F`, `nl -ba F` (the whole file, plain or numbered), `sed -n 'a,bp' F`
+ * or `head -n N F` (a range), or one of the whole-file forms piped into `sed -n 'a,bp'` or
+ * `head -n N`, optionally after `cd`. Anything else is null, the fingerprint's fail-closed
+ * default: several files, `echo` separators, chained reads, other options, `tail`, and sed
+ * addresses that are not two line numbers (regex, step, `$`, `+N`).
+ */
+export function shellRead(command: string | readonly string[], cwd: string, root: string, depth = 0): Omit<FileRead, "trimmed"> | null {
+  if (depth > 2) return null;
+  const tokens = typeof command === "string" ? tokenize(command) : command.map((word) => ({ word, glob: false }));
+  if (tokens === null || tokens.length === 0) return null;
+  const first = tokens[0];
+  if (first !== undefined && "word" in first && SHELLS.has(basename(first.word))) {
+    const script = unwrapShell(tokens);
+    return script === null ? null : shellRead(script, cwd, root, depth + 1);
+  }
+  const segments = split(tokens);
+  if (segments === null) return null;
+  let base = cwd;
+  let read: Omit<FileRead, "trimmed"> | null = null;
+  for (const pipeline of segments) {
+    const words = pipeline.map((command) => (command.some((w) => w.glob) ? null : command.map((w) => w.word)));
+    const [head, filter, ...rest] = words;
+    if (head === undefined || head === null || filter === null || rest.length > 0) return null;
+    if (head[0] === "cd" && head.length === 2 && filter === undefined) {
+      base = resolve(base, head[1] ?? "");
+      continue;
+    }
+    // One read per command: a second (or anything after it) is a chain.
+    if (read !== null) return null;
+    const printed = printedFile(head);
+    if (printed === null || printed.path === "-") return null;
+    const path = isAbsolute(printed.path) ? printed.path : resolve(base, printed.path);
+    if (!within(path, root)) return null;
+    let lines = printed.lines;
+    if (filter !== undefined) {
+      // A filter narrows a whole file; narrowing a range again would need both to line up.
+      if (lines !== undefined) return null;
+      lines = sedRange(filter, 0) ?? headRange(filter, 0) ?? undefined;
+      if (lines === undefined) return null;
+    }
+    read = { path, format: printed.format, ...(lines === undefined ? {} : { lines }) };
+  }
+  return read;
+}
+
+/** The file one reader invocation prints, and the lines when it prints a range. */
+function printedFile(words: readonly string[]): { path: string; format: FileRead["format"]; lines?: [number, number] } | null {
+  const [name, ...args] = words;
+  const last = args.at(-1);
+  if (last === undefined) return null;
+  const shape = args.slice(0, -1).join(" ");
+  if (name === "cat" && shape === "") return { path: last, format: "plain" };
+  if ((name === "cat" && shape === "-n") || (name === "nl" && (shape === "-ba" || shape === "-b a"))) return { path: last, format: "numbered" };
+  const lines = sedRange(words, 1) ?? headRange(words, 1);
+  return lines === null ? null : { path: last, format: "plain", lines };
+}
+
+/** `sed -n 'a,bp'` / `sed -n 'ap'`, with `operands` words after the script: the lines it prints. */
+function sedRange(words: readonly string[], operands: number): [number, number] | null {
+  if (words.length !== 3 + operands || words[0] !== "sed" || words[1] !== "-n") return null;
+  const match = /^\s*(\d+)\s*(?:,\s*(\d+)\s*)?p\s*$/.exec(words[2] ?? "");
+  const a = Number(match?.[1]);
+  const b = match?.[2] === undefined ? a : Number(match[2]);
+  return match === null || a < 1 || b < a ? null : [a, b];
+}
+
+/** `head -n N` / `head -nN` / `head -N`, with `operands` words after it: lines 1..N. */
+function headRange(words: readonly string[], operands: number): [number, number] | null {
+  if (words[0] !== "head") return null;
+  const options = words.slice(1, words.length - operands);
+  const count = options.length === 2 && options[0] === "-n" ? options[1] : options.length === 1 ? /^-n?(\d+)$/.exec(options[0] ?? "")?.[1] : undefined;
+  const n = count !== undefined && /^\d+$/.test(count) ? Number(count) : 0;
+  return n >= 1 ? [1, n] : null;
 }
 
 /** Whether `path` is `root` or below it (both absolute, compared lexically: no filesystem access). */
