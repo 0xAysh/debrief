@@ -17,7 +17,7 @@ import {
   startStubMessages,
 } from "./claude.js";
 
-const SKIP = hostGate("claude code connection tests", claudeSkipReason());
+const SKIP = hostGate("claude code connection tests", "claude", claudeSkipReason());
 
 const TOOLS = ["memory_bootstrap", "memory_checkpoint", "memory_manage", "memory_read", "memory_recall", "memory_record", "memory_status"];
 

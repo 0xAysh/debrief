@@ -9,7 +9,7 @@ import { CODEX_PINNED_VERSION, codex, CodexAppServer, codexEnv, codexSkipReason,
 import { spawnServer } from "../mcp/harness.js";
 import { writeArtifact } from "./artifacts.js";
 
-const SKIP = hostGate("real-Codex handoff test", codexSkipReason());
+const SKIP = hostGate("real-Codex handoff test", "codex", codexSkipReason());
 
 const DECISION = "Charge with a server-side idempotency key per order; remove client retries.";
 const RETRY_FACT = "src/retry.ts: backoff() retries every 5xx, including 504, with no idempotency key.";

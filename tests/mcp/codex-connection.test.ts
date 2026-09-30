@@ -8,7 +8,7 @@ import { hostGate } from "../host-skips.js";
 import { CLI, NO_NETWORK } from "./harness.js";
 import { CODEX_PINNED_VERSION, codex, codexAsync, CodexAppServer, codexEnv, codexSkipReason, debriefAddArgs, startStubResponses, useStubProvider } from "./codex.js";
 
-const SKIP = hostGate("codex connection tests", codexSkipReason());
+const SKIP = hostGate("codex connection tests", "codex", codexSkipReason());
 
 const TOOLS = ["memory_bootstrap", "memory_checkpoint", "memory_manage", "memory_read", "memory_recall", "memory_record", "memory_status"];
 

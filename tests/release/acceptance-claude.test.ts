@@ -18,7 +18,7 @@ import { NO_NETWORK } from "../mcp/harness.js";
  * session", compaction and resume behave.
  */
 
-const SKIP = hostGate("claude code acceptance test", claudeSkipReason());
+const SKIP = hostGate("claude code acceptance test", "claude", claudeSkipReason());
 
 const networkLogs: string[] = [];
 

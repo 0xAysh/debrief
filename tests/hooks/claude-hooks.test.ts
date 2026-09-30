@@ -14,7 +14,7 @@ import { type HookEvent, type HookOutput, type HookRecord, type HookRegistration
  * sanitized payloads go to the git-ignored `__artifacts__/` as evidence for the support matrix.
  */
 
-const SKIP = hostGate("claude code hook tests", claudeSkipReason());
+const SKIP = hostGate("claude code hook tests", "claude", claudeSkipReason());
 
 const ARTIFACT = join(import.meta.dirname, "__artifacts__", `claude-${CLAUDE_PINNED_VERSION}-payloads.json`);
 const evidence: Record<string, unknown> = { claudeCode: CLAUDE_PINNED_VERSION, mode: "claude -p", registration: "--settings <file> with a top-level hooks object" };
