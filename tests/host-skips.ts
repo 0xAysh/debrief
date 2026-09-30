@@ -28,11 +28,16 @@ export interface HostSkip {
   reason: string;
 }
 
-/** The hosts a DEBRIEF_REQUIRE_HOSTS value requires. */
+const HOSTS: readonly string[] = ["claude", "codex"] satisfies Host[];
+
+/** The hosts a DEBRIEF_REQUIRE_HOSTS value requires. A value naming no known host throws: a typo must not quietly require nothing. */
 function requiredHosts(value: string | undefined): string[] {
   if (value === undefined || value === "") return [];
   if (value === "1") return ["claude"];
-  return value.split(",").map((host) => host.trim());
+  const hosts = value.split(",").map((host) => host.trim());
+  const unknown = hosts.filter((host) => !HOSTS.includes(host));
+  if (unknown.length > 0) throw new Error(`DEBRIEF_REQUIRE_HOSTS=${value} names no host ${unknown.join(", ")}: use 1 (Claude Code) or a list of ${HOSTS.join(", ")}`);
+  return hosts;
 }
 
 /**
@@ -42,9 +47,10 @@ function requiredHosts(value: string | undefined): string[] {
  * the tests of this function.
  */
 export function hostGate(suite: string, host: Host, reason: string | null, options: { env?: NodeJS.ProcessEnv; dir?: string } = {}): string | null {
-  if (reason === null) return null;
   const required = (options.env ?? process.env)["DEBRIEF_REQUIRE_HOSTS"];
-  if (requiredHosts(required).includes(host)) throw new Error(`${suite} cannot run: ${reason} (DEBRIEF_REQUIRE_HOSTS=${required} makes this a failure, not a skip)`);
+  const hosts = requiredHosts(required);
+  if (reason === null) return null;
+  if (hosts.includes(host)) throw new Error(`${suite} cannot run: ${reason} (DEBRIEF_REQUIRE_HOSTS=${required} makes this a failure, not a skip)`);
   process.stderr.write(`${suite} skipped: ${reason}\n`);
   // Outside a vitest run with the global setup (a bare `vitest --config …`), there is nowhere to record.
   const dir = options.dir ?? inject("hostSkipDir");

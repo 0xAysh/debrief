@@ -103,6 +103,11 @@ describe("host suites that cannot run", () => {
     expect(required.output).toContain("(DEBRIEF_REQUIRE_HOSTS=claude,codex makes this a failure, not a skip)");
     expect(required.output).toMatch(/Test Files {2}2 failed/);
     expect(required.output).not.toContain("HOST SUITE");
+
+    // A value that names no host fails every host suite, the ones whose host is there included, instead of requiring nothing.
+    for (const value of ["true", "claude,codx"]) {
+      expect(() => hostGate("example suite (R2)", "claude", null, { env: { DEBRIEF_REQUIRE_HOSTS: value } })).toThrow(`DEBRIEF_REQUIRE_HOSTS=${value} names no host`);
+    }
   });
 
   test("V4: a run that skipped host suites ends with a banner naming each one and why", () => {
