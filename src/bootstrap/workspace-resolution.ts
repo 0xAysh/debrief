@@ -272,6 +272,28 @@ function commitsExist(worktree: string, shas: readonly string[]): Set<string> {
   return found;
 }
 
+/** A workspace the registry knows: where its memory lives and the repository keys consent may name. */
+export interface RegisteredWorkspace {
+  workspaceId: string;
+  label: string;
+  /** The current key first, then former ones (consent follows a moved repository). */
+  repositoryKeys: string[];
+  dbPath: string;
+}
+
+/** Every workspace registered in `home`, by label. Read only; a corrupt registry fails closed as in {@link locateWorkspace}. */
+export function registeredWorkspaces(home: string): RegisteredWorkspace[] {
+  let registry: Registry;
+  try {
+    registry = readRegistry(join(home, "registry.json"));
+  } catch (error) {
+    throw toStorageError(error, home);
+  }
+  return Object.entries(registry.repositories)
+    .map(([key, entry]) => ({ workspaceId: entry.workspaceId, label: entry.label, repositoryKeys: [key, ...(entry.formerKeys ?? [])], dbPath: join(home, "workspaces", entry.workspaceId, "memory.sqlite") }))
+    .sort((a, b) => a.label.localeCompare(b.label) || a.workspaceId.localeCompare(b.workspaceId));
+}
+
 function readRegistry(path: string): Registry {
   if (!existsSync(path)) return { version: 1, repositories: {} };
   let parsed: unknown;

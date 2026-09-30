@@ -522,12 +522,7 @@ const REPLAYED = "Re-applied from the lifecycle ledger: this database was older 
  * missing: the check runs without the write lock, and only a gap takes it.
  */
 export function replayLedger(db: Db): number {
-  const missing = (): (LedgerEntry | PrivateSessionEntry)[] => {
-    const entries = readLedger(db);
-    if (entries.length === 0) return [];
-    const applied = new Set((prepared(db, "SELECT ledger_id FROM lifecycle_events").all() as { ledger_id: string }[]).map((row) => row.ledger_id));
-    return entries.filter((entry) => ("kind" in entry ? !privateSessionApplied(db, entry) : !applied.has(entry.id)));
-  };
+  const missing = (): (LedgerEntry | PrivateSessionEntry)[] => unappliedLedgerEntries(db);
   if (missing().length === 0) return 0;
   // Re-read under the write lock: a change in flight in another process appends its entry
   // inside its own transaction, so it is either committed by now or was never committed.
@@ -539,6 +534,14 @@ export function replayLedger(db: Db): number {
     }
     return entries.length;
   });
+}
+
+/** Ledger entries this database lacks: a restored older copy. Reads only, so a read-only connection can ask. */
+export function unappliedLedgerEntries(db: Db): (LedgerEntry | PrivateSessionEntry)[] {
+  const entries = readLedger(db);
+  if (entries.length === 0) return [];
+  const applied = new Set((prepared(db, "SELECT ledger_id FROM lifecycle_events").all() as { ledger_id: string }[]).map((row) => row.ledger_id));
+  return entries.filter((entry) => ("kind" in entry ? !privateSessionApplied(db, entry) : !applied.has(entry.id)));
 }
 
 function replayEntry(db: Db, entry: LedgerEntry): void {

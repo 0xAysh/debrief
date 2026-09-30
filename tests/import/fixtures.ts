@@ -249,7 +249,9 @@ export function installCodexRollout(
 /** One step of a hand-written session: a tool call with its result as the model saw it, or an assistant reply. */
 export type SessionStep =
   | { tool: string; input: object; result: string | object[]; toolUseResult?: object; isError?: boolean }
-  | { say: string };
+  | { say: string }
+  /** Moves every later step `ms` further on. */
+  | { waitMs: number };
 export type ToolStep = Extract<SessionStep, { tool: string }>;
 
 /**
@@ -262,7 +264,8 @@ export function claudeSession(options: { cwd: string; sessionId: string; at?: Da
   const common = { isSidechain: false, userType: "external", entrypoint: "cli", cwd: options.cwd, sessionId: options.sessionId, version: "2.1.283", gitBranch: "main" };
   let n = 0;
   const uuid = () => `00000000-0000-4000-8000-${(++n).toString().padStart(12, "0")}`;
-  const time = (step: number, ms = 0) => new Date(at.getTime() + step * 1_000 + ms).toISOString();
+  let waited = 0;
+  const time = (step: number, ms = 0) => new Date(at.getTime() + waited + step * 1_000 + ms).toISOString();
   const lines: object[] = [];
   let parent = uuid();
   lines.push({ ...common, parentUuid: null, promptId: "p-1", type: "user", message: { role: "user", content: "Look at the gateway." }, uuid: parent, timestamp: time(0), permissionMode: "default", origin: { kind: "human" }, promptSource: "typed" });
@@ -272,6 +275,10 @@ export function claudeSession(options: { cwd: string; sessionId: string; at?: Da
     parent = id;
   };
   options.steps.forEach((step, index) => {
+    if ("waitMs" in step) {
+      waited += step.waitMs;
+      return;
+    }
     if ("say" in step) {
       assistant([{ type: "text", text: step.say }], index + 1);
       return;
