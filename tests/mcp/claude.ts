@@ -290,24 +290,28 @@ export function firstUserText(request: Record<string, unknown>): string {
 }
 
 /** Tool calls and results a Claude Code session transcript recorded, in order. */
-export function sessionToolTraffic(sandbox: ClaudeSandbox, sessionId: string): { uses: string[]; results: string[] } {
+export function sessionToolTraffic(sandbox: ClaudeSandbox, sessionId: string): { uses: string[]; ids: string[]; results: string[] } {
   const projects = join(sandbox.configDir, "projects");
   const file = readdirSync(projects)
     .map((dir) => join(projects, dir, `${sessionId}.jsonl`))
     .find((candidate) => existsSync(candidate));
   if (file === undefined) throw new Error(`no transcript for session ${sessionId}`);
   const uses: string[] = [];
+  const ids: string[] = [];
   const results: string[] = [];
   for (const line of readFileSync(file, "utf8").trim().split("\n")) {
     const content = (JSON.parse(line) as { message?: { content?: unknown } }).message?.content;
     if (!Array.isArray(content)) continue;
-    for (const block of content as { type: string; name?: string; content?: unknown }[]) {
-      if (block.type === "tool_use" && block.name !== undefined) uses.push(block.name);
+    for (const block of content as { type: string; id?: string; name?: string; content?: unknown }[]) {
+      if (block.type === "tool_use" && block.name !== undefined) {
+        uses.push(block.name);
+        ids.push(block.id ?? "");
+      }
       if (block.type === "tool_result") {
         const text = Array.isArray(block.content) ? (block.content as { text?: string }[]).map((c) => c.text ?? "").join("") : String(block.content);
         results.push(text);
       }
     }
   }
-  return { uses, results };
+  return { uses, ids, results };
 }

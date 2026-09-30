@@ -13,6 +13,7 @@ import {
   type ScopeHints,
 } from "./bootstrap/workstream-resolution.js";
 import { noteToolCall } from "./bootstrap/host-sessions.js";
+import { appendCall, type CallNote, type CallTrace, type Returned } from "./storage/call-log.js";
 import { headCommit, locateWorkspace, registerWorkspace, resolveHome, type WorkspaceLocation } from "./bootstrap/workspace-resolution.js";
 import { type ErrorCode, DebriefError } from "./errors.js";
 import { checkpointNudge, headCheckpointRecordId, headRevision, publishCheckpoint } from "./integrity/checkpoints.js";
@@ -686,6 +687,12 @@ export interface Memory {
    * a damaged, foreign or unmigrated file.
    */
   checkIntegrity(): IntegrityReport;
+  /**
+   * Adds the call this Memory just served to the call log (see storage/call-log.ts), with what the
+   * call itself traced: the records returned in order, and time per stage. Transports call it once
+   * per tool call or hook run. Never throws, and never changes what the call returned.
+   */
+  noteCall(note: CallNote): void;
   /** Closes the database connection. Further calls fail with `storage_unavailable`. */
   close(): void;
 }
@@ -750,6 +757,8 @@ class LocalMemory implements Memory {
   /** Preferences the user said no to in this session: not asked again while it lasts. */
   private readonly declinedPreferences = new Set<string>();
   private globalDb: Db | undefined;
+  /** What the call being served traced for the call log, until `noteCall` takes it. */
+  private trace: CallTrace | null = null;
   /** Null for hosts without a transcript adapter. */
   private readonly importer: TranscriptImporter | null;
 
@@ -918,7 +927,9 @@ class LocalMemory implements Memory {
         const workstreamId = boot.scope.workstreamId;
         const digest = workstreamId === null || this.bound === undefined ? null : sessionDigest(this.bound.db, workstreamId, boot.context.checkpoint?.createdAt ?? null);
         const failures = recentHookFailures(this.home, { within: boot.scope.worktree });
-        return renderSessionStart(boot, { protocol: PROTOCOL, failures, now: new Date(), digest });
+        const rendered = renderSessionStart(boot, { protocol: PROTOCOL, failures, now: new Date(), digest });
+        this.trace = { returned: rendered.records.map((entry, position) => ({ ...entry, position })), stages: this.trace?.stages ?? {} };
+        return rendered;
       } catch (error) {
         if (!(error instanceof DebriefError)) throw error;
         // Outside a Git worktree there is no memory to speak of: say nothing.
@@ -938,7 +949,9 @@ class LocalMemory implements Memory {
         // No pending questions: re-asking one marks it asked in this session, and a sub-agent cannot ask the user.
         const preferences = preferenceBlock(this.preferenceStores(db, scope), []);
         const pack = this.pack(db, scope, parse(RecallInput, { maxBytes: START_PACK_BYTES }), FULL_FORMAT);
-        return renderSubagentStart({ scope: scopeView(db, scope), pack, preferences, newWorkspace: location.isNew, now: new Date() });
+        const rendered = renderSubagentStart({ scope: scopeView(db, scope), pack, preferences, newWorkspace: location.isNew, now: new Date() });
+        this.trace = { returned: rendered.records.map((entry, position) => ({ ...entry, position })), stages: this.trace?.stages ?? {} };
+        return rendered;
       } catch (error) {
         if (!(error instanceof DebriefError)) throw error;
         if (error.code === "scope_unresolved") return null;
@@ -1030,11 +1043,17 @@ class LocalMemory implements Memory {
         const others = neighbours === null ? [] : [...neighbours.before, ...neighbours.after];
         const sources = importedFrom(db, [row.id, ...others.map((other) => other.id)]);
         // One check for the record and its neighbours: each timeline line carries live freshness too.
+        const checking = performance.now();
         const freshness = checkFreshness(scope.worktree, [row, ...others].map((subject) => freshnessSubject(subject, sources.has(subject.id))));
+        const stages = { freshness: performance.now() - checking };
+        // For the call log: which record each timeline line is.
+        const lineRecords = new Map<string, Omit<Returned, "position">>();
         const lineOf = (other: RecordRow): string => {
           const checked = freshness.get(other.id);
           if (checked === undefined) throw new Error(`timeline record ${other.id} was not freshness-checked`);
-          return timelineLine(other, checked.freshness, sources.get(other.id) ?? null);
+          const line = timelineLine(other, checked.freshness, sources.get(other.id) ?? null);
+          lineRecords.set(line, { id: other.id, kind: other.kind, freshness: checked.freshness });
+          return line;
         };
         // The timeline fills the budget first; the body takes what it leaves and continues via nextOffset.
         const fitted = neighbours === null ? null : fitTimeline({ before: neighbours.before.map(lineOf), after: neighbours.after.map(lineOf) }, budget.maxBytes);
@@ -1047,6 +1066,8 @@ class LocalMemory implements Memory {
         const source = sources.get(row.id) ?? null;
         const fields = recordFields(row);
         const checked = freshness.get(row.id);
+        const shown = [{ id: row.id, kind: row.kind, freshness: checked?.freshness ?? "unknown" }, ...[...(fitted?.timeline.before ?? []), ...(fitted?.timeline.after ?? [])].flatMap((line) => lineRecords.get(line) ?? [])];
+        this.trace = { returned: shown.map((entry, position) => ({ ...entry, position })), stages };
         return {
           recordId: row.id,
           title: row.title,
@@ -1303,6 +1324,42 @@ class LocalMemory implements Memory {
     return this.guard(() => checkIntegrity(locateWorkspace(this.cwd, this.home).dbPath));
   }
 
+  noteCall(note: CallNote): void {
+    const trace = this.trace;
+    this.trace = null;
+    if (this.closed) return;
+    try {
+      const db = this.bound?.db ?? this.unboundDb ?? this.existingDbForHook(note);
+      // A call that opened no database (`memory_status` first thing in a new workspace) is not logged: logging never creates or migrates one.
+      if (db === null) return;
+      const sessionId = this.bound?.scope.sessionId ?? null;
+      const hostSessionId = this.hostSessionId ?? note.hostSessionId;
+      appendCall(db, {
+        at: this.now().toISOString(),
+        host: this.host,
+        sessionId,
+        hostSessionId: hostSessionId ?? null,
+        note,
+        trace,
+        private: sessionIsPrivate(db, { sessionId: sessionId ?? "", host: this.host, hostSessionId }),
+      });
+    } catch (error) {
+      // Outside a repository nothing is logged, as nothing is remembered.
+      if (error instanceof DebriefError && error.code === "scope_unresolved") return;
+      // A call that failed has its own failure on record (unusable storage fails both); otherwise the
+      // log's failure goes where `debrief status` and the next session start report it, never the call's.
+      if (note.error !== undefined && note.error !== null) return;
+      recordHookFailure(this.home, { host: this.host, event: note.name, cwd: this.cwd, code: "call_log_failed", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /** A hook that opened no database (UserPromptSubmit) logs to its workspace's, when there is one already. */
+  private existingDbForHook(note: CallNote): Db | null {
+    if (note.source !== "hook") return null;
+    const location = locateWorkspace(this.cwd, this.home);
+    return location.isNew ? null : this.workspaceDb(location);
+  }
+
   close(): void {
     this.closed = true;
     this.globalDb?.close();
@@ -1484,7 +1541,10 @@ class LocalMemory implements Memory {
    * scope and eligibility, so concurrent writes (which shift bm25 statistics) can neither
    * reorder nor inject records into an in-flight sequence.
    */
-  private pack<C, I>(db: Db, scope: BoundScope, parsed: z.output<typeof RecallInput>, format: EntryFormat<C, I>): ContextPack<C, I> {
+  private pack<C, I>(db: Db, scope: BoundScope, parsed: z.output<typeof RecallInput>, plain: EntryFormat<C, I>): ContextPack<C, I> {
+    // For the call log: which record each packed entry is, whatever the format made of it.
+    const traced = new Map<unknown, Omit<Returned, "position">>();
+    const format = tracedFormat(plain, traced);
     const kinds = parsed.kinds === undefined ? null : [...new Set(parsed.kinds)].sort();
     let continued: ContinuationState | null = null;
     if (parsed.continuation !== undefined) {
@@ -1500,6 +1560,13 @@ class LocalMemory implements Memory {
     const intent = query === null ? null : parseQuery(query, this.now());
     const match = intent === null || intent.words === null ? null : toFtsQuery(intent.words);
     const budget = effectiveBudget(parsed);
+    const stages: Record<string, number> = {};
+    let mark = performance.now();
+    const lap = (stage: string): void => {
+      const now = performance.now();
+      stages[stage] = (stages[stage] ?? 0) + now - mark;
+      mark = now;
+    };
 
     return db.transaction((): ContextPack<C, I> => {
       const head = continued === null ? loadHeadCheckpoint(db, scope.workstreamId) : { row: null, withheld: null };
@@ -1532,6 +1599,7 @@ class LocalMemory implements Memory {
         rankedBy = continued.rankedBy;
         trusted = continued.trusted;
       }
+      lap("rank");
       const whyOf = (row: Candidate): string | undefined => {
         const bits = rankedBy.get(row.seq) ?? 0;
         return intent === null || bits === 0 ? undefined : explainRank(bits, intent, phrasesContained(row, intent.phrases), trusted.get(row.seq));
@@ -1549,6 +1617,7 @@ class LocalMemory implements Memory {
         (row) => rootOf(roots, row.id),
         (a, b) => a.created_at < b.created_at || (a.created_at === b.created_at && a.seq < b.seq),
       );
+      lap("load");
 
       const checkpointPackable = (freshness: RecordFreshness): Packable<C> | null =>
         checkpointRow === null
@@ -1664,7 +1733,9 @@ class LocalMemory implements Memory {
         ...(checkpointRow === null || reused(checkpointRow) ? [] : [freshnessSubject(checkpointRow, false)]),
         ...selected.filter((row) => !reused(row)).map((row) => freshnessSubject(row, sources.has(row.id))),
       ];
+      lap("pack");
       const live = unchecked.length === 0 ? new Map<string, RecordFreshness>() : checkFreshness(scope.worktree, unchecked);
+      lap("freshness");
       const freshnessOf = (row: RecordRow): RecordFreshness => {
         const result = live.get(row.id) ?? trustChecked.get(row.id);
         if (result === undefined) throw new Error(`record ${row.id} was packed without a freshness check`);
@@ -1678,7 +1749,10 @@ class LocalMemory implements Memory {
         assemble,
         (page) => remainingAfter(page).length,
       );
+      lap("pack");
       if (corrections !== null) this.seenLifecycle = Math.max(this.seenLifecycle, corrections.watermark);
+      const entries: unknown[] = [...(packed.checkpoint === null ? [] : [packed.checkpoint]), ...packed.items];
+      this.trace = { returned: entries.map((entry, position) => ({ ...(traced.get(entry) ?? { id: "unknown", kind: null, freshness: null }), position })), stages };
       return packed;
     })();
   }
@@ -1710,6 +1784,27 @@ const FULL_FORMAT: EntryFormat<PackCheckpoint, PackItem> = { checkpoint: (entry)
  * so only omissions make a compact pack `truncated` (a checkpoint line is nearly always shortened).
  */
 const INDEX_FORMAT: EntryFormat<string, string> = { checkpoint: asIndexLine, item: asIndexLine, cut: () => false, continueWith: ' with mode "compact"' };
+
+/** `format`, noting in `into` which record each built entry is (an index line is only text). */
+function tracedFormat<C, I>(format: EntryFormat<C, I>, into: Map<unknown, Omit<Returned, "position">>): EntryFormat<C, I> {
+  const trace = <T extends { recordId: string; freshness: string }, U>(wrap: (entry: Packable<T>) => Packable<U>, entry: Packable<T>, kind: (fields: T) => string): Packable<U> => {
+    let fields: T | undefined;
+    const outer = wrap({ ...entry, build: (excerpt, truncated) => (fields = entry.build(excerpt, truncated)) });
+    return {
+      ...outer,
+      build: (excerpt, truncated) => {
+        const built = outer.build(excerpt, truncated);
+        if (fields !== undefined) into.set(built, { id: fields.recordId, kind: kind(fields), freshness: fields.freshness });
+        return built;
+      },
+    };
+  };
+  return {
+    ...format,
+    checkpoint: (entry) => trace(format.checkpoint, entry, () => "checkpoint"),
+    item: (entry) => trace(format.item, entry, (fields) => fields.kind),
+  };
+}
 
 /**
  * One pack entry per claim group. Everything but the excerpt (freshness, warning,

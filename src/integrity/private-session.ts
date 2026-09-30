@@ -1,3 +1,4 @@
+import { forgetSessionCalls } from "../storage/call-log.js";
 import { type Db, prepared, requireTransaction } from "../storage/database.js";
 import type { PrivateSessionEntry } from "./ledger.js";
 
@@ -117,6 +118,7 @@ export function applyPrivateSession(db: Db, entry: PrivateSessionEntry): void {
   // Every call's arguments, not only those whose result record was forgotten: Debrief's own calls
   // (a query, a recorded body) have no result record.
   prepared(db, `UPDATE import_events SET meta = ${FORGOTTEN_CALL_META} WHERE disposition = 'tool_call' AND ${IN_TRANSCRIPTS}`).run(JSON.stringify(entry.transcripts));
+  forgetSessionCalls(db, entry.host, markedSessions(entry));
 }
 
 /** Whether a call in `transcripts` still holds its arguments (a session marked private under 0.1.0 left Debrief's own calls'). */
