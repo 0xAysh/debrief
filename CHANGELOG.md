@@ -4,7 +4,7 @@
 
 ### Call log
 
-- **Every call Debrief serves is logged, for `debrief report`.** One row per memory tool call and per hook run (not PreToolUse), in the workspace database (schema version 8): what a recall asked, the records it returned in order with their kind and freshness label, the bytes and estimated tokens the host got, omissions and continuations, time per recall stage (rank, load, freshness, pack) and the host's tool-use id, which names the call in Claude Code's transcript. The start hooks log exactly the records their context shows. Rows keep ids and labels, never a record's text. Forgetting a record blanks the queries that returned it; a private session blanks its rows. Logging never changes a call's result or a hook's output; a failure to log is reported by `debrief status`.
+- **Every call Debrief serves is logged, for `debrief report`.** One row per memory tool call and per session-start, sub-agent-start and Stop hook run, in the workspace database (schema version 8): what a recall asked, the records it returned in order with their kind and freshness label, the bytes and estimated tokens the host got, omissions and continuations, time per recall stage (rank, load, freshness, pack) and the host's tool-use id, which names the call in Claude Code's transcript. The start hooks log exactly the records their context shows. Rows keep ids and labels, never a record's text. Forgetting a record blanks the queries that returned it; a private session blanks its rows. Logging never changes a call's result or a hook's output, never opens a database of its own (so a prompt pays nothing for it), and a failure to log is reported by `debrief status`.
 
 ### Private sessions
 

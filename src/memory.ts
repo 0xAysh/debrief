@@ -1329,9 +1329,10 @@ class LocalMemory implements Memory {
     this.trace = null;
     if (this.closed) return;
     try {
-      const db = this.bound?.db ?? this.unboundDb ?? this.existingDbForHook(note);
-      // A call that opened no database (`memory_status` first thing in a new workspace) is not logged: logging never creates or migrates one.
-      if (db === null) return;
+      // Logging never opens a database: that would cost a hook that has none (UserPromptSubmit, a Stop
+      // without import consent) about 200 ms on every prompt or turn, and could create or migrate one.
+      const db = this.bound?.db ?? this.unboundDb;
+      if (db === undefined) return;
       const sessionId = this.bound?.scope.sessionId ?? null;
       const hostSessionId = this.hostSessionId ?? note.hostSessionId;
       appendCall(db, {
@@ -1344,20 +1345,11 @@ class LocalMemory implements Memory {
         private: sessionIsPrivate(db, { sessionId: sessionId ?? "", host: this.host, hostSessionId }),
       });
     } catch (error) {
-      // Outside a repository nothing is logged, as nothing is remembered.
-      if (error instanceof DebriefError && error.code === "scope_unresolved") return;
       // A call that failed has its own failure on record (unusable storage fails both); otherwise the
       // log's failure goes where `debrief status` and the next session start report it, never the call's.
       if (note.error !== undefined && note.error !== null) return;
       recordHookFailure(this.home, { host: this.host, event: note.name, cwd: this.cwd, code: "call_log_failed", message: error instanceof Error ? error.message : String(error) });
     }
-  }
-
-  /** A hook that opened no database (UserPromptSubmit) logs to its workspace's, when there is one already. */
-  private existingDbForHook(note: CallNote): Db | null {
-    if (note.source !== "hook") return null;
-    const location = locateWorkspace(this.cwd, this.home);
-    return location.isNew ? null : this.workspaceDb(location);
   }
 
   close(): void {

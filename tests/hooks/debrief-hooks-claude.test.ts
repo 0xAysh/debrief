@@ -153,7 +153,7 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     expect(JSON.stringify(stub.requests)).not.toContain("◪ debrief");
   }, 120_000);
 
-  test("D1 (#69): the call log holds the session start, the prompt, a recall and the stop, named by Claude Code's session and, for the recall, its tool_use id in the transcript", async () => {
+  test("D1 (#69): the call log holds the session start, a recall and the stop, named by Claude Code's session and, for the recall, its tool_use id in the transcript", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
     const debriefHome = tempDir();
@@ -196,11 +196,10 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     db.close();
     expect(rows.map((row) => [row.source, row.name, row.outcome, row.hostSessionId])).toEqual([
       ["hook", "session-start", "ok", sessionId],
-      ["hook", "user-prompt-submit", "ok", sessionId],
       ["tool", "memory_recall", "ok", sessionId],
       ["hook", "stop", "ok", sessionId],
     ]);
-    const [started, , recall] = rows;
+    const [started, recall] = rows;
     expect(recall).toMatchObject({ toolUseId: traffic.ids[0], query: "retry policy" });
     for (const row of [started, recall]) expect((JSON.parse(row?.returned ?? "[]") as { id: string }[]).map((r) => r.id)).toContain(policy);
   }, 120_000);

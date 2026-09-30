@@ -48,8 +48,6 @@ const SubagentStartPayload = z.looseObject({
 });
 const UserPromptSubmitPayload = z.looseObject({
   prompt: z.string(),
-  // Only for the call log: an unusable one is dropped, never a reason to refuse the payload.
-  session_id: z.string().min(1).max(LIMITS.hostSessionIdChars).optional().catch(undefined),
   hook_event_name: z.literal("UserPromptSubmit"),
 });
 const PreToolUsePayload = z.looseObject({
@@ -124,10 +122,8 @@ export function runHook(run: HookRun): HookOutcome {
     if (event === "user-prompt-submit") {
       const submitted = payload(UserPromptSubmitPayload);
       if (submitted === null) return fail("invalid_input", "the hook payload is not a UserPromptSubmit payload with prompt");
-      return logged(run, host, event, submitted.session_id, (memory) => {
-        const hint = memory.promptHint({ prompt: submitted.prompt });
-        return hint === null ? QUIET : { stdout: hooks.promptHint(hint), stderr: "" };
-      }, () => null);
+      const hint = withMemory(run, host, (memory) => memory.promptHint({ prompt: submitted.prompt }));
+      return hint === null ? QUIET : { stdout: hooks.promptHint(hint), stderr: "" };
     }
     if (event === "pre-tool-use") {
       const call = payload(PreToolUsePayload);
@@ -151,8 +147,9 @@ export function runHook(run: HookRun): HookOutcome {
 
 /**
  * `withMemory`, and one call-log row for the run: how long it took and what it printed. The row is
- * written after the output is decided, so it cannot change it. PreToolUse is not logged: it runs
- * before every Debrief tool call and must stay cheap.
+ * written after the output is decided, so it cannot change it, and only when the run's own work
+ * opened the database (see `noteCall`). UserPromptSubmit and PreToolUse are not logged: they run on
+ * every prompt and before every Debrief tool call, and open no database.
  */
 function logged(run: HookRun, host: string, event: string, hostSessionId: string | undefined, serve: (memory: Memory) => HookOutcome, failure: () => string | null): HookOutcome {
   const started = performance.now();

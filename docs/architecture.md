@@ -577,15 +577,15 @@ Uninstalling (the host's `/plugin uninstall`, then `npm uninstall -g`) never tou
 debrief mcp        each tools/call   → the result as the host gets it, its bytes, the host's tool-use id (Claude Code's
                                        _meta "claudecode/toolUseId", which is the tool_use id in its transcript), and the
                                        time until the call's work was done (a question put to the user is not counted)
-debrief hook       session-start · subagent-start · user-prompt-submit · stop
-                                     → its stdout's bytes, outcome and time; never pre-tool-use (it must stay cheap)
+debrief hook       session-start · subagent-start · stop
+                                     → its stdout's bytes, outcome and time; never user-prompt-submit or pre-tool-use
 Memory             pack() · read() · the start renderers leave a trace: the records returned (or shown in the
                                        injected text) in order, as id · kind · freshness · position, and recall's time
                                        per stage: rank (incl. trust) · load · freshness · pack
 ```
 
 - **Ids, never bodies.** A recall keeps its query and filters; a read, its record and `around`; a record or checkpoint, its kind and the size of its text, never the text. A compact pack's lines are text, so their ids are traced as they are built. What a start hook's character cap cut is not among the ids.
-- **Never the call's failure.** One insert, after the result is decided. A failure is swallowed; unless the call itself failed (unusable storage fails both, and the call's failure is already on record), it is recorded as a hook failure (`call_log_failed`), which `debrief status` and the next session start report. A call that opened no database (`memory_status` first thing in a new workspace) is not logged: logging never creates or migrates one. A UserPromptSubmit hook opens its existing workspace database to log.
+- **Never the call's failure.** One insert, after the result is decided. A failure is swallowed; unless the call itself failed (unusable storage fails both, and the call's failure is already on record), it is recorded as a hook failure (`call_log_failed`), which `debrief status` and the next session start report. **Logging never opens a database**: a call is logged only when its own work opened one. Opening one just to log cost UserPromptSubmit about 200 ms per prompt (70 → 277 ms p50, `npm run measure:hooks`), and would create or migrate a database for `memory_status`. So UserPromptSubmit and PreToolUse are never logged, a Stop only when its capture ran (import approved), and `memory_status` only after another call in the same server.
 - **Forgotten with what it names.** Forgetting a record blanks the query of the rows that returned or wrote it (`erased = 'forgotten'`; the ids stay, as tombstones do). A private session blanks its rows' query, parameters and ids (`erased = 'private'`), found by Debrief session and by host session; a call made after the marking is written blank. Both run in the forget and private-session effects, so a restored older copy is blanked again when the ledger replays.
 - **Tokens are an estimate:** bytes ÷ 4, as budgets count them.
 

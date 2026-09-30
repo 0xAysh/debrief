@@ -209,9 +209,11 @@ describe("the call log: one row per call", () => {
     expect(JSON.stringify(rows(e)).toLowerCase()).not.toContain("quokka");
   });
 
-  test("C5: start hooks log only the records their context shows, with its size; Stop and UserPromptSubmit log outcome and time; PreToolUse logs nothing", () => {
+  test("C5: start hooks log only the records their context shows, with its size; Stop logs outcome and time; UserPromptSubmit and PreToolUse log nothing", () => {
     const e = env();
     const memory = open(e);
+    // With import approved, Stop's capture opens the database; logging never opens one itself.
+    memory.bootstrap({ importChoice: "current_project" });
     const checkpoint = memory.checkpoint({ expectedRevision: 0, goal: "Fix the double charge", status: "Found the retry loop" }).recordId;
     memory.close();
     const notes = seed(e, 60);
@@ -228,12 +230,11 @@ describe("the call log: one row per call", () => {
     expect(logged.map((row) => [row.source, row.name, row.outcome, row.host_session_id])).toEqual([
       ["hook", "session-start", "ok", SESSION],
       ["hook", "subagent-start", "ok", SESSION],
-      ["hook", "user-prompt-submit", "ok", SESSION],
       ["hook", "stop", "ok", SESSION],
     ]);
     for (const row of logged) expect(row.ms).toBeGreaterThan(0);
-    const [started, subagentStarted, prompted] = logged;
-    expect(prompted?.bytes).toBe(Buffer.byteLength(prompt.stdout));
+    const [started, subagentStarted, stopped] = logged;
+    expect(stopped?.bytes).toBe(Buffer.byteLength(stop.stdout));
     for (const [row, run] of [
       [started, start],
       [subagentStarted, subagent],
@@ -295,7 +296,6 @@ describe("the call log: one row per call", () => {
     const memory = open(e);
     expect(memory.status().hookFailures.map((failure) => [failure.event, failure.code])).toEqual([
       ["memory_recall", "call_log_failed"],
-      ["user-prompt-submit", "call_log_failed"],
       ["session-start", "call_log_failed"],
     ]);
   });
@@ -341,7 +341,14 @@ describe("the call log forgets what it must", () => {
 
   test("C8b: a private session blanks every row of the host session, a resumed earlier session's and later calls' included; another session's rows stay", () => {
     const { e, memory } = scenario();
+    // A Stop during the session: its capture opens the database without binding a session, so its row names only the host session.
+    memory.bootstrap({ importChoice: "current_project" });
     memory.close();
+    const transcript = installTranscript(e.config, "2.1.281/basic.jsonl", { cwd: e.repo, sessionId: SESSION });
+    const stopRun = open(e);
+    stopRun.endTurn({ transcriptPath: transcript.path });
+    stopRun.noteCall({ source: "hook", name: "stop", ms: 1, bytes: 0, hostSessionId: SESSION });
+    stopRun.close();
     const other = open(e, OTHER_SESSION);
     other.noteCall({ source: "tool", name: "memory_recall", args: { query: OTHER }, result: other.recall({ query: OTHER }), ms: 1, bytes: 10 });
     const resumed = open(e, SESSION);
@@ -349,10 +356,9 @@ describe("the call log forgets what it must", () => {
 
     resumed.manage({ action: "private_session" });
     resumed.noteCall({ source: "tool", name: "memory_recall", args: { query: Q }, result: resumed.recall({ query: Q }), ms: 1, bytes: 10 });
-    const hookRun = open(e);
-    hookRun.noteCall({ source: "hook", name: "user-prompt-submit", args: {}, ms: 1, bytes: 0, hostSessionId: SESSION });
 
     const logged = rows(e);
+    expect(logged.find((row) => row.name === "stop")).toMatchObject({ session_id: null, host_session_id: SESSION });
     const mine = logged.filter((row) => row.host_session_id === SESSION);
     expect(mine.length).toBe(6);
     for (const row of mine) expect(row).toMatchObject({ query: null, params: {}, returned: [], erased: "private" });
