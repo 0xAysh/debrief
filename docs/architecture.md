@@ -158,6 +158,7 @@ The agent shows `question`, then calls `bootstrap({workstream})`. That choice be
 | `import_events` (v2) | Event identity → record | PK = host + transcript + branch + event id + content hash, so replay is a no-op and an edit is a new version |
 | `consents` | Reserved | The import decision is host-level, so it lives in `$DEBRIEF_HOME/consent.json`, not in a workspace |
 | `call_log` (v8) | One row per call served: each memory tool call and hook run but PreToolUse (see [The call log](#the-call-log)) | Ids, labels, sizes and times, never a record's body; forget and private sessions blank it |
+| `call_reviews` (v9) | The user's rating of a search (`debrief report --review`): good / partial / missed, an optional note | Forget and private sessions blank the note with the search's query |
 
 **Eligibility** (`src/retrieval/eligibility.ts`) is one definition: a record must be in this workstream or workspace-level, have `lifecycle = 'active'`, and have no `taints` row. It exists in exactly three forms, all in that file: `VISIBLE_SQL` (scope + state), `ELIGIBLE_STATE_SQL` (state only, for a query that already fixed scope) and `eligibilityOf(row)` (the row form, saying why not).
 
@@ -589,6 +590,30 @@ Memory             pack() · read() · the start renderers leave a trace: the re
 - **Forgotten with what it names.** Forgetting a record blanks the query of the rows that returned or wrote it (`erased = 'forgotten'`; the ids stay, as tombstones do). A private session blanks its rows' query, parameters and ids (`erased = 'private'`), found by Debrief session and by host session; a call made after the marking is written blank. Both run in the forget and private-session effects, so a restored older copy is blanked again when the ledger replays.
 - **Tokens are an estimate:** bytes ÷ 4, as budgets count them.
 
+### `debrief report`
+
+Offline (`src/report/`). It reads the call log of the current repository's workspace (`--all`: every registered one) from `--since` (default `7d`) and joins it with what Debrief imported from the transcripts:
+
+```text
+call_log (window) ──┬─ Usage          sessions (host session id) · searched · searches per session · empty rate
+                    ├─ Correctness    returned records whose lifecycle is no longer active
+                    ├─ Freshness      labels returned (recall, bootstrap, start hooks)
+                    ├─ Cost           ms p50/p95 per call and recall stage · tokens per session (all but Stop)
+                    └─ Your reviews   call_reviews
++ imported transcripts (sessions whose consent covers the repository and whose transcript is in)
+                    ├─ Used after returned   later memory_read of it · later record citing it (links; not supersedes)
+                    │                        · later Edit/Write of a file it cites (code refs' locator)
+                    ├─ Stale, edited         a stale record's file: read after the recall and before the first edit?
+                    └─ Rediscovery           a Read of a file an active agent-written record (not imported) cited,
+                                             written before the read, never returned in that session
+```
+
+- **Times.** A call's time is `call_log.at`. A transcript action's time is its result record's `created_at` (the transcript's timestamp): Debrief's own calls come in as echoes, with no record and no timestamp. Both are this machine's clock. A tool call and its result are joined on `meta.callId` in memory (no index on it); a sub-agent's transcript counts as its parent's session.
+- **Read only, erasure first.** The report opens the database read-only and does not migrate. If the lifecycle ledger holds a forget or private mark the database lacks (a restored older copy), it opens it for use first, which replays them, so an erased query is never shown. `--review` writes, so it always opens it for use.
+- **Never a saving.** No "tokens saved" figure: Debrief cannot know what the agent would have spent without it. The footer says why the net effect can be zero or negative.
+- **`--review`** samples up to 10 unrated first-page recalls at random (private sessions' are never offered), shows what came back as it is now (a forgotten record is `[forgotten]`), and reads `g`/`p`/`m`/`s`/`q` and, for partial or missed, a note, one line at a time from stdin. Each rating is stored as it is given.
+- 10,000 call-log rows, 500 sessions and 20,500 import events: 0.24 s wall for the whole command (M4 Pro).
+
 ## Runtime gate
 
 At open, Debrief requires embedded SQLite ≥ 3.51.3, the release with the fix for the [WAL-reset bug](https://sqlite.org/wal.html#walresetbug). It also requires FTS5: the compile option must be present and creating an FTS5 table must succeed. If either check fails, it throws `unsupported_runtime` with the version it found. The rule is the pure function `assertSupportedRuntime`, which has no override. `debrief mcp` runs it at process start and exits non-zero with the message on stderr before serving. Every database open runs it again.
@@ -616,7 +641,7 @@ At open, Debrief requires embedded SQLite ≥ 3.51.3, the release with the fix f
 `src/storage/migrations/` holds an append-only ordered list, and `PRAGMA user_version` is the applied count:
 
 - Each step runs in its own `BEGIN IMMEDIATE` transaction together with the version bump, so a failed step leaves the previous version intact.
-- Steps run with foreign keys off, as SQLite's documented table-rebuild procedure requires. v4 rebuilds `sessions` to make `workstream_id` nullable. v5 adds `records.lifecycle` and the `taints`, `lifecycle_events` and `suppressions` tables. v6 adds `preference_candidates`, `sessions.private`, `transcript_sessions` and `private_transcripts`. v7 adds `chunks.terms`, recreates `chunks_fts` over `text` and `terms`, and regenerates the projection with the code `diag reindex` runs (a step may be a function when SQL cannot compute it). v8 adds `call_log`. Each step runs `foreign_key_check` before committing, and rolls back on any violation.
+- Steps run with foreign keys off, as SQLite's documented table-rebuild procedure requires. v4 rebuilds `sessions` to make `workstream_id` nullable. v5 adds `records.lifecycle` and the `taints`, `lifecycle_events` and `suppressions` tables. v6 adds `preference_candidates`, `sessions.private`, `transcript_sessions` and `private_transcripts`. v7 adds `chunks.terms`, recreates `chunks_fts` over `text` and `terms`, and regenerates the projection with the code `diag reindex` runs (a step may be a function when SQL cannot compute it). v8 adds `call_log`, v9 `call_reviews`. Each step runs `foreign_key_check` before committing, and rolls back on any violation.
 - Concurrent openers serialise, and the second finds nothing to do.
 - A database newer than the build fails closed before any pragma changes it.
 - A shipped migration is never edited.

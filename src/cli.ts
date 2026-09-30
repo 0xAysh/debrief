@@ -9,6 +9,7 @@ import { DebriefError } from "./errors.js";
 import { HOOK_HOSTS, HOST_IDS, type HostId, HOSTS, hostDescriptor, type PluginFacts, TRANSCRIPT_HOSTS } from "./hosts.js";
 import { consentFacts } from "./import/reconcile.js";
 import { openMemory, type Memory } from "./memory.js";
+import { parseSince, runReport } from "./report/report.js";
 import { IMPORT_CHOICES, type ImportChoice, LIMITS } from "./schemas.js";
 import { assertEmbeddedRuntime } from "./storage/database.js";
 import { deleteHome, describeHome } from "./storage/home.js";
@@ -20,6 +21,8 @@ const USAGE = `Usage:
   debrief status                                      Is Debrief installed and working here? (exit 1 when not)
   debrief import [--set ${IMPORT_CHOICES.join("|")}]
                                                       Import past sessions' transcripts, as the user chose (--set records the choice)
+  debrief report [--since 7d|24h|<date>] [--all]      Did Debrief help? Usage, what was used, correctness, freshness, cost (this repository; --all: every one)
+  debrief report --review [--since …] [--all]         Rate up to 10 random searches from the window (answers read from stdin)
   debrief delete-data [--yes]                         Delete all of Debrief's stored memory, after typing delete (--yes: without asking)
   debrief mcp [--host ${HOST_IDS.join("|")}]
                                                       Serve MCP over stdio (started by the agent host)
@@ -73,6 +76,19 @@ async function main(argv: string[]): Promise<number> {
     const { values } = parseArgs({ args: argv.slice(1), options: { set: { type: "string" } }, strict: true });
     if (values.set !== undefined && !IMPORT_CHOICES.includes(values.set as ImportChoice)) return usage(`--set must be one of ${IMPORT_CHOICES.join(", ")}`);
     return importHistory(values.set as ImportChoice | undefined);
+  }
+  if (command === "report") {
+    const { values } = parseArgs({ args: argv.slice(1), options: { since: { type: "string", default: "7d" }, all: { type: "boolean" }, review: { type: "boolean" } }, strict: true });
+    if (parseSince(values.since, new Date()) === null) return usage(`--since must look like 7d, 24h or 2026-09-22 (got ${values.since})`);
+    return runReport({
+      cwd: process.cwd(),
+      home: resolveHome(undefined),
+      since: values.since,
+      all: values.all === true,
+      review: values.review === true,
+      stdin: process.stdin,
+      write: (text) => process.stdout.write(text),
+    });
   }
   if (command === "delete-data") {
     const { values } = parseArgs({ args: argv.slice(1), options: { yes: { type: "boolean" } }, strict: true });

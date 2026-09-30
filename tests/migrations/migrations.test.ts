@@ -13,6 +13,7 @@ import { catchDebriefError, initRepo, tempDir } from "../helpers.js";
 
 const CANONICAL_TABLES = [
   "call_log",
+  "call_reviews",
   "checkpoints",
   "chunks",
   "chunks_fts",
@@ -61,7 +62,7 @@ function atVersionZero(setup = ""): string {
 
 describe("migrations", () => {
   test("this build introduces schema version 8", () => {
-    expect(SCHEMA_VERSION).toBe(8);
+    expect(SCHEMA_VERSION).toBe(9);
   });
 
   test.each([1, 2, 3, 4, 5])("a version-%i database upgrades through version 6: every session is non-private, and there are no preference questions", (from) => {
@@ -382,9 +383,10 @@ describe("migrations", () => {
     const words = first.record({ kind: "note", body: "each sequence has a rank", attribution: "agent_inference" }).recordId;
     const dbPath = first.status().storage.dbPath ?? "";
     first.close();
-    // Put the projection back as 0.1.0 wrote it: chunks without terms, chunks_fts over text alone (and no call log, which came after).
+    // Put the projection back as 0.1.0 wrote it: chunks without terms, chunks_fts over text alone (and no call log or reviews, which came after).
     const raw = new Database(dbPath);
-    raw.exec(`DROP TABLE call_log;
+    raw.exec(`DROP TABLE call_reviews;
+      DROP TABLE call_log;
       DROP TABLE chunks_fts;
       ALTER TABLE chunks DROP COLUMN terms;
       CREATE VIRTUAL TABLE chunks_fts USING fts5 (text, content = 'chunks', content_rowid = 'id', tokenize = 'porter unicode61 remove_diacritics 2');
