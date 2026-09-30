@@ -5,7 +5,7 @@ import type { Attribution, LinkRelation, RecordKind } from "../schemas.js";
 import { type Db, openDatabase, prepared, requireTransaction, writeTransaction } from "../storage/database.js";
 import { appendRecord, type StoredApplicability } from "../storage/records.js";
 import { appendLedger, type LedgerEntry, type PrivateSessionEntry, readLedger } from "./ledger.js";
-import { applyPrivateSession, isPrivateTranscript, privateSessionApplied, sameHostSession, type SessionIdentity, sessionIsPrivate, transcriptsOf } from "./private-session.js";
+import { applyPrivateSession, callArgumentsLeft, FORGOTTEN_CALL_META, isPrivateTranscript, privateSessionApplied, sameHostSession, type SessionIdentity, sessionIsPrivate, transcriptsOf } from "./private-session.js";
 import { excerpt } from "./lifecycle-views.js";
 import { findDependents, insertTaints, type Propagation } from "./taints.js";
 
@@ -317,7 +317,8 @@ export function forgetSession(
   if (
     sessionIsPrivate(db, session) &&
     transcripts.every((t) => isPrivateTranscript(db, t.host, t.transcriptId)) &&
-    leftToForget(db, { writtenBy: sessions, transcripts }).length === 0
+    leftToForget(db, { writtenBy: sessions, transcripts }).length === 0 &&
+    !callArgumentsLeft(db, transcripts)
   ) {
     return { alreadyPrivate: true, forgotten: [], ...done, earlierSessions: [] };
   }
@@ -606,7 +607,7 @@ function effectsOnEvents(db: Db, entry: LedgerEntry, records: readonly string[])
 /**
  * Deletes what a forgotten record said: title, body, references, applicability and content
  * hash, its search chunks (and their FTS entries, then merged away), its links, the summary its
- * tool call left in import bookkeeping, and the reasons of its earlier lifecycle changes (they
+ * tool call left in import bookkeeping (and every Debrief call's that named it), and the reasons of its earlier lifecycle changes (they
  * may quote it). Ids, kind, host, times and provenance ids stay as the tombstone.
  */
 function removePayload(db: Db, records: readonly string[], events: readonly { host: string; eventId: string }[]): void {
@@ -628,13 +629,17 @@ function removePayload(db: Db, records: readonly string[], events: readonly { ho
      WHERE id IN (SELECT value FROM json_each(?))`,
   ).run(ids);
   prepared(db, "UPDATE lifecycle_events SET reason = '[forgotten]' WHERE record_id IN (SELECT value FROM json_each(?))").run(ids);
-  const scrubCall = prepared(
-    db,
-    `UPDATE import_events SET meta = json_object('callId', json_extract(meta, '$.callId'), 'tool', json_extract(meta, '$.tool'),
-       'summary', '[forgotten]', 'retention', json_extract(meta, '$.retention'), 'paths', json('[]'), 'urls', json('[]'), 'sensitive', json('false'))
-     WHERE host = ? AND event_id = ? AND disposition = 'tool_call'`,
-  );
+  const scrubCall = prepared(db, `UPDATE import_events SET meta = ${FORGOTTEN_CALL_META} WHERE host = ? AND event_id = ? AND disposition = 'tool_call'`);
   for (const event of events) scrubCall.run(event.host, event.eventId);
+  // Debrief's own calls have no result record, only an echo naming the records it returned or
+  // wrote: a call whose echo named a forgotten record may quote it (a recorded body, a query).
+  prepared(
+    db,
+    `UPDATE import_events SET meta = ${FORGOTTEN_CALL_META} WHERE disposition = 'tool_call' AND rowid IN (
+       SELECT c.rowid FROM import_events e JOIN import_events c ON c.host = e.host AND c.transcript_id = e.transcript_id
+         AND c.disposition = 'tool_call' AND json_extract(c.meta, '$.callId') = json_extract(e.meta, '$.callId')
+       WHERE e.disposition = 'echo' AND EXISTS (SELECT 1 FROM json_each(e.meta, '$.references') r WHERE r.value IN (SELECT value FROM json_each(?))))`,
+  ).run(ids);
 }
 
 // ── internals ──

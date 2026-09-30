@@ -1,10 +1,10 @@
-import { copyFileSync, existsSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import { type ManageResult, type Memory, openMemory } from "../../src/memory.js";
 import { catchDebriefError, initRepo, onCleanup, tempDir } from "../helpers.js";
-import { claudeConfigDir, codexHome, codexThreadId, installCodexRollout, installTranscript, renderFixture } from "../import/fixtures.js";
+import { claudeConfigDir, claudeToolExchange, codexHome, codexThreadId, installCodexRollout, installTranscript, renderFixture } from "../import/fixtures.js";
 
 interface Env {
   home: string;
@@ -355,5 +355,129 @@ describe("don't remember this session, in a resumed conversation", () => {
     db.close();
 
     expect(markPrivate(resumed)).toMatchObject({ alreadyPrivate: false, forgotten: [global], earlierSessions: 1 });
+  });
+});
+
+/**
+ * The importer keeps each tool call's arguments as a clipped summary, Debrief's own calls
+ * included: a recall's query, a record's body. Those calls have no result record (their output
+ * is an echo), so forgetting what they said has to find them another way (#68).
+ */
+describe("what Debrief's own calls said is forgotten too", () => {
+  const hostSessionId = "5e550000-0000-4000-8000-0000000000c8";
+  const BODY = "Marmoset vault keys rotate on Fridays.";
+  const QUERY = "zephyr quokka rotation";
+  const OTHER = "pangolin backlog triage";
+
+  /** A live session that recorded BODY, and its imported transcript: the record call, a recall naming its record, and a recall naming nothing. */
+  function scenario(): { repo: string; e: Env; memory: Memory; recordId: string; dbPath: string } {
+    const repo = initRepo({ branch: "main" });
+    const e = env();
+    const memory = open(repo, e, { hostSessionId });
+    memory.bootstrap({ importChoice: "all" });
+    const recordId = memory.record({ kind: "note", body: BODY, attribution: "agent_inference" }).recordId;
+    const call = (id: number, tool: string, input: object, result: object): string =>
+      claudeToolExchange({ cwd: repo, sessionId: hostSessionId, gitBranch: "main", parentUuid: id === 1 ? null : `00000000-0000-4000-8000-${(id - 1).toString().padStart(12, "0")}`, id, tool, input, result: JSON.stringify(result) });
+    const content = [
+      call(1, "mcp__debrief__memory_record", { kind: "note", body: BODY, attribution: "agent_inference" }, { v: 1, recordId }),
+      call(3, "mcp__debrief__memory_recall", { query: QUERY }, { v: 1, items: [{ recordId }] }),
+      call(5, "mcp__debrief__memory_recall", { query: OTHER }, { v: 1, items: [], empty: true }),
+    ].join("");
+    installTranscript(e.config, "", { cwd: repo, sessionId: hostSessionId, content });
+    memory.bootstrap();
+    const dbPath = memory.status().storage.dbPath ?? "";
+    // The premise: the import kept all three calls' arguments.
+    expect(summaries(dbPath).join("\n")).toEqual(expect.stringContaining(QUERY) as unknown);
+    expect(summaries(dbPath).join("\n")).toEqual(expect.stringContaining(BODY) as unknown);
+    return { repo, e, memory, recordId, dbPath };
+  }
+
+  function summaries(dbPath: string): string[] {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      return (db.prepare("SELECT json_extract(meta, '$.summary') AS summary FROM import_events WHERE disposition = 'tool_call' ORDER BY rowid").all() as { summary: string }[]).map((row) => row.summary);
+    } finally {
+      db.close();
+    }
+  }
+
+  /** The database file's bytes, lower-cased, with every connection closed (the WAL folded back). */
+  function bytes(dbPath: string): string {
+    return readFileSync(dbPath).toString("latin1").toLowerCase();
+  }
+
+  function forget(memory: Memory, recordId: string): void {
+    const preview = memory.manage({ action: "forget_preview", recordIds: [recordId] });
+    if (preview.action !== "forget_preview") throw new Error("unreachable");
+    memory.manage({ action: "forget", confirmToken: preview.confirmToken, reason: "The user asked to forget it.", attribution: "user_direction" });
+  }
+
+  const words = (text: string): string[] => text.toLowerCase().split(/\W+/).filter((word) => word.length > 5);
+
+  test("F1: a private session leaves no byte of what its Debrief calls said: not the body recorded, not a query", () => {
+    const { memory, dbPath } = scenario();
+
+    markPrivate(memory);
+    memory.close();
+
+    const raw = bytes(dbPath);
+    for (const word of [...words(BODY), ...words(QUERY), ...words(OTHER)]) expect(raw).not.toContain(word);
+  });
+
+  test("F2: forgetting a record forgets what the call that wrote it and the recalls that returned it said, and nothing else", () => {
+    const { memory, recordId, dbPath } = scenario();
+
+    forget(memory, recordId);
+
+    expect(summaries(dbPath)).toEqual(["[forgotten]", "[forgotten]", expect.stringContaining(OTHER)]);
+    memory.close();
+    const raw = bytes(dbPath);
+    for (const word of [...words(BODY), ...words(QUERY)]) expect(raw).not.toContain(word);
+    for (const word of words(OTHER)) expect(raw).toContain(word);
+  });
+
+  test("F3: a restored older copy of the database forgets them again, after a forget and after a private mark", () => {
+    for (const change of ["forget", "private"] as const) {
+      const { repo, e, memory, recordId, dbPath } = scenario();
+      memory.close();
+      const backup = join(tempDir(), "backup.sqlite");
+      copyFileSync(dbPath, backup);
+      const again = open(repo, e, { hostSessionId });
+      if (change === "forget") forget(again, recordId);
+      else markPrivate(again);
+      again.close();
+      for (const suffix of ["", "-wal", "-shm"]) if (existsSync(dbPath + suffix)) rmSync(dbPath + suffix);
+      copyFileSync(backup, dbPath);
+
+      // The first use of the restored copy replays the ledger into it.
+      const restored = open(repo, e, { hostSessionId });
+      restored.recall();
+      restored.close();
+
+      const raw = bytes(dbPath);
+      for (const word of [...words(BODY), ...words(QUERY)]) expect(raw, change).not.toContain(word);
+      for (const word of words(OTHER)) expect(raw.includes(word), `${change}: ${word}`).toBe(change === "forget");
+    }
+  });
+
+  test("F4: a session marked private before this left its Debrief calls' arguments; marking it again forgets them", () => {
+    const { repo, e, memory, dbPath } = scenario();
+    const before = new Database(dbPath, { readonly: true });
+    const left = before.prepare("SELECT rowid, meta FROM import_events WHERE disposition = 'tool_call'").all() as { rowid: number; meta: string }[];
+    before.close();
+    markPrivate(memory);
+    memory.close();
+    // What 0.1.0 left: the session's memory forgotten and the session marked, its calls' arguments kept.
+    const db = new Database(dbPath);
+    for (const row of left) db.prepare("UPDATE import_events SET meta = ? WHERE rowid = ?").run(row.meta, row.rowid);
+    db.close();
+
+    const marked = open(repo, e, { hostSessionId });
+    expect(markPrivate(marked)).toMatchObject({ alreadyPrivate: false, forgotten: [] });
+    // Now nothing is left: marking again changes nothing.
+    expect(markPrivate(marked)).toMatchObject({ alreadyPrivate: true, forgotten: [] });
+    marked.close();
+    const raw = bytes(dbPath);
+    for (const word of [...words(BODY), ...words(QUERY), ...words(OTHER)]) expect(raw).not.toContain(word);
   });
 });
