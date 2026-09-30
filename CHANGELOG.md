@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Call log
+
+- **Every call Debrief serves is logged, for `debrief report`.** One row per memory tool call and per hook run (not PreToolUse), in the workspace database (schema version 8): what a recall asked, the records it returned in order with their kind and freshness label, the bytes and estimated tokens the host got, omissions and continuations, time per recall stage (rank, load, freshness, pack) and the host's tool-use id, which names the call in Claude Code's transcript. The start hooks log exactly the records their context shows. Rows keep ids and labels, never a record's text. Forgetting a record blanks the queries that returned it; a private session blanks its rows. Logging never changes a call's result or a hook's output; a failure to log is reported by `debrief status`.
+
 ### Private sessions
 
 - **"Don't remember this session" covers a resumed conversation.** Resuming a Codex thread, or `claude --resume`, starts a new Debrief session with the same host session id. Marking it private used to forget only what the current Debrief session stored and what was imported from the transcript, while the sessions before the resume kept their records in recall, `memory_read` and timelines. Now every Debrief session of the conversation is forgotten and marked: what they wrote, the global preferences they confirmed and the questions they raised. The result's `earlierSessions` counts them and the notice asks the agent to tell the user they were included. A restored older copy of the database is marked again, even one taken before the resume. Another conversation, or another host's session with the same id, is untouched. A conversation already marked by 0.1.0 is repaired by saying "don't remember this session" in it again.
