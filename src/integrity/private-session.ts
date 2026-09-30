@@ -114,7 +114,29 @@ export function applyPrivateSession(db: Db, entry: PrivateSessionEntry): void {
   for (const sessionId of markedSessions(entry)) markSession.run(sessionId);
   const mark = prepared(db, "INSERT OR IGNORE INTO private_transcripts (host, transcript_id, session_id, created_at) VALUES (?, ?, ?, ?)");
   for (const transcript of entry.transcripts) mark.run(transcript.host, transcript.transcriptId, entry.sessionId, entry.at);
+  // Every call's arguments, not only those whose result record was forgotten: Debrief's own calls
+  // (a query, a recorded body) have no result record.
+  prepared(db, `UPDATE import_events SET meta = ${FORGOTTEN_CALL_META} WHERE disposition = 'tool_call' AND ${IN_TRANSCRIPTS}`).run(JSON.stringify(entry.transcripts));
 }
+
+/** Whether a call in `transcripts` still holds its arguments (a session marked private under 0.1.0 left Debrief's own calls'). */
+export function callArgumentsLeft(db: Db, transcripts: { host: string; transcriptId: string }[]): boolean {
+  return (
+    prepared(db, `SELECT 1 FROM import_events WHERE disposition = 'tool_call' AND json_extract(meta, '$.summary') IS NOT '[forgotten]' AND ${IN_TRANSCRIPTS} LIMIT 1`).get(
+      JSON.stringify(transcripts),
+    ) !== undefined
+  );
+}
+
+/**
+ * A call's import bookkeeping once what it said is forgotten: which call and tool it was stay
+ * (import dedupe and result lookup need them), its summary, paths and URLs go.
+ */
+export const FORGOTTEN_CALL_META = `json_object('callId', json_extract(meta, '$.callId'), 'tool', json_extract(meta, '$.tool'),
+  'summary', '[forgotten]', 'retention', json_extract(meta, '$.retention'), 'paths', json('[]'), 'urls', json('[]'), 'sensitive', json('false'))`;
+
+/** `import_events` rows of the JSON list of `{host, transcriptId}` bound here (a row-value IN, so the primary key finds them). */
+const IN_TRANSCRIPTS = `(host, transcript_id) IN (SELECT json_extract(value, '$.host'), json_extract(value, '$.transcriptId') FROM json_each(?))`;
 
 /** Whether a ledger entry's markers are all present (a restored older copy lacks them). */
 export function privateSessionApplied(db: Db, entry: PrivateSessionEntry): boolean {
