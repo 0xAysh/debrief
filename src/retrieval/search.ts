@@ -196,10 +196,13 @@ const CLOSE_FRACTION = 0.9;
 
 /**
  * Why a record ranked where it did beyond bm25, as bits (a continuation carries them compactly, one
- * base-36 digit per record, so together they stay below 36). `meaning`: meaning search found the
- * record, or ranked it above its keyword place (src/retrieval/meaning.ts).
+ * base-36 digit per record, so together they stay below 36). `meaning`: meaning search ranked a
+ * record the query's words match above its keyword place (src/retrieval/meaning.ts).
+ * `meaningOnly`: meaning search found a record that shares no word with the query. It is never
+ * combined with another bit: the tiers and trust only order records the words match, and such a
+ * record is not also `meaning`. So its digit is always "w" (32), and the sum stays below 36.
  */
-export const RANKED_BY = { phrase: 1, window: 2, newest: 4, trust: 8, meaning: 16 } as const;
+export const RANKED_BY = { phrase: 1, window: 2, newest: 4, trust: 8, meaning: 16, meaningOnly: 32 } as const;
 /** The tiers' bits: records carrying any of them lead a sequence, in the order the tiers gave them. */
 export const TIER_BITS = RANKED_BY.phrase | RANKED_BY.window | RANKED_BY.newest;
 

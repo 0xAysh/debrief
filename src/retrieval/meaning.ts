@@ -13,9 +13,11 @@ export const RRF_K = 60;
 /**
  * Records only meaning found that a sequence admits: the vector order's best this many. Every
  * eligible record is somewhere in the vector order, so without a bound each recall would carry
- * all of memory; keyword matches take their vector rank from the whole order.
+ * all of memory; keyword matches take their vector rank from the whole order. No cosine floor
+ * told a real answer from noise (ADR 0001), so the bound is a count: 10 kept every answer the
+ * measurements found only by meaning and left most questions with no answer free of noise.
  */
-export const MEANING_ONLY = 50;
+export const MEANING_ONLY = 10;
 
 export interface MeaningScan {
   /** Eligible records with a vector, best match first (seq descending on ties). */

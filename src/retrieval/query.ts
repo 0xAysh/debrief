@@ -167,6 +167,7 @@ export function explainRank(bits: number, query: ParsedQuery, contains: readonly
   if ((bits & RANKED_BY.newest) !== 0) reasons.push("newest first: asks about now");
   if ((bits & RANKED_BY.trust) !== 0 && trusted !== undefined) reasons.push(describeTrust(trusted));
   if ((bits & RANKED_BY.meaning) !== 0) reasons.push("meaning");
+  if ((bits & RANKED_BY.meaningOnly) !== 0) reasons.push("meaning only");
   return reasons.length === 0 ? undefined : reasons.join("; ");
 }
 

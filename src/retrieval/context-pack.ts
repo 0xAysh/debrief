@@ -52,7 +52,13 @@ export interface ContinuationState {
  */
 export function sealContinuation(secret: Buffer, state: ContinuationState): string {
   // One base-36 digit per remaining seq, and only when some record has a reason, so a plain query's token is unchanged.
-  const reasons = state.remaining.some((seq) => state.rankedBy.has(seq)) ? state.remaining.map((seq) => (state.rankedBy.get(seq) ?? 0).toString(36)).join("") : null;
+  const digit = (seq: number): string => {
+    const bits = state.rankedBy.get(seq) ?? 0;
+    // RANKED_BY keeps what one record can carry below 36; a second digit would shift every reason after it.
+    if (bits >= 36) throw new Error(`rank reasons ${bits} do not fit one base-36 digit`);
+    return bits.toString(36);
+  };
+  const reasons = state.remaining.some((seq) => state.rankedBy.has(seq)) ? state.remaining.map(digit).join("") : null;
   // Two digits per record trust lifted, in sequence order; which records they belong to is in `w`.
   const trust = state.remaining.flatMap((seq) => {
     const reason = state.trusted.get(seq);
