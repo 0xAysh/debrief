@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
@@ -110,7 +110,18 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     expect(healthy.stdout).toMatch(/^ {2}capture gaps {3}none$/m);
     expect(healthy.stdout).toMatch(/^ {2}import {9}current_project$/m);
     expect(healthy.stdout).toMatch(/^ {2}preferences {4}no questions waiting$/m);
+    expect(healthy.stdout).toMatch(/^ {2}meaning search ✔ snowflake-arctic-embed-xs@q8 loads; .* searchable by meaning/m);
     expect(healthy.stdout).toMatch(/^✔ healthy$/m);
+
+    // An installed model that no longer loads is a problem, not a silent fall back to keyword search.
+    const model = join(dirname(realpathSync(join(bin, "debrief"))), "models", "snowflake-arctic-embed-xs", "model_quantized.onnx");
+    const weights = readFileSync(model);
+    writeFileSync(model, weights.subarray(0, 1024));
+    const unloadable = debriefStatus();
+    writeFileSync(model, weights);
+    expect(unloadable.code).toBe(1);
+    expect(unloadable.stdout).toMatch(/^ {2}meaning search ✘ snowflake-arctic-embed-xs@q8 failed to load: model_quantized\.onnx does not match the pinned model .*; recall finds memory by its words only$/m);
+    expect(unloadable.stdout).toMatch(/^✘ 1 problem$/m);
 
     // From another repository: the hooks fire, in the repository named.
     const elsewhere = debriefStatus(initRepo());
