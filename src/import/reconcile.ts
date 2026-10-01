@@ -1113,7 +1113,7 @@ function safeCallMeta(batch: Batch, event: Extract<NormalizedEvent, { type: "too
     ? []
     : event.paths
         .filter((path) => isWithin(path, batch.worktree))
-        .map((path) => passage(batch, relative(batch.worktree, path) || ".", 500, false))
+        .map((path) => passage(batch, worktreeRelative(batch.worktree, path) || ".", 500, false))
         .slice(0, 10);
   const urls = sensitiveArguments ? [] : event.urls.map(safeUrlOrigin).filter((url): url is string => url !== null).slice(0, 10);
   let summary: string;
@@ -1122,7 +1122,7 @@ function safeCallMeta(batch: Batch, event: Extract<NormalizedEvent, { type: "too
   else if (event.paths.length > 0) summary = `${tool} ${paths[0] ?? "[external path omitted]"}`;
   else summary = boundPassage(redactedSummary.text.trim(), PASSAGE_LIMITS.callSummaryBytes).text;
   // The read's path, as it is stored in `paths` (unredacted and in the worktree, or not at all).
-  const readPath = event.read === undefined || sensitiveArguments || !isWithin(event.read.path, batch.worktree) ? null : relative(batch.worktree, event.read.path);
+  const readPath = event.read === undefined || sensitiveArguments || !isWithin(event.read.path, batch.worktree) ? null : worktreeRelative(batch.worktree, event.read.path);
   const read = event.read !== undefined && readPath !== null && paths.includes(readPath) ? { read: { ...event.read, path: readPath } } : {};
   return { callId: event.callId, tool, summary, retention: retentionFor(event.toolKind), paths, urls, sensitive: sensitivePath, ...read };
 }
@@ -1252,6 +1252,11 @@ function anchorOf(path: string, offset: number): string | null {
   } finally {
     closeSync(fd);
   }
+}
+
+/** `path` relative to `worktree`, `/`-separated on every platform, as Git and every stored reference write it. */
+function worktreeRelative(worktree: string, path: string): string {
+  return relative(worktree, path).split(sep).join("/");
 }
 
 function isWithin(path: string, root: string): boolean {
