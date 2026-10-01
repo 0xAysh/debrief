@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { DebriefError } from "../errors.js";
 import { eligibilityOf, IN_SCOPE_SQL, type Lifecycle, type RecordRow, requireInScopeRecord, type Taint } from "../retrieval/eligibility.js";
+import { dropOrphanVectors } from "../retrieval/vectors.js";
 import type { Attribution, LinkRelation, RecordKind } from "../schemas.js";
 import { type Db, openDatabase, prepared, requireTransaction, writeTransaction } from "../storage/database.js";
 import { forgetCallsReturning } from "../storage/call-log.js";
@@ -610,21 +611,27 @@ function effectsOnEvents(db: Db, entry: LedgerEntry, records: readonly string[])
 
 /**
  * Deletes what a forgotten record said: title, body, references, applicability and content
- * hash, its search chunks (and their FTS entries, then merged away), its links, the summary its
+ * hash, its search chunks (and their FTS entries, then merged away, and their vectors), its links, the summary its
  * tool call left in import bookkeeping (and every Debrief call's that named it), what the calls
  * that returned or wrote it asked (the call log), and the reasons of its earlier lifecycle changes (they
  * may quote it). Ids, kind, host, times and provenance ids stay as the tombstone.
  */
 function removePayload(db: Db, records: readonly string[], events: readonly { host: string; eventId: string }[]): void {
   const ids = JSON.stringify(records);
-  const chunks = prepared(db, "SELECT id, text, terms FROM chunks WHERE record_id IN (SELECT value FROM json_each(?))").all(ids) as {
+  const chunks = prepared(db, "SELECT id, text, terms, text_hash FROM chunks WHERE record_id IN (SELECT value FROM json_each(?))").all(ids) as {
     id: number;
     text: string;
     terms: string;
+    text_hash: string;
   }[];
   const unindex = prepared(db, "INSERT INTO chunks_fts (chunks_fts, rowid, text, terms) VALUES ('delete', ?, ?, ?)");
   for (const chunk of chunks) unindex.run(chunk.id, chunk.text, chunk.terms);
   prepared(db, "DELETE FROM chunks WHERE record_id IN (SELECT value FROM json_each(?))").run(ids);
+  // Their vectors, of every model, unless a remaining chunk has the same text.
+  dropOrphanVectors(
+    db,
+    chunks.map((chunk) => chunk.text_hash),
+  );
   // Rewrites the index without the deleted entries, instead of leaving them in older segments.
   if (chunks.length > 0) db.exec("INSERT INTO chunks_fts (chunks_fts) VALUES ('optimize')");
   prepared(db, "DELETE FROM links WHERE from_id IN (SELECT value FROM json_each($ids)) OR to_id IN (SELECT value FROM json_each($ids))").run({ ids });

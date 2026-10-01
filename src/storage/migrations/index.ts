@@ -9,6 +9,7 @@ import * as preferences from "./0006-preferences-private-sessions.js";
 import * as identifierTerms from "./0007-identifier-terms.js";
 import * as callLog from "./0008-call-log.js";
 import * as callReviews from "./0009-call-reviews.js";
+import * as chunkVectors from "./0010-chunk-vectors.js";
 
 /**
  * Ordered schema migrations. Entry `i` upgrades `PRAGMA user_version` from `i` to `i + 1`.
@@ -26,6 +27,7 @@ const MIGRATIONS: readonly (string | ((db: BetterSqlite3.Database) => void))[] =
   identifierTerms.migrate,
   callLog.sql,
   callReviews.sql,
+  chunkVectors.migrate,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

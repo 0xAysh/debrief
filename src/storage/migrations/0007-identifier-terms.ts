@@ -29,5 +29,6 @@ CREATE VIRTUAL TABLE chunks_fts USING fts5 (
 
 export function migrate(db: BetterSqlite3.Database): void {
   db.exec(sql);
-  rebuildSearchIndex(db);
+  // `chunks.text_hash` comes with schema version 10, which fills it for these chunks.
+  rebuildSearchIndex(db, { textHashes: false });
 }

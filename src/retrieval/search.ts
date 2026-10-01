@@ -2,6 +2,7 @@ import { DebriefError } from "../errors.js";
 import type { ExternalRef } from "../schemas.js";
 import { type Db, prepared, requireTransaction } from "../storage/database.js";
 import { RECALL_ELIGIBLE_SQL, type RecordRow, VISIBLE_SQL } from "./eligibility.js";
+import { textHash } from "./vectors.js";
 
 /**
  * Lexical search over the derived `chunks` / `chunks_fts` projection.
@@ -68,22 +69,31 @@ export function identifierTerms(text: string): string {
   return words.join(" ");
 }
 
-/** Adds a record's chunks to the projection. Call inside the transaction that inserts the record. */
-export function indexRecord(db: Db, record: IndexableRecord): void {
+/**
+ * Adds a record's chunks to the projection, each with the hash of its text, which keys its vector
+ * (src/retrieval/vectors.ts; the background fill embeds it later). Call inside the transaction that
+ * inserts the record.
+ */
+export function indexRecord(db: Db, record: IndexableRecord, options: { textHashes?: boolean } = {}): void {
   requireTransaction(db, "indexRecord");
-  const insertChunk = prepared(db, "INSERT INTO chunks (record_id, ordinal, field, text, terms) VALUES (?, ?, ?, ?, ?)");
+  const hashes = options.textHashes ?? true;
+  const insertChunk = hashes
+    ? prepared(db, "INSERT INTO chunks (record_id, ordinal, field, text, terms, text_hash) VALUES (?, ?, ?, ?, ?, ?)")
+    : prepared(db, "INSERT INTO chunks (record_id, ordinal, field, text, terms) VALUES (?, ?, ?, ?, ?)");
   const insertFts = prepared(db, "INSERT INTO chunks_fts (rowid, text, terms) VALUES (?, ?, ?)");
   chunksFor(record).forEach((chunk, ordinal) => {
-    const { lastInsertRowid } = insertChunk.run(record.id, ordinal, chunk.field, chunk.text, chunk.terms);
+    const { lastInsertRowid } = insertChunk.run(record.id, ordinal, chunk.field, chunk.text, chunk.terms, ...(hashes ? [textHash(chunk.text)] : []));
     insertFts.run(lastInsertRowid, chunk.text, chunk.terms);
   });
 }
 
 /**
- * Discards and regenerates the whole projection from canonical records.
- * Call inside a write transaction; canonical tables are only read.
+ * Discards and regenerates the whole projection from canonical records. Chunk ids change, text
+ * hashes do not, so every stored vector stays valid. Call inside a write transaction; canonical
+ * tables are only read. `textHashes: false` is for the schema-7 migration, which runs before
+ * `chunks` has that column (schema version 10 adds and fills it).
  */
-export function rebuildSearchIndex(db: Db): { records: number; chunks: number } {
+export function rebuildSearchIndex(db: Db, options: { textHashes?: boolean } = {}): { records: number; chunks: number } {
   requireTransaction(db, "rebuildSearchIndex");
   db.exec("INSERT INTO chunks_fts (chunks_fts) VALUES ('delete-all'); DELETE FROM chunks;");
   const rows = db.prepare("SELECT id, title, body, external_refs FROM records ORDER BY seq").all() as {
@@ -93,7 +103,7 @@ export function rebuildSearchIndex(db: Db): { records: number; chunks: number } 
     external_refs: string;
   }[];
   for (const row of rows) {
-    indexRecord(db, { id: row.id, title: row.title, body: row.body, externalRefs: JSON.parse(row.external_refs) as ExternalRef[] });
+    indexRecord(db, { id: row.id, title: row.title, body: row.body, externalRefs: JSON.parse(row.external_refs) as ExternalRef[] }, options);
   }
   db.exec("INSERT INTO chunks_fts (chunks_fts) VALUES ('integrity-check')");
   const chunks = (db.prepare("SELECT count(*) AS n FROM chunks").get() as { n: number }).n;
@@ -184,8 +194,14 @@ const RELEVANT_FRACTION = 0.5;
  */
 const CLOSE_FRACTION = 0.9;
 
-/** Why a record ranked where it did beyond bm25, as bits (a continuation carries them compactly). */
-export const RANKED_BY = { phrase: 1, window: 2, newest: 4, trust: 8 } as const;
+/**
+ * Why a record ranked where it did beyond bm25, as bits (a continuation carries them compactly, one
+ * base-36 digit per record, so together they stay below 36). `meaning`: meaning search found the
+ * record, or ranked it above its keyword place (src/retrieval/meaning.ts).
+ */
+export const RANKED_BY = { phrase: 1, window: 2, newest: 4, trust: 8, meaning: 16 } as const;
+/** The tiers' bits: records carrying any of them lead a sequence, in the order the tiers gave them. */
+export const TIER_BITS = RANKED_BY.phrase | RANKED_BY.window | RANKED_BY.newest;
 
 /**
  * The frozen order of a recall sequence: record `seq`s in a total, deterministic order
@@ -294,6 +310,18 @@ function relevanceBands(rows: readonly { rank: number; tier: string | null }[]):
     }
     return band;
   });
+}
+
+/** Which of `seqs` the full-text query matches (in any chunk); eligibility is the caller's. */
+export function matchingSeqs(db: Db, match: string, seqs: readonly number[]): Set<number> {
+  if (seqs.length === 0) return new Set();
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT r.seq AS seq FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid JOIN records r ON r.id = c.record_id
+       WHERE chunks_fts MATCH $match AND r.seq IN (SELECT value FROM json_each($seqs))`,
+    )
+    .all({ match, seqs: JSON.stringify(seqs) }) as { seq: number }[];
+  return new Set(rows.map((row) => row.seq));
 }
 
 /**
