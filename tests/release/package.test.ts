@@ -109,7 +109,7 @@ describe("the published package", () => {
       await new Promise((r) => setTimeout(r, 100));
     }
     const pack = await server.ok<ContextPack>("memory_recall", { query: "socket resets" });
-    expect(pack.items[0]).toMatchObject({ why: "meaning", excerpt: expect.stringMatching(/^ECONNRESET/) as unknown });
+    expect(pack.items[0]).toMatchObject({ why: "meaning only", excerpt: expect.stringMatching(/^ECONNRESET/) as unknown });
     // The model ran from the unpacked package, not from this checkout.
     expect(childrenMatching(server.pid, "embedder.mjs").map((entry) => entry.command)).toEqual([expect.stringContaining(join(pkg, "dist", "embedder.mjs"))]);
     await server.close();
