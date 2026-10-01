@@ -28,6 +28,11 @@ export const ELIGIBLE_STATE_SQL = `(r.lifecycle = 'active' AND NOT EXISTS (SELEC
 export const VISIBLE_SQL = `(${ELIGIBLE_STATE_SQL} AND ${IN_SCOPE_SQL})`;
 export const RECALL_ELIGIBLE_SQL = `(${VISIBLE_SQL} AND r.kind <> 'checkpoint')`;
 
+/** How many records recall can return in this scope, preferences aside (a session start lists those in full). */
+export function countWorkRecords(db: Db, workstreamId: string): number {
+  return (prepared(db, `SELECT count(*) AS n FROM records r WHERE ${RECALL_ELIGIBLE_SQL} AND r.kind <> 'preference'`).get({ workstreamId }) as { n: number }).n;
+}
+
 export type Lifecycle = "active" | "corrected" | "superseded" | "retracted" | "forgotten";
 export type Taint = "invalidated" | "quarantined";
 

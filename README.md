@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/debrief-cli)](https://www.npmjs.com/package/debrief-cli) [![license](https://img.shields.io/npm/l/debrief-cli)](LICENSE)
 
-**Working memory for Claude Code that stays on your machine.** When a session ends, even when it is killed mid-turn, the next one starts already knowing where things stand: the goal, what was tried, what was decided, what comes next. Sub-agents start with the checkpoint and recent memory too, and what they find is remembered.
+**Working memory for Claude Code that stays on your machine.** When a session ends, even when it is killed mid-turn, the next one is told where things stand and fetches it when it continues that work: the goal, what was tried, what was decided, what comes next. At the start of each task the agent searches memory for what that task needs. Sub-agents start with the checkpoint and recent memory, and what they find is remembered.
 
 How it differs from hosted memory plugins:
 
@@ -26,10 +26,12 @@ sequenceDiagram
     You->>CC: start a session
     CC->>D: SessionStart hook
     D->>DB: import what the last session left in its transcript
-    D-->>CC: checkpoint · last session's turns · preferences · recent memory
+    D-->>CC: how to use Debrief · preferences · questions for you · one line pointing at the checkpoint
     Note over CC: the model starts with it, no tool call needed
     You->>CC: prompts
-    CC->>D: memory_recall · memory_record · memory_checkpoint (MCP)
+    CC->>D: memory_bootstrap (continuing the work) · memory_recall (each new task)
+    D-->>CC: the checkpoint, the last session's turns · what the task needs
+    CC->>D: memory_record · memory_checkpoint (MCP)
     CC->>D: SubagentStart hook (when it delegates)
     D-->>CC: the sub-agent's starting memory
     CC->>D: Stop hook, at the end of every turn
@@ -37,7 +39,8 @@ sequenceDiagram
     D-->>You: ◪ debrief · saved turn (12 events), shown by Claude Code
 ```
 
-- **Killed or crashed sessions are not lost.** A turn the Stop hook never saw is read from Claude Code's transcript at the next session start and given to the agent as "Last session … without a checkpoint".
+- **Killed or crashed sessions are not lost.** A turn the Stop hook never saw is read from Claude Code's transcript at the next session start. The agent is told that the last session ended without a checkpoint, and `memory_bootstrap` returns its last turns.
+- **Session start stays small.** It carries what applies to every task, not the last line of work, which may not be the one you start: about 2.5 KB (some 600 tokens) plus your preferences, however much memory holds. Task context arrives with the task, when the agent searches memory.
 - **The agent keeps it current.** After several turns of work with no checkpoint, Debrief asks the agent once, at the end of a turn, to save one.
 - **Scope follows Git.** Memory belongs to the repository (and the worktree's line of work) you are in; one repository's memory never shows up in another.
 
@@ -74,10 +77,11 @@ Claude Code shows them to you; they are never sent to the model.
 
 | Notice | Meaning |
 |---|---|
-| `checkpoint r3 loaded · 2 preferences · 8 items` | Session start: what the agent was given before your first prompt. |
+| `checkpoint r3 · 2 preferences` | Session start: the agent was given your preferences and told that checkpoint r3 exists. It fetches the checkpoint with `memory_bootstrap` when it continues that work. |
+| `12 records` | Session start with no checkpoint yet: the agent was told how many records it can recall. |
 | `no memory yet` | Nothing stored for this repository yet. |
-| `last session ended without a checkpoint (claude-code)` | The last session stopped, or crashed, before saving where it stood. Its last turns were read from its transcript and given to the agent. |
-| `turns after r3 included` | Work happened after the last checkpoint. Those turns were given to the agent too. |
+| `last session ended without a checkpoint (claude-code)` | The last session stopped, or crashed, before saving where it stood. Its last turns were read from its transcript; the agent was told, and `memory_bootstrap` returns them. |
+| `turns after r3 not checkpointed` | Work happened after the last checkpoint. The agent was told, and `memory_bootstrap` returns those turns. |
 | `transcript import needs your answer` | The import question above is still open. |
 | `workstream to confirm` | Debrief cannot tell which line of work this session continues, so the agent will ask you. |
 | `saved turn (12 events)` | The turn that just ended was saved. |

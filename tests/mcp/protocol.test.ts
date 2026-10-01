@@ -53,7 +53,7 @@ describe("MCP protocol surface", () => {
     for (const rule of RULES) expect(context).toMatch(rule);
   });
 
-  test("the index → read workflow costs the protocol a line, and session start stays within noise of 0.1.0", async () => {
+  test("S6: the index → read workflow and per-task recall cost the protocol a line, and an empty repository's session start stays within noise of 0.1.0", async () => {
     const server = await spawnServer({ cwd: initRepo(), home: tempDir() });
     const instructions = server.client.getInstructions() ?? "";
     expect(instructions).toMatch(/mode "compact".*memory_read/s);
@@ -298,4 +298,5 @@ const RULES = [
   /checkpoint_conflict.*never overwrite/is,
   /honest miss/i,
   /mode "compact".*memory_read/s,
+  /At the start of each new task, memory_recall mode "compact" with its key terms/,
 ];

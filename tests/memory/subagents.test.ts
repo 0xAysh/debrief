@@ -102,14 +102,13 @@ describe("a sub-agent's work is kept under the session that started it", () => {
     const [prompt] = recalled(memory, "SYNTHETIC-DELEGATED retry budget", "SYNTHETIC-DELEGATED");
     expect(prompt?.attribution).toBe("agent_inference");
     expect(prompt?.source?.agentType).toBe("general-purpose");
-    const context = memory.sessionStart()?.context ?? "";
-    const digestLines = context.split("User prompts:\n")[1]?.split("\n") ?? [];
-    const prompts = digestLines.slice(0, digestLines.findIndex((line) => !line.startsWith("- ")));
-    expect(prompts).toEqual(["- SYNTHETIC-STEP 2.", "- SYNTHETIC-STEP 3.", "- SYNTHETIC-STEP 4."]);
+    // The digest (memory_bootstrap's lastSession) holds the user's prompts only.
+    const lastSession = memory.bootstrap().lastSession;
+    expect(lastSession?.prompts).toEqual(["SYNTHETIC-STEP 2.", "SYNTHETIC-STEP 3.", "SYNTHETIC-STEP 4."]);
     // It can be an item of memory, labelled as the sub-agent's, never one of the user's prompts.
-    expect(context).toMatch(/- \[evidence · \d+m · claude-code\/general-purpose · \w+\] SYNTHETIC-DELEGATED find where the retry budget is set/);
+    expect(prompt?.excerpt).toMatch(/^SYNTHETIC-DELEGATED find where the retry budget is set/);
     // The sub-agent's command is the session's work.
-    expect(context).toMatch(/Commands: .*✓ grep -rn budget src/);
+    expect(lastSession?.commands).toContainEqual({ command: "grep -rn budget src", failed: false });
   });
 
   test("the report counts once: the parent's copy of it (the Agent result) is left out while the sub-agent's transcript is on disk, and kept when it is not", () => {
@@ -164,11 +163,8 @@ describe("a sub-agent's work is kept under the session that started it", () => {
 
   test("the digest's last reply is the session's own agent, not a sub-agent or the prompt it was given", () => {
     const s = delegated({ background: true });
-    const context = (() => {
-      s.open().endTurn({ transcriptPath: s.parent });
-      return s.open().sessionStart()?.context ?? "";
-    })();
-    expect(context).toContain("Last reply: Done with turn 1.");
+    s.open().endTurn({ transcriptPath: s.parent });
+    expect(s.open().bootstrap().lastSession?.lastReply).toBe("Done with turn 1.");
   });
 });
 

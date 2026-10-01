@@ -158,8 +158,8 @@ describe("debrief hook session-start (Claude Code payload on stdin)", () => {
     const output = JSON.parse(run.stdout) as { hookSpecificOutput: { hookEventName: string; additionalContext: string }; systemMessage: string };
     expect(Object.keys(output).sort()).toEqual(["hookSpecificOutput", "systemMessage"]);
     expect(output.hookSpecificOutput.hookEventName).toBe("SessionStart");
-    expect(output.hookSpecificOutput.additionalContext).toContain("Wire the key into charge()");
-    expect(output.systemMessage).toMatch(/^◪ debrief · checkpoint r1 loaded/);
+    expect(output.hookSpecificOutput.additionalContext).toContain('Memory for this line of work: checkpoint r1 ("Stop double charges")');
+    expect(output.systemMessage).toBe("◪ debrief · checkpoint r1");
   });
 
   test("the session it binds carries Claude Code's session id", () => {

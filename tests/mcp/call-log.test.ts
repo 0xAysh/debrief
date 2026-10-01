@@ -215,6 +215,8 @@ describe("the call log: one row per call", () => {
     // With import approved, Stop's capture opens the database; logging never opens one itself.
     memory.bootstrap({ importChoice: "current_project" });
     const checkpoint = memory.checkpoint({ expectedRevision: 0, goal: "Fix the double charge", status: "Found the retry loop" }).recordId;
+    const asked = memory.record({ kind: "preference", body: "Run the gateway tests before every commit.", attribution: "user_direction" });
+    const preference = memory.settlePreference({ candidateId: asked.preference.candidateId ?? "", reply: { action: "accept", label: "This repo only" } }).recordId;
     memory.close();
     const notes = seed(e, 60);
     const transcript = installTranscript(e.config, "2.1.281/basic.jsonl", { cwd: e.repo, sessionId: SESSION });
@@ -235,19 +237,21 @@ describe("the call log: one row per call", () => {
     for (const row of logged) expect(row.ms).toBeGreaterThan(0);
     const [started, subagentStarted, stopped] = logged;
     expect(stopped?.bytes).toBe(Buffer.byteLength(stop.stdout));
-    for (const [row, run] of [
-      [started, start],
-      [subagentStarted, subagent],
-    ] as const) {
-      expect(row?.bytes).toBe(Buffer.byteLength(run.stdout));
-      expect(row?.returned[0]).toMatchObject({ id: checkpoint, kind: "checkpoint", position: 0 });
-      // The items listed, exactly: those the character cap cut are not among them.
-      const listed = [...contextOf(run.stdout).matchAll(/\((rec_[0-9a-f]{32})\)/g)].map((match) => match[1]);
-      const items = row?.returned.filter((r) => r.kind === "note").map((r) => r.id) ?? [];
-      expect(items).toEqual(listed);
-      expect(items.length).toBeGreaterThan(0);
-      expect(items.length).toBeLessThan(notes.length);
-    }
+    expect(started?.bytes).toBe(Buffer.byteLength(start.stdout));
+    expect(subagentStarted?.bytes).toBe(Buffer.byteLength(subagent.stdout));
+
+    // S7: the session start shows the preferences and a pointer, so it returns the preferences only.
+    expect(preference).toMatch(/^rec_[0-9a-f]{32}$/);
+    expect(started?.returned).toEqual([{ id: preference, kind: "preference", freshness: null, position: 0 }]);
+    expect(contextOf(start.stdout)).toMatch(/^Memory for this line of work: checkpoint r1 /m);
+
+    // The sub-agent start is unchanged: the checkpoint first, then the items listed, exactly (those the character cap cut are not among them).
+    expect(subagentStarted?.returned[0]).toMatchObject({ id: checkpoint, kind: "checkpoint", position: 0 });
+    const listed = [...contextOf(subagent.stdout).matchAll(/\((rec_[0-9a-f]{32})\)/g)].map((match) => match[1]);
+    const items = subagentStarted?.returned.filter((r) => r.kind === "note").map((r) => r.id) ?? [];
+    expect(items).toEqual(listed);
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.length).toBeLessThan(notes.length);
   });
 
   test("C6: a recall's stages (rank, load, freshness, pack) are each timed and fit in its total; time spent waiting on the user is not counted", async () => {

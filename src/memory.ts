@@ -52,7 +52,7 @@ import {
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
-import { sessionDigest, workSince } from "./retrieval/digest.js";
+import { type SessionDigest, sessionDigest, workSince } from "./retrieval/digest.js";
 import { oneLine, renderSessionStart, renderSubagentStart, type SessionStart, type SubagentStart, type TurnEnd, unreadableSessionStart, unreadableSubagentStart, userNotice } from "./retrieval/session-context.js";
 import { type HookFailure, recordHookFailure, recentHookFailures } from "./import/hook-failures.js";
 import { type HookRun, lastHookRuns } from "./import/hook-runs.js";
@@ -77,7 +77,7 @@ import {
   sealContinuation,
   usage,
 } from "./retrieval/context-pack.js";
-import { eligibilityOf, type Lifecycle, requireVisibleRecord, type RecordRow, type Taint } from "./retrieval/eligibility.js";
+import { countWorkRecords, eligibilityOf, type Lifecycle, requireVisibleRecord, type RecordRow, type Taint } from "./retrieval/eligibility.js";
 import {
   captureObservations,
   type CheckedRef,
@@ -150,6 +150,7 @@ export type { CheckedRef, FreshnessReason, TestRunReason, TestRunView } from "./
 export type { HookFailure } from "./import/hook-failures.js";
 export type { HookRun } from "./import/hook-runs.js";
 export type { SessionStart, SubagentStart, TurnEnd } from "./retrieval/session-context.js";
+export type { SessionDigest } from "./retrieval/digest.js";
 export type { CaptureResult, CaptureSkip, ImportCounters, ImportGap, ImportStatus } from "./import/reconcile.js";
 export type { IntegrityReport } from "./storage/database.js";
 export type { CandidateSignal, ResolutionBasis, ScopeAmbiguity, WorkstreamCandidate } from "./bootstrap/workstream-resolution.js";
@@ -346,6 +347,13 @@ export interface BootstrapResult {
   import: ImportStatus;
   /** Same as `recall({ maxTokens, maxBytes })` after this bootstrap's import: head checkpoint plus the most recent eligible records. */
   context: ContextPack;
+  /**
+   * The last session's turns that no checkpoint covers, from its imported transcript: after the
+   * head checkpoint (once a new prompt shows the session went on), or all of it when there is no
+   * checkpoint. Null when a checkpoint covers every turn. Never this session's own turns. Outside
+   * the context budget, and bounded on its own (3 prompts, a reply, 5 commands, 10 file paths).
+   */
+  lastSession: SessionDigest | null;
   /**
    * The user's confirmed preferences (this repository's, then global ones; ≤ 4 KB, `omitted`
    * counts the rest), and unanswered preference questions from earlier sessions, asked once more.
@@ -725,9 +733,9 @@ const FORGET_NOTICE =
   "Nothing has been removed yet. Show the user the targets and the impact, and ask them to confirm explicitly; only then call memory_manage with action forget and this confirmToken. Forgetting cannot be undone. Records listed as invalidated or quarantined keep their own content (forget them too if the user wants). Host transcripts, loaded model contexts, exports and backups are not erased.";
 const DEFAULT_IMPORT_BUDGET_MS = 3_000;
 /**
- * The pack a start hook renders from (session or sub-agent). Pack items carry provenance JSON, so
- * this holds more than the rendered text keeps; the text caps (`SESSION_CONTEXT_CHARS`,
- * `SUBAGENT_CONTEXT_CHARS`) bound what the model gets.
+ * The pack a start hook works from. A sub-agent's start renders it: pack items carry provenance
+ * JSON, so this holds more than the rendered text keeps, and `SUBAGENT_CONTEXT_CHARS` bounds what
+ * the model gets. A session start only points at it (the head checkpoint, how many records).
  */
 const START_PACK_BYTES = 6_000;
 
@@ -790,13 +798,17 @@ class LocalMemory implements Memory {
       const imported = this.importer === null ? unsupportedHostStatus(this.host) : this.importer.bootstrap({ location, db }, parsed.importChoice);
       const stores = this.preferenceStores(db, scope);
       const preferences = preferenceBlock(stores, reaskAtSessionStart(stores));
+      const context = this.pack(db, scope, parse(RecallInput, { ...(parsed.maxTokens === undefined ? {} : { maxTokens: parsed.maxTokens }), ...(parsed.maxBytes === undefined ? {} : { maxBytes: parsed.maxBytes }) }), FULL_FORMAT);
+      const lastSession =
+        scope.workstream === null ? null : sessionDigest(db, scope.workstreamId, context.checkpoint?.createdAt ?? null, { host: this.host, hostSessionId: this.hostSessionId ?? null });
       return {
         preferences,
         scope: scopeView(db, scope),
         created: { workspace: location.isNew, workstream: scope.createdWorkstream },
         runtime: { sqliteVersion: runtime.sqliteVersion, fts5: runtime.fts5, schemaVersion: SCHEMA_VERSION },
         import: imported,
-        context: this.pack(db, scope, parse(RecallInput, { ...(parsed.maxTokens === undefined ? {} : { maxTokens: parsed.maxTokens }), ...(parsed.maxBytes === undefined ? {} : { maxBytes: parsed.maxBytes }) }), FULL_FORMAT),
+        context,
+        lastSession,
       };
     });
   }
@@ -924,10 +936,10 @@ class LocalMemory implements Memory {
       const parsed = parse(SessionStartInput, input);
       try {
         const boot = this.bootstrap({ maxBytes: START_PACK_BYTES, ...(parsed.hostSessionId === undefined ? {} : { hostSessionId: parsed.hostSessionId }) });
-        const workstreamId = boot.scope.workstreamId;
-        const digest = workstreamId === null || this.bound === undefined ? null : sessionDigest(this.bound.db, workstreamId, boot.context.checkpoint?.createdAt ?? null);
         const failures = recentHookFailures(this.home, { within: boot.scope.worktree });
-        const rendered = renderSessionStart(boot, { protocol: PROTOCOL, failures, now: new Date(), digest });
+        // Without a checkpoint or a last session to name, the pointer counts what recall can reach.
+        const workRecords = boot.context.checkpoint === null && boot.lastSession === null && this.bound !== undefined ? countWorkRecords(this.bound.db, this.bound.scope.workstreamId) : 0;
+        const rendered = renderSessionStart(boot, { protocol: PROTOCOL, failures, now: new Date(), workRecords });
         this.trace = { returned: rendered.records.map((entry, position) => ({ ...entry, position })), stages: this.trace?.stages ?? {} };
         return rendered;
       } catch (error) {
