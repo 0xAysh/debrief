@@ -135,7 +135,7 @@ export type ResolutionPreview =
  * same rows, so what status reports is what bootstrap would do. Safe on a read-only
  * connection; run it inside one read transaction for a consistent snapshot.
  */
-export function previewWorkstream(db: Db, signals: ScopeSignals): ResolutionPreview {
+function previewWorkstream(db: Db, signals: ScopeSignals): ResolutionPreview {
   const taskKey = signals.task === undefined ? null : normalizeTaskKey(signals.task);
   const decision = decide(db, signals, taskKey);
   switch (decision.status) {
@@ -333,7 +333,7 @@ function question(candidates: readonly WorkstreamCandidate[], omitted: number): 
  * else → lowercased, whitespace collapsed. Never cut: the input is already bounded
  * (`LIMITS.taskChars`), and a cut key would make two tasks sharing a prefix the same task.
  */
-export function normalizeTaskKey(raw: string): string {
+function normalizeTaskKey(raw: string): string {
   const text = raw.trim();
   const url = URL.canParse(text) && /^https?:\/\//i.test(text) ? new URL(text) : null;
   if (url !== null) {
