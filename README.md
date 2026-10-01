@@ -41,6 +41,7 @@ sequenceDiagram
 
 - **Killed or crashed sessions are not lost.** A turn the Stop hook never saw is read from Claude Code's transcript at the next session start. The agent is told that the last session ended without a checkpoint, and `memory_bootstrap` returns its last turns.
 - **Session start stays small.** It carries what applies to every task, not the last line of work, which may not be the one you start: about 2.5 KB (some 600 tokens) plus your preferences, however much memory holds. Task context arrives with the task, when the agent searches memory.
+- **Search finds meaning, not only words.** A recall for "monetary precision rounding" finds "amounts are integer minor units; never floats". Meaning search runs a small embedding model (snowflake-arctic-embed-xs, 23 MB) that ships inside the npm package, in a process the MCP server starts when a recall or new memory needs it and stops after two idle minutes. It sends nothing anywhere: the model and its runtime come with the code. Vectors live in the same SQLite file and are filled in the background, existing and imported memory included; `debrief status` shows how much is covered. Hooks never load the model. `DEBRIEF_MEANING_SEARCH=off` turns it off.
 - **The agent keeps it current.** After several turns of work with no checkpoint, Debrief asks the agent once, at the end of a turn, to save one.
 - **Scope follows Git.** Memory belongs to the repository (and the worktree's line of work) you are in; one repository's memory never shows up in another.
 
@@ -140,6 +141,7 @@ Tested on macOS (arm64). Other platforms and other Claude Code versions are unte
 - **Claude Code on your machine only.** Codex can be connected by hand ([docs/hosts.md](docs/hosts.md)); its hooks, and Pi, are not packaged yet. Cloud agents and sandboxes (Claude Code on the web, remote sandboxes) are not supported: memory lives on the machine that runs `debrief`.
 - **A step killed within about 0.1 s is lost.** Claude Code writes each step to its transcript a moment after taking it (measured on 2.1.283); a session killed inside that moment loses that step.
 - **Memory is not ground truth.** It is what agents observed and concluded. Freshness warnings cover code that has changed; issues, PRs and other external state are not checked.
+- **Meaning search costs memory while it runs.** The model's process holds about 300 MB while loaded (measured on macOS arm64), per Claude Code session that searched or filled in the last two minutes; idle sessions hold none of it. A large imported history takes minutes of background CPU to embed. Found only by meaning, an answer that shares no word with the question ranks below the records that share some.
 
 ## Documentation
 
