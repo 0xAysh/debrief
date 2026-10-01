@@ -71,12 +71,15 @@ describe.each(HOSTS)("interrupted $host import", ({ install, recordsPerTurn }) =
       // Timing only: peek at the committed record count to kill while batches are landing.
       const path = workspaceDb(killedHome);
       if (path === null || !existsSync(path)) continue;
+      let peek: Database.Database | undefined;
       try {
-        const peek = new Database(path, { readonly: true, fileMustExist: true });
+        peek = new Database(path, { readonly: true, fileMustExist: true });
         atKill = (peek.prepare("SELECT count(*) AS n FROM records").get() as { n: number }).n;
-        peek.close();
       } catch {
         // Not migrated yet.
+      } finally {
+        // Closed even then: Windows cannot delete the home while a handle on its database is open.
+        peek?.close();
       }
     }
     child.kill("SIGKILL");
