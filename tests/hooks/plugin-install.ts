@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { expect } from "vitest";
-import { tempDir } from "../helpers.js";
+import { npmCommand, tempDir } from "../helpers.js";
 import { claude, claudeEnv, type ClaudeSandbox } from "../mcp/claude.js";
 
 /**
@@ -17,10 +17,10 @@ export const STUB_KEY = "sk-ant-stub-000";
 /** `npm pack` of this checkout, installed with `npm install --global --prefix` from npm's cache; returns the prefix's bin directory. */
 export function installPackedDebrief(): string {
   const dir = tempDir("debrief-pack-");
-  const packed = spawnSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: ROOT, encoding: "utf8" });
+  const packed = spawnSync(...npmCommand(["pack", "--pack-destination", dir, "--silent"]), { cwd: ROOT, encoding: "utf8" });
   expect(packed.status, packed.stderr).toBe(0);
   const tarball = join(dir, packed.stdout.trim().split("\n").at(-1) ?? "");
-  const installed = spawnSync("npm", ["install", "--global", "--prefix", join(dir, "prefix"), "--offline", "--no-audit", "--no-fund", tarball], { encoding: "utf8", timeout: 120_000 });
+  const installed = spawnSync(...npmCommand(["install", "--global", "--prefix", join(dir, "prefix"), "--offline", "--no-audit", "--no-fund", tarball]), { encoding: "utf8", timeout: 120_000 });
   expect(installed.status, `offline install from npm's cache failed (run npm ci once): ${installed.stderr}`).toBe(0);
   return join(dir, "prefix", "bin");
 }

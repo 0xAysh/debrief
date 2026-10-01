@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
@@ -7,6 +7,7 @@ import { MODEL } from "../../src/embedding/model.js";
 import { type ContextPack, type MeaningStatus, openMemory, type StatusResult } from "../../src/memory.js";
 import { textHash } from "../../src/retrieval/vectors.js";
 import { initRepo, tempDir } from "../helpers.js";
+import { alive, childrenMatching, rssMb } from "../processes.js";
 import { claudeConfigDir, claudeTurn, installTranscript } from "../import/fixtures.js";
 import { PAYMENTS_SERVICE } from "../memory/meaning-fixture.js";
 import { CLI, NO_NETWORK, type ServerHandle, spawnServer } from "./harness.js";
@@ -41,12 +42,7 @@ async function until<T>(what: string, probe: () => Promise<T> | T, done: (value:
 
 /** Whether the model's process runs under `pid` (the server). */
 function modelProcess(pid: number): number[] {
-  const found = spawnSync("pgrep", ["-P", String(pid), "-f", "embedder.mjs"], { encoding: "utf8" });
-  return found.stdout.split("\n").filter(Boolean).map(Number);
-}
-
-function rssMb(pid: number): number {
-  return Number(spawnSync("ps", ["-o", "rss=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim()) / 1024;
+  return childrenMatching(pid, "embedder.mjs").map((entry) => entry.pid);
 }
 
 function readDb<T>(path: string, read: (db: Database.Database) => T): T {
@@ -68,7 +64,7 @@ async function record(server: ServerHandle, bodies: readonly string[]): Promise<
 function bundleWithoutModel(): string {
   const dir = tempDir("debrief-no-model-");
   copyFileSync(CLI, join(dir, "debrief.mjs"));
-  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"));
+  symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "junction");
   return join(dir, "debrief.mjs");
 }
 
@@ -155,7 +151,7 @@ describe("meaning search in the MCP server", () => {
     const embedderPids = modelProcess(first.pid);
     expect(embedderPids).toHaveLength(1);
     process.kill(first.pid, "SIGKILL");
-    await until("the killed server's model process to exit with it", () => embedderPids.filter((pid) => spawnSync("kill", ["-0", String(pid)]).status === 0), (alive) => alive.length === 0, 10_000);
+    await until("the killed server's model process to exit with it", () => embedderPids.filter(alive), (running) => running.length === 0, 10_000);
     const stored = vectorsIn(dbPath);
     expect(atKill).toBeLessThan(distinct);
     expect(stored).toBeLessThan(distinct);
@@ -344,7 +340,7 @@ describe("meaning search in the MCP server", () => {
 });
 
 function readDirOne(dir: string): string {
-  const entries = spawnSync("ls", [dir], { encoding: "utf8" }).stdout.trim().split("\n").filter(Boolean);
+  const entries = readdirSync(dir);
   if (entries.length !== 1) throw new Error(`expected one entry in ${dir}, found ${entries.length}`);
   return entries[0] ?? "";
 }
