@@ -160,7 +160,17 @@ describe("meaning search", () => {
 
   test("M2: identifiers, quoted phrases, error strings and paths keep the records they lift, first and in order", async () => {
     const { meaning, keywords } = await workspace();
-    for (const query of ["createRefund", '"advisory locks"', "charges_idempotency_key_key", "src/payments/ledger.ts", "why does createRefund throw a TypeError"]) {
+    // The last three would lose their order if fusion ignored the tiers: other records match their other words by meaning.
+    for (const query of [
+      "createRefund",
+      '"advisory locks"',
+      "charges_idempotency_key_key",
+      "src/payments/ledger.ts",
+      "why does createRefund throw a TypeError",
+      "createRefund voided charge refunds",
+      "handleWebhookEvent webhook latency deployment",
+      "PaymentIntent webhook handler deployment latency",
+    ]) {
       const before = keywords.recall({ query, maxTokens: 8_000 });
       const lifted = leadingTiers(before);
       expect(lifted.length, query).toBeGreaterThan(0);
@@ -236,25 +246,28 @@ describe("meaning search", () => {
     const memory = open(repo, home);
     seed(memory, PAYMENTS_SERVICE.filter((record) => record.key !== "currency"));
     const answer = memory.record({ kind: "decision", body: "Amounts are stored as integer minor units with an ISO 4217 code; never floats.", attribution: "agent_inference" }).recordId;
-    const copy = (body: string, by = memory): string => by.record({ kind: "decision", body, attribution: "agent_inference" }).recordId;
-    const retracted = copy("Amounts are kept as integer minor units with an ISO 4217 code; never floats.");
-    const superseded = copy("Amounts are stored as integer minor units with ISO 4217 codes; never use floats.");
-    const forgotten = copy("Amounts are saved as integer minor units with an ISO 4217 code; never floats.");
+    // Near-identical copies, more of them than meaning admits on its own (MEANING_ONLY): were they
+    // ranked before eligibility applied, they would take every place and the answer none.
+    const copies = (variant: string, count: number, by = memory): string[] =>
+      Array.from({ length: count }, (_, i) => by.record({ kind: "decision", body: `Amounts are ${variant} as integer minor units with an ISO 4217 code; never floats (${i}).`, attribution: "agent_inference" }).recordId);
+    const retracted = copies("kept", 25);
+    const superseded = copies("held", 15);
+    const forgotten = copies("saved", 3);
     const worktree = join(tempDir("debrief-wt-"), "wt");
     git(repo, "worktree", "add", "--quiet", "-b", "other", worktree);
-    const elsewhere = copy("Amounts are stored as integer minor units together with an ISO 4217 code; never floats.", open(worktree, home));
+    const elsewhere = copies("stored", 15, open(worktree, home));
     const secret = open(repo, home, { hostSessionId: "5e550000-0000-4000-8000-00000000a051" });
-    const privateCopy = copy("Amounts live as integer minor units with an ISO 4217 code; never floats.", secret);
+    const privateCopies = copies("recorded", 3, secret);
     // Every copy is embedded while it is still current: what keeps them out is recall's eligibility.
     await fill(memory);
-    expect(vectorRows(dbPathOf(memory)).length).toBeGreaterThanOrEqual(PAYMENTS_SERVICE.length + 5);
+    expect(vectorRows(dbPathOf(memory)).length).toBe(PAYMENTS_SERVICE.length + 61);
 
-    manage(memory, { action: "retract", recordId: retracted, reason: "wrong", attribution: "user_direction" }, "retract");
-    manage(memory, { action: "supersede", recordId: superseded, body: "Totals are reported per currency in the settlement CSV.", reason: "changed", attribution: "user_direction" }, "supersede");
-    forget(memory, forgotten);
+    for (const recordId of retracted) manage(memory, { action: "retract", recordId, reason: "wrong", attribution: "user_direction" }, "retract");
+    for (const recordId of superseded) manage(memory, { action: "supersede", recordId, body: `Totals are reported per currency in settlement CSV ${recordId}.`, reason: "changed", attribution: "user_direction" }, "supersede");
+    for (const recordId of forgotten) forget(memory, recordId);
     manage(secret, { action: "private_session" }, "private_session");
 
-    const ineligible = [retracted, superseded, forgotten, elsewhere, privateCopy];
+    const ineligible = [...retracted, ...superseded, ...forgotten, ...elsewhere, ...privateCopies];
     const query = "monetary precision rounding";
     let page = memory.recall({ query, maxBytes: 3_000 });
     expect(idsOf(page)).toContain(answer);
@@ -304,7 +317,8 @@ describe("meaning search", () => {
       expect(after.budget.usedBytes).toBeLessThanOrEqual(maxBytes);
       const byId = new Map(before.items.map((item) => [item.recordId, item]));
       const both = after.items.filter((item) => byId.has(item.recordId));
-      if (maxBytes === 32_000) expect(both.length).toBeGreaterThan(2);
+      // Among them, records meaning moved up: their citations and freshness are compared too.
+      if (maxBytes === 32_000) expect(both.filter((item) => item.why?.includes("meaning") === true).length).toBeGreaterThan(0);
       // Everything but `why`, which says what meaning did.
       for (const item of both) expect({ ...item, why: undefined }).toEqual({ ...byId.get(item.recordId), why: undefined });
     }
