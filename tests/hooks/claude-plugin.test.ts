@@ -48,9 +48,10 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     expect(fresh.stdout).toMatch(/^ {2}import {9}not answered yet: the agent asks at the next session start$/m);
     expect(fresh.stdout).toMatch(/^ {2}meaning search · off \(DEBRIEF_MEANING_SEARCH=on to enable\)$/m);
     expect(fresh.stdout).toMatch(/^✘ 3 problems$/m);
+    let shellEnv: Record<string, string> = {};
     const drive = async (prompt: string, calls: { tool: string; input: Record<string, unknown> }[], ...args: string[]) => {
       const stub = await startStubMessages({ calls, reply: `SYNTHETIC-REPLY to ${prompt}`, mcpPrefix: PLUGIN_TOOL });
-      const env = claudeEnv(sandbox, { PATH: pathWith(bin), DEBRIEF_HOME: debriefHome, ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: STUB_KEY });
+      const env = claudeEnv(sandbox, { PATH: pathWith(bin), DEBRIEF_HOME: debriefHome, ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: STUB_KEY, ...shellEnv });
       const run = await claudeAsync(env, repo, "-p", prompt, "--output-format", "stream-json", "--verbose", ...args);
       expect(run.code, run.stderr).toBe(0);
       return { stub, events: streamEvents(run.stdout) };
@@ -118,15 +119,22 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     expect(healthyOn.code, healthyOn.stdout + healthyOn.stderr).toBe(0);
     expect(healthyOn.stdout).toMatch(/^ {2}meaning search ✔ snowflake-arctic-embed-xs@q8 loads; .* searchable by meaning/m);
 
-    // Claude Code's settings `env` reaches the plugin's server: meaning search on from settings.json.
+    // Both ways the README gives to turn meaning search on reach the plugin's server: the
+    // environment Claude Code starts in, and the `env` of Claude Code's settings.
+    const meaningOn = (request: Record<string, unknown> | undefined): void => {
+      const text = JSON.stringify(request ?? {});
+      expect(text).toContain("sqliteVersion");
+      expect(text).not.toContain("meaning search: off");
+      expect(text).toMatch(/\\"model\\":\\"snowflake-arctic-embed-xs@q8\\",\\"state\\":\\"(?:unloaded|loading|loaded)\\"/);
+    };
+    shellEnv = { DEBRIEF_MEANING_SEARCH: "on" };
+    meaningOn((await drive("SYNTHETIC-PROMPT-4 status", [{ tool: "memory_status", input: {} }])).stub.requests[1]);
+    shellEnv = {};
     const settingsFile = join(sandbox.configDir, "settings.json");
     const settings = readFileSync(settingsFile, "utf8");
     writeFileSync(settingsFile, JSON.stringify({ ...(JSON.parse(settings) as object), env: { DEBRIEF_MEANING_SEARCH: "on" } }));
-    const fromSettings = await drive("SYNTHETIC-PROMPT-4 status", [{ tool: "memory_status", input: {} }]);
+    meaningOn((await drive("SYNTHETIC-PROMPT-5 status", [{ tool: "memory_status", input: {} }])).stub.requests[1]);
     writeFileSync(settingsFile, settings);
-    expect(JSON.stringify(fromSettings.stub.requests[1] ?? {})).toContain("sqliteVersion");
-    expect(JSON.stringify(fromSettings.stub.requests[1] ?? {})).not.toContain("meaning search: off");
-    expect(JSON.stringify(fromSettings.stub.requests[1] ?? {})).toMatch(/\\"model\\":\\"snowflake-arctic-embed-xs@q8\\",\\"state\\":\\"(?:unloaded|loading|loaded)\\"/);
 
     // An installed model that no longer loads: with meaning search off nothing loads it, so it is no
     // problem; on, it is a problem, not a silent fall back to keyword search.
