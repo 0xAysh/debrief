@@ -106,8 +106,7 @@ export async function spawnServer(options: {
     },
     close: () => client.close(),
   };
-  onCleanup(() => {
-    void client.close();
-  });
+  // Awaited: the server has exited before its directories are removed (Windows cannot delete open files).
+  onCleanup(() => client.close());
   return handle;
 }
