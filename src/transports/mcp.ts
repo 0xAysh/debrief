@@ -63,7 +63,7 @@ const TOOLS: Record<OperationName, ToolSpec> = {
   },
   memory_status: {
     description:
-      "Report Debrief health: embedded SQLite/FTS5 runtime, schema version, database paths, resolved scope, counts, capabilities, transcript-import consent, progress and capture gaps, meaning search (model, whether it is loaded, and how much of memory has vectors), and whether this host lets Debrief ask the user a question directly (client.elicitation).",
+      "Report Debrief health: embedded SQLite/FTS5 runtime, schema version, database paths, resolved scope, counts, capabilities, transcript-import consent, progress and capture gaps, meaning search (off unless the user turned it on; else the model, whether it is loaded, and how much of memory has vectors), and whether this host lets Debrief ask the user a question directly (client.elicitation).",
     run: (memory, args) => memory.status(args as never),
   },
 };
@@ -106,6 +106,8 @@ export interface McpServerOptions {
   log?: (message: string) => void;
   /** The model for meaning search, shared by every Memory the server opens and closed with it; none means keyword search only. */
   embedder?: Embedder;
+  /** Without an embedder because meaning search was left off: what `memory_status` says about it (see `OpenMemoryOptions`). */
+  meaningOff?: string;
 }
 
 /**
@@ -141,6 +143,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
         ...(options.home === undefined ? {} : { home: options.home }),
         ...(memorySession === undefined ? {} : { hostSessionId: memorySession }),
         ...(options.embedder === undefined ? {} : { embedder: options.embedder }),
+        ...(options.meaningOff === undefined ? {} : { meaningOff: options.meaningOff }),
       });
     }
     return memory;
