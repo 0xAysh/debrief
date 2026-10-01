@@ -858,7 +858,7 @@ class LocalMemory implements Memory {
     this.now = options.now ?? (() => new Date());
     this.hostSessionId = options.hostSessionId;
     this.embedder = options.embedder;
-    const adapter =options.transcriptAdapter ?? hostDescriptor(this.host)?.transcripts?.(options) ?? null;
+    const adapter = options.transcriptAdapter ?? hostDescriptor(this.host)?.transcripts?.(options) ?? null;
     this.importer =
       adapter === null
         ? null
