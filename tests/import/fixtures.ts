@@ -26,11 +26,58 @@ const GENERATED: Record<string, string> = {
   "{{LARGE_OUTPUT}}": "compiling module ".repeat(12_000),
 };
 
+/**
+ * JSONL text with its placeholders filled in. The fixtures write paths POSIX-style
+ * (`{{CWD}}/src/gateway.ts`). A Windows directory (backslashes, which JSON escapes) is filled in as
+ * the host on Windows would have written it: through each line's JSON, strings that hold JSON
+ * themselves (a Codex call's `arguments`) included; joined to the rest of a path with backslashes;
+ * and with forward slashes inside a shell command (`command`, `cmd`), as Git Bash takes it, since a
+ * backslash there is an escape. A line that is not JSON (malformed or partial, on purpose) gets the
+ * directory escaped once.
+ */
+function fillPlaceholders(text: string, values: Record<string, string>): string {
+  const entries = Object.entries({ ...values, ...GENERATED });
+  const fill = (s: string, shell = false): string =>
+    entries.reduce((out, [placeholder, value]) => {
+      if (!value.includes("\\")) return out.replaceAll(placeholder, value);
+      if (shell) return out.replaceAll(placeholder, value.replaceAll("\\", "/"));
+      return out.replace(new RegExp(`${placeholder.replace(/[{}]/g, "\\$&")}((?:/[^\\s"'<>/]+)*)`, "g"), (_, rest: string) => (rest === "" ? value : join(value, rest)));
+    }, s);
+  if (entries.every(([, value]) => JSON.stringify(value) === `"${value}"`)) return fill(text);
+  const walk = (value: unknown, shell: boolean): unknown => {
+    if (typeof value === "string") {
+      if (!entries.some(([placeholder]) => value.includes(placeholder))) return value;
+      if (/^\s*[[{]/.test(value)) {
+        try {
+          return JSON.stringify(walk(JSON.parse(value), shell));
+        } catch {
+          // Not JSON after all: a plain string.
+        }
+      }
+      return fill(value, shell);
+    }
+    if (Array.isArray(value)) return value.map((inner) => walk(inner, shell));
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, walk(inner, shell || key === "command" || key === "cmd")]));
+    }
+    return value;
+  };
+  return text
+    .split(/(?<=\n)/)
+    .map((line) => {
+      const body = line.endsWith("\n") ? line.slice(0, -1) : line;
+      try {
+        return JSON.stringify(walk(JSON.parse(body), false)) + line.slice(body.length);
+      } catch {
+        return entries.reduce((out, [placeholder, value]) => out.replaceAll(placeholder, JSON.stringify(value).slice(1, -1)), line);
+      }
+    })
+    .join("");
+}
+
 /** The fixture's text with its placeholders filled in. */
 export function renderFixture(fixture: string, vars: { cwd: string; sessionId: string }): string {
-  let text = readFileSync(join(FIXTURES, fixture), "utf8").replaceAll("{{CWD}}", vars.cwd).replaceAll("{{SESSION}}", vars.sessionId);
-  for (const [placeholder, value] of Object.entries(GENERATED)) text = text.replaceAll(placeholder, value);
-  return text;
+  return fillPlaceholders(readFileSync(join(FIXTURES, fixture), "utf8"), { "{{CWD}}": vars.cwd, "{{SESSION}}": vars.sessionId });
 }
 
 /** Writes a rendered fixture where Claude Code would keep the transcript of a session started in `cwd`. */
@@ -197,16 +244,15 @@ export interface CodexVars {
 
 /** The Codex fixture's text with its placeholders filled in. */
 export function renderCodexFixture(fixture: string, vars: CodexVars): string {
-  let text = readFileSync(join(CODEX_FIXTURES, fixture), "utf8")
-    .replaceAll("{{CWD2}}", vars.cwd2 ?? `${vars.cwd}-elsewhere`)
-    .replaceAll("{{CWD}}", vars.cwd)
-    .replaceAll("{{THREAD}}", vars.threadId)
-    .replaceAll("{{PARENT}}", vars.parentId ?? "01900000-0000-7000-8000-00000000beef")
-    .replaceAll("{{SHA}}", "0123456789abcdef0123456789abcdef01234567")
-    .replaceAll("{{WORKSTREAM}}", vars.workstreamId ?? "wst_00000000000000000000000000000000")
-    .replaceAll("{{RECORD}}", vars.recordId ?? "rec_00000000000000000000000000000000");
-  for (const [placeholder, value] of Object.entries(GENERATED)) text = text.replaceAll(placeholder, value);
-  return text;
+  return fillPlaceholders(readFileSync(join(CODEX_FIXTURES, fixture), "utf8"), {
+    "{{CWD2}}": vars.cwd2 ?? `${vars.cwd}-elsewhere`,
+    "{{CWD}}": vars.cwd,
+    "{{THREAD}}": vars.threadId,
+    "{{PARENT}}": vars.parentId ?? "01900000-0000-7000-8000-00000000beef",
+    "{{SHA}}": "0123456789abcdef0123456789abcdef01234567",
+    "{{WORKSTREAM}}": vars.workstreamId ?? "wst_00000000000000000000000000000000",
+    "{{RECORD}}": vars.recordId ?? "rec_00000000000000000000000000000000",
+  });
 }
 
 /**
