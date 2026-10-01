@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
-import { MODEL, RUNTIME_FILES } from "../../src/embedding/model.js";
+import { MODEL, RUNTIME_FILES, RUNTIME_NOTICES } from "../../src/embedding/model.js";
 import type { ContextPack, StatusResult } from "../../src/memory.js";
 import { initRepo, npmCommand, tempDir } from "../helpers.js";
 import { CLAUDE_PINNED_VERSION } from "../mcp/claude.js";
@@ -42,6 +42,7 @@ describe("the published package", () => {
     expect(packed.files.map((file) => file.path).sort()).toEqual([
       "LICENSE",
       "README.md",
+      `dist/${RUNTIME_NOTICES.name}`,
       "dist/THIRD_PARTY_NOTICES.md",
       "dist/debrief.mjs",
       "dist/embedder.mjs",

@@ -9,20 +9,23 @@
  * none of it: `dist/embedder.mjs` (the model's process: ONNX Runtime Web and the tokenizer), the
  * runtime's WebAssembly build (`ort-wasm-simd-threaded.{wasm,mjs}`) and the model's files under
  * `dist/models/`. The model is fetched from Hugging Face at the revision `src/embedding/model.ts`
- * pins, into `.cache/models/` (gitignored), and every file is checked against its pinned SHA-256
- * before it is copied: a mismatch fails the build. This is the only place Debrief touches the
- * network; the package carries the files, so `debrief` never downloads anything.
+ * pins, into `.cache/models/` (gitignored), and so are ONNX Runtime's own third-party notices, from
+ * GitHub at the runtime's tag into `.cache/onnxruntime/`: every file is checked against its pinned
+ * SHA-256 before it is copied, and a mismatch fails the build. This is the only place Debrief
+ * touches the network; the package carries the files, so `debrief` never downloads anything.
  *
  * Inlined packages no longer ship their own license files, and their licenses (MIT, ISC, BSD,
  * Apache-2.0) require the notice to travel with the code, so this also writes
  * `dist/THIRD_PARTY_NOTICES.md` from esbuild's own record of what it inlined, plus the model's
- * license. A package without a license file (or one in `scripts/licenses/`) fails the build.
+ * license, and ships ONNX Runtime's notices for what its WebAssembly build compiles in as
+ * `dist/ONNXRUNTIME_THIRD_PARTY_NOTICES.txt`. A package without a license file (or one in
+ * `scripts/licenses/`) fails the build.
  */
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { build } from "esbuild";
-import { MODEL, RUNTIME_FILES } from "../dist/embedding/model.js";
+import { MODEL, RUNTIME_FILES, RUNTIME_NOTICES } from "../dist/embedding/model.js";
 
 const shared = {
   bundle: true,
@@ -40,6 +43,7 @@ const embedder = await build({ ...shared, entryPoints: ["dist/embedding/process.
 
 for (const name of RUNTIME_FILES) copyFileSync(join("node_modules/onnxruntime-web/dist", name), join("dist", name));
 await copyModel();
+await copyRuntimeNotices();
 
 /** Package directory (`node_modules/<name>`, innermost when nested) of every input that reached an output. */
 const packages = new Map();
@@ -62,7 +66,7 @@ const sections = [...packages]
     const text = licenseOf(dir, name);
     const extra =
       name === "onnxruntime-web"
-        ? `\nIts WebAssembly build (\`ort-wasm-simd-threaded.wasm\`) compiles in third-party components listed in ONNX Runtime's notices: https://github.com/microsoft/onnxruntime/blob/v${manifest.version}/ThirdPartyNotices.txt\n`
+        ? `\nIts WebAssembly build (\`ort-wasm-simd-threaded.wasm\`) compiles in third-party components. ONNX Runtime's notices for them ship beside it as \`dist/${RUNTIME_NOTICES.name}\`: \`${RUNTIME_NOTICES.source}\` of ${RUNTIME_NOTICES.repository} at tag \`${RUNTIME_NOTICES.tag}\`, unmodified.\n`
         : "";
     return `## ${name}@${manifest.version} (${manifest.license ?? "license below"})\n\n\`\`\`text\n${text}\n\`\`\`\n${extra}`;
   });
@@ -88,25 +92,49 @@ function licenseOf(dir, name) {
 /** The pinned model files, from the cache (fetched once per revision), checked and copied to `dist/models/`. */
 async function copyModel() {
   const cache = join(".cache/models", MODEL.repository, MODEL.revision);
-  const target = join("dist", MODEL.directory);
-  mkdirSync(cache, { recursive: true });
-  mkdirSync(target, { recursive: true });
   for (const file of MODEL.files) {
-    const cached = join(cache, file.name);
-    if (!existsSync(cached) || sha256(cached) !== file.sha256) {
-      const url = `https://huggingface.co/${MODEL.repository}/resolve/${MODEL.revision}/${file.source}`;
-      process.stderr.write(`bundle: fetching ${url}\n`);
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`could not fetch ${url}: HTTP ${response.status}`);
-      const partial = `${cached}.partial`;
-      writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
-      const actual = sha256(partial);
-      if (actual !== file.sha256) throw new Error(`${url} has sha256 ${actual}, not the pinned ${file.sha256}`);
-      renameSync(partial, cached);
-    }
-    copyFileSync(cached, join(target, file.name));
-    if (sha256(join(target, file.name)) !== file.sha256) throw new Error(`${join(target, file.name)} does not match its pinned sha256`);
+    const url = `https://huggingface.co/${MODEL.repository}/resolve/${MODEL.revision}/${file.source}`;
+    await copyPinned(url, file.sha256, join(cache, file.name), join("dist", MODEL.directory, file.name));
   }
+}
+
+/**
+ * ONNX Runtime's notices at the installed onnxruntime-web's tag, from the cache (fetched once per
+ * tag), checked and copied beside the runtime. `DEBRIEF_TEST_RUNTIME_NOTICES_URL` stands in for
+ * GitHub in the build tests; the pin is checked all the same.
+ */
+async function copyRuntimeNotices() {
+  const installed = JSON.parse(readFileSync("node_modules/onnxruntime-web/package.json", "utf8")).version;
+  if (RUNTIME_NOTICES.tag !== `v${installed}`) {
+    throw new Error(`onnxruntime-web is ${installed}, but src/embedding/model.ts pins ONNX Runtime's notices at ${RUNTIME_NOTICES.tag}: pin the notices of the installed version`);
+  }
+  const url =
+    process.env.DEBRIEF_TEST_RUNTIME_NOTICES_URL ??
+    `https://raw.githubusercontent.com/${RUNTIME_NOTICES.repository}/${RUNTIME_NOTICES.tag}/${RUNTIME_NOTICES.source}`;
+  const cached = join(".cache/onnxruntime", RUNTIME_NOTICES.tag, RUNTIME_NOTICES.source);
+  await copyPinned(url, RUNTIME_NOTICES.sha256, cached, join("dist", RUNTIME_NOTICES.name));
+}
+
+/**
+ * A pinned file, copied from `cached` to `target`. A missing cached copy, or one that does not
+ * match `pin`, is fetched again from `url`, and the fetched file replaces it only if it matches.
+ * Any mismatch fails the build.
+ */
+async function copyPinned(url, pin, cached, target) {
+  if (!existsSync(cached) || sha256(cached) !== pin) {
+    process.stderr.write(`bundle: fetching ${url}\n`);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`could not fetch ${url}: HTTP ${response.status}`);
+    mkdirSync(dirname(cached), { recursive: true });
+    const partial = `${cached}.partial`;
+    writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
+    const actual = sha256(partial);
+    if (actual !== pin) throw new Error(`${url} has sha256 ${actual}, not the pinned ${pin}`);
+    renameSync(partial, cached);
+  }
+  mkdirSync(dirname(target), { recursive: true });
+  copyFileSync(cached, target);
+  if (sha256(target) !== pin) throw new Error(`${target} does not match its pinned sha256`);
 }
 
 function sha256(path) {

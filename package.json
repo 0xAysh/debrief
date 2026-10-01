@@ -30,6 +30,7 @@
     "dist/ort-wasm-simd-threaded.mjs",
     "dist/ort-wasm-simd-threaded.wasm",
     "dist/models/",
+    "dist/ONNXRUNTIME_THIRD_PARTY_NOTICES.txt",
     "dist/THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
