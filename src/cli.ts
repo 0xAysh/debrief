@@ -10,6 +10,7 @@ import { HOOK_HOSTS, HOST_IDS, type HostId, HOSTS, hostDescriptor, type PluginFa
 import { consentFacts } from "./import/reconcile.js";
 import { openMemory, type Memory } from "./memory.js";
 import { parseSince, runReport } from "./report/report.js";
+import { oneLine } from "./retrieval/session-context.js";
 import { IMPORT_CHOICES, type ImportChoice, LIMITS } from "./schemas.js";
 import { assertEmbeddedRuntime } from "./storage/database.js";
 import { deleteHome, describeHome } from "./storage/home.js";
@@ -169,10 +170,10 @@ function diag(memory: Memory, subcommand: string, values: { query?: string | und
       let pack = memory.recall(request as never);
       const scope = pack.scope;
       process.stdout.write(`${scope.workspaceLabel} / ${scope.workstreamLabel}  head r${scope.headRevision}\n`);
-      if (pack.checkpoint !== null) process.stdout.write(`${pack.checkpoint.recordId}  checkpoint r${pack.checkpoint.revision}  ${oneLine(pack.checkpoint.excerpt)}\n`);
+      if (pack.checkpoint !== null) process.stdout.write(`${pack.checkpoint.recordId}  checkpoint r${pack.checkpoint.revision}  ${oneLine(pack.checkpoint.excerpt, 100)}\n`);
       for (;;) {
         for (const item of pack.items) {
-          process.stdout.write(`${item.recordId}  ${item.kind}  ${item.attribution}  ${item.reviewState}  ${oneLine(item.title ?? item.excerpt)}\n`);
+          process.stdout.write(`${item.recordId}  ${item.kind}  ${item.attribution}  ${item.reviewState}  ${oneLine(item.title ?? item.excerpt, 100)}\n`);
         }
         if (pack.continuation === null) break;
         pack = memory.recall({ maxTokens: LIMITS.maxTokens, continuation: pack.continuation });
@@ -323,11 +324,6 @@ function demo(memory: Memory, home: string): unknown {
     supportedBy: [evidence.recordId, decision.recordId],
   });
   return memory.recall({ query: "debrief demo tracer" });
-}
-
-function oneLine(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > 100 ? `${flat.slice(0, 99)}…` : flat;
 }
 
 function print(value: unknown): void {
