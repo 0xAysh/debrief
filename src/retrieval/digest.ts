@@ -1,24 +1,26 @@
 import { readToolResultTitle, type ToolResultTitle } from "../import/reconcile.js";
 import { type Db, prepared } from "../storage/database.js";
 import { VISIBLE_SQL } from "./eligibility.js";
+import { oneLine } from "./session-context.js";
 
 /**
  * What the last session did after the head checkpoint (once a new prompt shows it went on), or
  * at all when there is no checkpoint, built without a model from its imported transcript
- * events. Session start shows it so a crashed or killed session is not lost, and a stale
- * checkpoint never looks like the whole story.
+ * events. `memory_bootstrap` returns it (`lastSession`) and session start points at it, so a
+ * crashed or killed session is not lost, and a stale checkpoint never looks like the whole story.
  */
 
 export interface SessionDigest {
   host: string;
   /** When its last imported event happened. */
   endedAt: string;
-  /** The last user prompts, oldest first. */
+  /** The last user prompts, oldest first, each on one line and cut at 240 characters. */
   prompts: string[];
+  /** On one line, cut at 400 characters. */
   lastReply: string | null;
   /** Files its tool calls named, most recent first (paths only). */
   files: string[];
-  /** Its last shell commands (`$ …` call summaries), oldest first, and whether each failed. */
+  /** Its last shell commands (`$ …` call summaries, cut at 120 characters), oldest first, and whether each failed. */
   commands: { command: string; failed: boolean }[];
   /** Later-than-`since` sessions not shown (only the newest one is digested). */
   otherSessions: number;
@@ -29,6 +31,9 @@ export interface SessionDigest {
 const PROMPTS = 3;
 const COMMANDS = 5;
 const FILES = 10;
+const PROMPT_CHARS = 240;
+const REPLY_CHARS = 400;
+const COMMAND_CHARS = 120;
 /** Enough rows to find the newest session's last turns without loading a whole history. */
 const ROWS = 400;
 
@@ -45,14 +50,19 @@ interface Row {
   branch: string;
 }
 
-export function sessionDigest(db: Db, workstreamId: string, since: string | null): SessionDigest | null {
+/**
+ * `asking` is the host session that wants the digest. Its own transcript is never its last
+ * session: a resumed or live session already has those turns in its context.
+ */
+export function sessionDigest(db: Db, workstreamId: string, since: string | null, asking: { host: string; hostSessionId: string | null }): SessionDigest | null {
   const rows = prepared(
     db,
     `SELECT r.id, r.session_id, r.host, r.title, r.body, r.attribution, r.external_refs, r.created_at,
        coalesce((SELECT e.branch FROM import_events e WHERE e.record_id = r.id LIMIT 1), 'main') AS branch FROM records r
      WHERE ${VISIBLE_SQL} AND r.source_id IS NOT NULL AND r.kind = 'evidence' AND ($since IS NULL OR r.created_at > $since)
+       AND ($hostSessionId IS NULL OR r.session_id NOT IN (SELECT s.id FROM sessions s WHERE s.host = $host AND s.host_session_id = $hostSessionId))
      ORDER BY r.created_at DESC, r.seq DESC LIMIT ${ROWS}`,
-  ).all({ workstreamId, since }) as Row[];
+  ).all({ workstreamId, since, host: asking.host, hostSessionId: asking.hostSessionId }) as Row[];
   const newest = rows[0];
   if (newest === undefined) return null;
   const sessions = new Set(rows.map((row) => row.session_id));
@@ -68,7 +78,7 @@ export function sessionDigest(db: Db, workstreamId: string, since: string | null
   const commands = results
     .map((row) => ({ row, title: readToolResultTitle(row.title) }))
     .filter((c): c is { row: Row; title: ToolResultTitle } => c.title?.summary.startsWith("$ ") === true)
-    .map(({ row, title }) => ({ row, command: title.summary.slice(2), failed: title.failed }))
+    .map(({ row, title }) => ({ row, command: oneLine(title.summary.slice(2), COMMAND_CHARS), failed: title.failed }))
     .slice(0, COMMANDS)
     .reverse();
   const files = [...new Set(results.flatMap((row) => codePaths(row.external_refs)))].slice(0, FILES);
@@ -76,8 +86,8 @@ export function sessionDigest(db: Db, workstreamId: string, since: string | null
   return {
     host: newest.host,
     endedAt: newest.created_at,
-    prompts: prompts.map((row) => row.body),
-    lastReply: reply?.body ?? null,
+    prompts: prompts.map((row) => oneLine(row.body, PROMPT_CHARS)),
+    lastReply: reply === null ? null : oneLine(reply.body, REPLY_CHARS),
     files,
     commands: commands.map(({ command, failed }) => ({ command, failed })),
     otherSessions: sessions.size - 1,

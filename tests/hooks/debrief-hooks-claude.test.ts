@@ -52,7 +52,7 @@ function hooksSettings(debriefHome: string): string {
 }
 
 describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE_PINNED_VERSION}`, () => {
-  test("the model starts with the checkpoint in context without any tool call, the turn is captured when it stops, and the next session starts with it digested", async () => {
+  test("S9: the model starts with a pointer to the checkpoint, the turn is captured when it stops, and the next session's pointer names the turns after it, which memory_bootstrap returns", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
     const debriefHome = tempDir();
@@ -79,7 +79,8 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
 
     const first = JSON.stringify(stub.requests[0] ?? {});
     expect(first).toContain("SessionStart hook additional context: ");
-    expect(first).toContain("SYNTHETIC-NEXT wire the idempotency key into charge()");
+    expect(first).toContain('Memory for this line of work: checkpoint r1 (\\"Stop double charges\\")');
+    expect(first, "the checkpoint's body is memory_bootstrap's").not.toContain("SYNTHETIC-NEXT");
     expect(first).toContain("Debrief is local working memory shared by the coding agents in this repository.");
     // The notice is for the user only.
     expect(JSON.stringify(stub.requests)).not.toContain("◪ debrief");
@@ -94,8 +95,10 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     expect(after.status().hookFailures).toEqual([]);
     after.close();
 
-    // The next session starts with that turn digested under the checkpoint, still without a tool call.
-    const next = await startStubMessages({ calls: [], reply: "Continuing." });
+    // The next session's pointer names the turns after the checkpoint; the model calls memory_bootstrap, which returns them.
+    const added = claude(claudeEnv(sandbox), repo, ...debriefAddArgs({ debriefHome, networkLog: guardedNetworkLog() }));
+    expect(added.code, added.stderr).toBe(0);
+    const next = await startStubMessages({ calls: [{ tool: "memory_bootstrap", input: {} }], reply: "Continuing." });
     const second = await claudeAsync(
       claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${next.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" }),
       repo,
@@ -108,9 +111,13 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     );
     expect(second.code, second.stderr).toBe(0);
     const context = JSON.stringify(next.requests[0] ?? {});
-    expect(context).toContain("## Since checkpoint r1 (claude-code, ended ");
-    expect(context).toContain("- SYNTHETIC-PROMPT where did we leave the double-charge fix?");
-  });
+    expect(context).toContain("the last session ended without one (turns after r1). Call memory_bootstrap before continuing this work.");
+    expect(context).not.toContain("SYNTHETIC-PROMPT where did we leave the double-charge fix?");
+    const traffic = sessionToolTraffic(sandbox, (JSON.parse(second.stdout) as { session_id: string }).session_id);
+    expect(traffic.uses).toEqual(["mcp__debrief__memory_bootstrap"]);
+    const boot = JSON.parse(traffic.results[0] ?? "{}") as { lastSession?: { prompts: string[] } | null };
+    expect(boot.lastSession?.prompts).toContain("SYNTHETIC-PROMPT where did we leave the double-charge fix?");
+  }, 120_000);
 
   test("a lasting-preference prompt reaches the model with the hint; a recall runs without a prompt, a write is still denied in -p; notices stay with the user", async () => {
     const sandbox = claudeSandbox();
@@ -201,7 +208,9 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     ]);
     const [started, recall] = rows;
     expect(recall).toMatchObject({ toolUseId: traffic.ids[0], query: "retry policy" });
-    for (const row of [started, recall]) expect((JSON.parse(row?.returned ?? "[]") as { id: string }[]).map((r) => r.id)).toContain(policy);
+    // The session start points at memory without showing it (#33): only the recall returned the policy.
+    expect(JSON.parse(started?.returned ?? "[]")).toEqual([]);
+    expect((JSON.parse(recall?.returned ?? "[]") as { id: string }[]).map((r) => r.id)).toContain(policy);
   }, 120_000);
 
   test("the fifth turn of work with no checkpoint: the stop is blocked once, the model gets the reason, and the continued stop ends the turn", async () => {
@@ -325,7 +334,7 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     expect(after.status().hookFailures).toEqual([]);
   }, 120_000);
 
-  test("resume, compact and clear: the model's next request carries the checkpoint as it is then, still without a tool call", async () => {
+  test("resume, compact and clear: the model's next request carries the pointer to the checkpoint as it is then, still without a tool call", async () => {
     const sandbox = claudeSandbox();
     const repo = initRepo({ branch: "fix/double-charge" });
     const debriefHome = tempDir();
@@ -341,9 +350,10 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     };
     const stub = await startStubMessages({ calls: [], reply: "SYNTHETIC-REPLY ok." });
     const env = claudeEnv(sandbox, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: "sk-ant-stub-000" });
-    const carried = (marker: string, next: string): boolean => {
+    // The pointer names the revision, so a request carries this one only if that event's SessionStart delivered it.
+    const carried = (marker: string, revisionThen: number): boolean => {
       const request = JSON.stringify(stub.requests.find((r) => JSON.stringify(r).includes(marker)) ?? {});
-      return request.includes("SessionStart hook additional context: ") && request.includes(next);
+      return request.includes("SessionStart hook additional context: ") && request.includes(`Memory for this line of work: checkpoint r${revisionThen} (`);
     };
 
     checkpoint("SYNTHETIC-NEXT-STARTUP");
@@ -358,14 +368,14 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     const ended = await session.end();
     expect(ended.code, ended.stderr).toBe(0);
     expect(cleared["session_id"]).not.toBe(first["session_id"]);
-    expect(carried("SYNTHETIC-FIRST", "SYNTHETIC-NEXT-STARTUP")).toBe(true);
-    expect(carried("SYNTHETIC-AFTER-COMPACT", "SYNTHETIC-NEXT-COMPACT")).toBe(true);
-    expect(carried("SYNTHETIC-AFTER-CLEAR", "SYNTHETIC-NEXT-CLEAR")).toBe(true);
+    expect(carried("SYNTHETIC-FIRST", 1)).toBe(true);
+    expect(carried("SYNTHETIC-AFTER-COMPACT", 2)).toBe(true);
+    expect(carried("SYNTHETIC-AFTER-CLEAR", 3)).toBe(true);
 
     checkpoint("SYNTHETIC-NEXT-RESUME");
     const resumed = await claudeAsync(env, repo, "-p", "--resume", String(first["session_id"]), "SYNTHETIC-RESUMED go on", "--output-format", "json", "--settings", hooksSettings(debriefHome));
     expect(resumed.code, resumed.stderr).toBe(0);
-    expect(carried("SYNTHETIC-RESUMED", "SYNTHETIC-NEXT-RESUME")).toBe(true);
+    expect(carried("SYNTHETIC-RESUMED", 4)).toBe(true);
     expect(stub.offeredTools.flat().filter((t) => t.startsWith("mcp__"))).toEqual([]);
   }, 180_000);
 
@@ -465,9 +475,9 @@ describe.skipIf(SKIP !== null)(`Debrief's hooks in the real Claude Code ${CLAUDE
     const reports = after.recall({ query: "SYNTHETIC-REPORT budget", maxTokens: 8_000 }).items.filter((i) => i.excerpt.includes("SYNTHETIC-REPORT"));
     expect(reports.map((i) => [i.source?.agentType, i.corroboration])).toEqual([["general-purpose", { independentRoots: 1, records: 1 }]]);
     expect(after.recall({ query: "Async agent launched", maxTokens: 8_000 }).items.filter((i) => i.excerpt.includes("Async agent launched"))).toEqual([]);
-    const context = after.sessionStart()?.context ?? "";
-    const digest = context.split("User prompts:\n")[1]?.split("\n") ?? [];
-    expect(digest.slice(0, digest.findIndex((line) => !line.startsWith("- ")))).toEqual(["- SYNTHETIC-PROMPT where is the retry budget set? Use a helper."]);
-    expect(context).toMatch(/Commands: .*✓ echo SYNTHETIC-FINDING retry budget lives in src\/retry\.ts/);
+    // The session's last turns, as memory_bootstrap returns them: the parent's prompt, and the sub-agent's command as the session's work.
+    const lastSession = after.bootstrap().lastSession;
+    expect(lastSession?.prompts).toEqual(["SYNTHETIC-PROMPT where is the retry budget set? Use a helper."]);
+    expect(lastSession?.commands).toContainEqual({ command: "echo SYNTHETIC-FINDING retry budget lives in src/retry.ts", failed: false });
   }, 120_000);
 });

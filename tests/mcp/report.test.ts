@@ -454,6 +454,37 @@ describe("debrief report", () => {
     }
   });
 
+  test("R13 (#33): a session start without work memory injects fewer tokens, and a record it no longer shows counts as rediscovered when its file is read", () => {
+    const files = { "src/f.ts": "export const f = 1;\n" };
+    const e = env({ files });
+    const t = base();
+    const writer = open(e);
+    clock.at = new Date(t - 2 * HOUR);
+    for (let i = 0; i < 60; i++) note(writer, `Osprey fact ${i}: ${"the queue drains nightly; ".repeat(12)}`);
+    // The newest record: a start that listed recent memory would have shown it first.
+    clock.at = new Date(t - HOUR);
+    const covering = note(writer, "Kestrel fact: f exports one constant.", { externalRefs: code("src/f.ts") });
+    writer.close();
+
+    // S1 starts with the hook's real context, logged with its size, then reads f without searching memory.
+    const s1 = open(e, S1);
+    clock.at = new Date(t);
+    const start = s1.sessionStart({});
+    if (start === null) throw new Error("no session start inside a repository");
+    s1.noteCall({ source: "hook", name: "session-start", ms: 5, bytes: Buffer.byteLength(start.context) });
+    s1.close();
+    transcript(e, S1, t + MINUTE, [readStep(e, "src/f.ts", files["src/f.ts"])]);
+    importAll(e);
+
+    const out = ok(e);
+    const listed = out.split("\n").filter((l) => /^ {4}rec_/.test(l)).map((l) => l.trim().split(/\s+/));
+    expect(listed).toEqual([[covering, "src/f.ts", "session", S1.slice(0, 8)]]);
+    // The protocol, the header and a pointer: about an empty repository's start (≤ 2,850 bytes) plus one line, whatever memory holds.
+    const injected = Number(/^p50 (\d+) /.exec(line(out, "injected tokens"))?.[1]);
+    expect(injected).toBeGreaterThan(0);
+    expect(injected).toBeLessThanOrEqual(Math.ceil((2_850 + 300) / 4));
+  });
+
   test.skipIf(PYTHON === null)("R12: on a terminal, --review exits once the last search is rated", () => {
     const e = env();
     const writer = open(e);

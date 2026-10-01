@@ -13,9 +13,9 @@ import { NO_NETWORK } from "../mcp/harness.js";
  * #23's Claude-only acceptance scenario, as a user gets it: `npm pack` installed as the `debrief`
  * command, the plugin installed from this repository's marketplace into the real Claude Code, a
  * clean profile, and a localhost stub model (seam ②). Session 1 is killed mid-turn without a
- * checkpoint; session 2 starts knowing where things stand and hands work to a sub-agent that
- * starts with the same memory; session 3 recalls the sub-agent's finding; "don't remember this
- * session", compaction and resume behave.
+ * checkpoint; session 2 starts with a pointer to it, gets its turns from memory_bootstrap and hands
+ * work to a sub-agent that starts with the same memory; session 3 recalls the sub-agent's finding;
+ * "don't remember this session", compaction and resume behave.
  */
 
 const SKIP = hostGate("claude code acceptance test", "claude", claudeSkipReason());
@@ -46,7 +46,7 @@ async function until(ready: () => boolean): Promise<void> {
 }
 
 describe.skipIf(SKIP !== null)(`acceptance: Debrief installed as a user installs it, in the real Claude Code ${CLAUDE_PINNED_VERSION}`, () => {
-  test("a killed session, the next one knowing where things stand, a sub-agent, a later recall, a private session, compaction and resume", async () => {
+  test("a killed session, the next one pointed at it and fetching it, a sub-agent, a later recall, a private session, compaction and resume", async () => {
     const bin = installPackedDebrief();
     const sandbox = claudeSandbox();
     installPlugin(sandbox, pathWith(bin));
@@ -103,12 +103,13 @@ describe.skipIf(SKIP !== null)(`acceptance: Debrief installed as a user installs
     const killed = await one.kill("SIGKILL");
     expect(killed.code, "killed, not exited").toBeNull();
 
-    // Session 2 starts knowing where things stand, with no tool call: its first request already
-    // carries the killed turn, read from the transcript. It hands the next step to a sub-agent.
+    // Session 2 starts with a pointer to the killed session, read from the transcript; the model
+    // calls memory_bootstrap, which returns the killed turn. It hands the next step to a sub-agent.
     const delegated = "SYNTHETIC-S2-DELEGATED find where the retry budget is set";
     const fromSubagent = (request: Record<string, unknown>): boolean => firstUserText(request).includes(delegated);
     const s2 = await startStubMessages({
       calls: [
+        { tool: "memory_bootstrap", input: {}, when: "SYNTHETIC-S2-PROMPT" },
         { tool: "Agent", builtin: true, input: { description: "retry budget", prompt: delegated, subagent_type: "general-purpose" }, when: "SYNTHETIC-S2-PROMPT" },
         { tool: "Bash", builtin: true, input: { command: "echo SYNTHETIC-S2-SUB-FINDING the retry budget is set in src/retry.ts", description: "look" }, when: fromSubagent },
       ],
@@ -119,10 +120,14 @@ describe.skipIf(SKIP !== null)(`acceptance: Debrief installed as a user installs
     expect(two.code, two.stderr).toBe(0);
     const opening = JSON.stringify(s2.requests.find((r) => JSON.stringify(r).includes("SYNTHETIC-S2-PROMPT")) ?? {});
     expect(opening).toContain("SessionStart hook additional context: ");
-    expect(opening).toMatch(/## Last session \(claude-code, ended [^)]*, without a checkpoint\)/);
-    expect(opening).toContain("- SYNTHETIC-S1-CRASH check the gateway retries");
-    expect(opening).toContain("echo SYNTHETIC-S1-FINDING the gateway retries a 504");
+    expect(opening).toMatch(/Memory for this line of work: no checkpoint; the last session \(claude-code, [^)]*\) ended without one\. Call memory_bootstrap before continuing this work\./);
+    expect(opening, "the killed turn is memory_bootstrap's, not the start's").not.toContain("SYNTHETIC-S1-CRASH");
     expect(opening, "no tool had been called").not.toContain('"type":"tool_use"');
+    const twoTraffic = sessionToolTraffic(sandbox, (JSON.parse(two.stdout) as { session_id: string }).session_id);
+    expect(twoTraffic.uses.slice(0, 2)).toEqual([`${PLUGIN_TOOL}memory_bootstrap`, "Agent"]);
+    const lastSession = (JSON.parse(twoTraffic.results[0] ?? "{}") as { lastSession?: { prompts: string[]; commands: { command: string; failed: boolean }[] } | null }).lastSession;
+    expect(lastSession?.prompts).toContain("SYNTHETIC-S1-CRASH check the gateway retries");
+    expect(lastSession?.commands.map((c) => c.command)).toContain("echo SYNTHETIC-S1-FINDING the gateway retries a 504 without an idempotency key");
     expect(JSON.stringify(s2.requests), "notices are for the user only").not.toContain("◪ debrief");
     const subagentOpening = JSON.stringify(s2.requests.find(fromSubagent) ?? {});
     expect(subagentOpening).toContain("SubagentStart hook additional context: ");
@@ -157,11 +162,11 @@ describe.skipIf(SKIP !== null)(`acceptance: Debrief installed as a user installs
     expect(recalled("SYNTHETIC-S1-FINDING gateway", "SYNTHETIC-S1-FINDING")).not.toEqual([]);
     expect(recalled("SYNTHETIC-S2-SUB-FINDING retry budget", "SYNTHETIC-S2-SUB-FINDING")).not.toEqual([]);
 
-    // Session 5: startup, compaction and resume each deliver the checkpoint as it is then, without a tool call.
+    // Session 5: startup, compaction and resume each deliver the pointer to the checkpoint as it is then, without a tool call.
     const s5 = await startStubMessages({ calls: [], reply: "SYNTHETIC-S5-REPLY ok.", mcpPrefix: PLUGIN_TOOL });
-    const carried = (marker: string, next: string): boolean => {
+    const carried = (marker: string, revisionThen: number): boolean => {
       const request = JSON.stringify(s5.requests.find((r) => JSON.stringify(r).includes(marker)) ?? {});
-      return request.includes("SessionStart hook additional context: ") && request.includes(next);
+      return request.includes("SessionStart hook additional context: ") && request.includes(`Memory for this line of work: checkpoint r${revisionThen} (`);
     };
     const checkpoint = (expectedRevision: number, next: string): void => {
       const opened = memory();
@@ -170,17 +175,17 @@ describe.skipIf(SKIP !== null)(`acceptance: Debrief installed as a user installs
     };
     const five = claudeStream(env(s5), repo);
     const first = await five.send("SYNTHETIC-S5-FIRST where were we?");
-    expect(carried("SYNTHETIC-S5-FIRST", "SYNTHETIC-NEXT-S3 put the idempotency key on the gateway retry")).toBe(true);
+    expect(carried("SYNTHETIC-S5-FIRST", 1)).toBe(true);
     checkpoint(1, "SYNTHETIC-NEXT-COMPACT");
     await five.send("/compact");
     await five.send("SYNTHETIC-S5-AFTER-COMPACT go on");
     const fiveEnded = await five.end();
     expect(fiveEnded.code, fiveEnded.stderr).toBe(0);
-    expect(carried("SYNTHETIC-S5-AFTER-COMPACT", "SYNTHETIC-NEXT-COMPACT")).toBe(true);
+    expect(carried("SYNTHETIC-S5-AFTER-COMPACT", 2)).toBe(true);
     checkpoint(2, "SYNTHETIC-NEXT-RESUME");
     const resumed = await claudeAsync(env(s5), repo, "-p", "--resume", String(first["session_id"]), "SYNTHETIC-S5-RESUMED go on", "--output-format", "json");
     expect(resumed.code, resumed.stderr).toBe(0);
-    expect(carried("SYNTHETIC-S5-RESUMED", "SYNTHETIC-NEXT-RESUME")).toBe(true);
+    expect(carried("SYNTHETIC-S5-RESUMED", 3)).toBe(true);
     expect(s5.requests.filter((r) => JSON.stringify(r).includes('"type":"tool_use"'))).toEqual([]);
 
     // After all of it, nothing failed and status is healthy.
