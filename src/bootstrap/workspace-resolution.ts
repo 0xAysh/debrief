@@ -329,7 +329,29 @@ export function writeFileAtomic(path: string, content: string): void {
   } finally {
     closeSync(fd);
   }
-  renameSync(tmp, path);
+  renameOver(tmp, path);
+}
+
+/**
+ * How long a rename over a file keeps retrying on Windows, where it fails (EPERM, EACCES, EBUSY)
+ * while another process has the target open for a moment: reading it, or renaming over it too.
+ */
+const RENAME_RETRY_MS = 2_000;
+
+/** `renameSync(from, to)`, replacing `to`; on Windows it waits out another process's brief hold on `to`. */
+export function renameOver(from: string, to: string): void {
+  const deadline = Date.now() + RENAME_RETRY_MS;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(code) || Date.now() >= deadline) throw error;
+      Atomics.wait(pause, 0, 0, 5 + Math.random() * 20);
+    }
+  }
 }
 
 const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
