@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
@@ -31,7 +31,7 @@ function debrief(cwd: string, home: string, history: HostHistory, ...args: strin
 function workspaceDb(home: string): string | null {
   const root = join(home, "workspaces");
   if (!existsSync(root)) return null;
-  const [id] = (spawnSync("ls", [root], { encoding: "utf8" }).stdout.trim().split("\n"));
+  const [id] = readdirSync(root);
   return id === undefined || id === "" ? null : join(root, id, "memory.sqlite");
 }
 
