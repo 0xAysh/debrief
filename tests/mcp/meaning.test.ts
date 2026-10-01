@@ -194,6 +194,8 @@ describe("meaning search in the MCP server", () => {
     const holder = (await until("a filler", lease, (row) => row !== undefined))?.pid;
     const filler = servers.find((s) => s.pid === holder);
     expect(filler).toBeDefined();
+    // The filler takes the lease, then starts the model for its first batch.
+    await until("the filler's model", () => modelProcess(holder ?? 0), (pids) => pids.length > 0, 30_000);
     for (let sample = 0; sample < 10; sample++) {
       // Only the filler has the model loaded: nobody else recalled with a query, and nobody else fills.
       expect(servers.filter((s) => modelProcess(s.pid).length > 0).map((s) => s.pid)).toEqual([holder]);
@@ -208,10 +210,11 @@ describe("meaning search in the MCP server", () => {
     const next = (await until("another filler", lease, (row) => row !== undefined && row.pid !== holder, 30_000))?.pid;
     expect(rest.map((s) => s.pid)).toContain(next);
     const survivor = rest.find((s) => s.pid === next) as ServerHandle;
-    await until("the fill to finish", () => meaningOf(survivor), (m) => m.coverage?.percent === 100);
+    // 350 long texts: seconds on a laptop, minutes on a shared 3-core CI runner.
+    await until("the fill to finish", () => meaningOf(survivor), (m) => m.coverage?.percent === 100, 240_000);
     expect(rest.filter((s) => modelProcess(s.pid).length > 0).map((s) => s.pid)).toEqual([next]);
     for (const server of rest) await server.close();
-  }, 120_000);
+  }, 300_000);
 
   test("M14: hooks never load the model: without its files, every hook prints exactly what it prints with them", () => {
     const repo = initRepo();
