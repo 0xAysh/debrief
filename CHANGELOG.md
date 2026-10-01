@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Session start
+
+- **Session start carries what applies to every task, and points at the work.** It used to carry the checkpoint, the last session's turns and recent memory items: about 1.5k tokens every session, describing the last line of work, which may not be the one you start. Now it carries the protocol, your preferences, questions waiting for you, and one line naming the checkpoint (revision, age, goal) and whether the last session ended without one. The agent calls `memory_bootstrap` when it continues that work, and the protocol tells it to `memory_recall` at the start of each new task. The start's size no longer grows with memory. Sub-agents start as before.
+- **`memory_bootstrap` returns `lastSession`**: the last session's turns that no checkpoint covers (its last prompts, reply, commands and files), read from its transcript, so a crashed session is not lost. Null when a checkpoint covers every turn. It never reports the calling session's own turns back to it.
+- The session-start notice no longer counts items: `checkpoint r3 · 2 preferences`. `turns after r3 included` is now `turns after r3 not checkpointed`.
+
 ### Call log
 
 - **Every call Debrief serves is logged, for `debrief report`.** One row per memory tool call and per session-start, sub-agent-start and Stop hook run, in the workspace database (schema version 8): what a recall asked, the records it returned in order with their kind and freshness label, the bytes and estimated tokens the host got, omissions and continuations, time per recall stage (rank, load, freshness, pack) and the host's tool-use id, which names the call in Claude Code's transcript. The start hooks log exactly the records their context shows. Rows keep ids and labels, never a record's text. Forgetting a record blanks the queries that returned it; a private session blanks its rows. Logging never changes a call's result or a hook's output, never opens a database of its own (so a prompt pays nothing for it), and a failure to log is reported by `debrief status`.
