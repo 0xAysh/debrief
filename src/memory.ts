@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ZodError, type z } from "zod";
@@ -49,6 +49,7 @@ import {
   PREFERENCE_HINT,
   statesLastingPreference,
 } from "./integrity/preferences.js";
+import { type Embedder, EmbedderUnavailable, type EmbedderStatus, type Vector } from "./embedding/embedder.js";
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
@@ -89,12 +90,14 @@ import {
   worktreeFingerprint,
 } from "./retrieval/freshness.js";
 import { asIndexLine } from "./retrieval/label.js";
+import { fuseByMeaning, scanByMeaning } from "./retrieval/meaning.js";
 import { explainRank, parseQuery } from "./retrieval/query.js";
 import {
   type Candidate,
   clipToBytes,
   loadCandidates,
   loadRanked,
+  matchingSeqs,
   PAGE_CANDIDATES,
   phrasesContained,
   RANKED_BY,
@@ -102,8 +105,10 @@ import {
   rankSequence,
   rebuildSearchIndex,
   SEQUENCE_CAP,
+  TIER_BITS,
   toFtsQuery,
 } from "./retrieval/search.js";
+import { claimFill, type FillRegion, type MissingChunk, missingChunks, newestChunkId, releaseFill, storeVectors, vectorCoverage } from "./retrieval/vectors.js";
 import { fitTimeline, sessionNeighbours, type Timeline, timelineLine } from "./retrieval/timeline.js";
 import { orderByTrust, type TrustFacts, type TrustReason } from "./retrieval/trust.js";
 import {
@@ -186,6 +191,13 @@ export interface OpenMemoryOptions {
    * "last week") against. Defaults to the system clock; tests set it.
    */
   now?: () => Date;
+  /**
+   * Meaning search (ADR 0001): page 1 of a recall with a query fuses the keyword order with the
+   * order by vector similarity, and `fillVectors` embeds memory in the background. Without one,
+   * recall ranks by keywords alone, as hooks always do: they never load the model. The caller owns
+   * it (one per process, shared by every Memory it opens); `close` leaves it running.
+   */
+  embedder?: Embedder;
 }
 
 /**
@@ -227,7 +239,8 @@ export interface PackItem {
    * Why the item ranked where it did, when more than keyword relevance decided: it contains a
    * quoted phrase or identifier from the query (`exact "rankSequence"`), falls in the time the
    * query names (`created last week`), is the newest relevant record for a question about now,
-   * or trust placed it above an equally relevant record, saying what decided (`trusted: current, captured`).
+   * trust placed it above an equally relevant record, saying what decided (`trusted: current, captured`),
+   * or meaning search found it or ranked it above its keyword place (`meaning`).
    */
   why?: string;
   attribution: Attribution;
@@ -565,6 +578,38 @@ export interface StatusResult {
   lastCaptureAt: string | null;
   /** Preference proposals in this repository still waiting for the user's answer. */
   preferenceQuestions: number;
+  /** Meaning search; null where this process has no model (hooks, diagnostics). */
+  meaning: MeaningStatus | null;
+}
+
+export interface MeaningStatus {
+  /** The model vectors are made and searched with, e.g. `snowflake-arctic-embed-xs@q8`. */
+  model: string;
+  /** Whether this process has the model loaded now (see `EmbedderStatus`); `problem` says why a load failed. */
+  state: EmbedderStatus["state"];
+  problem: string | null;
+  /**
+   * This repository's chunks that get a vector (those of records recall could return), and how many
+   * have one of `model`; null when the database cannot be read. The background fill closes the gap.
+   */
+  coverage: { chunks: number; embedded: number; percent: number } | null;
+  /** Texts this process embedded for the fill. */
+  filled: number;
+}
+
+/** One step of the background fill (`Memory.fillVectors`). */
+export interface VectorFill {
+  /**
+   * `filled`: a step's chunks were embedded (more may remain); `done`: every chunk that gets a
+   * vector has one; `busy`: another server is filling this repository; `idle`: nothing to do here
+   * (no model, or no session bound yet); `unavailable`: the model cannot run (`problem`).
+   */
+  state: "filled" | "done" | "busy" | "idle" | "unavailable";
+  /** Texts sent to the model in this step. */
+  embedded: number;
+  /** Vectors stored (a text forgotten while it was being embedded gets none). */
+  stored: number;
+  problem: string | null;
 }
 
 /**
@@ -583,7 +628,7 @@ export interface StatusResult {
  *   is `idempotency_conflict` for a different one.
  * - **Checkpoints are compare-and-swap** on `expectedRevision`; never merged.
  * - **Recall filters before ranking** and the whole pack stays within its budget (unless the budget cannot hold even its scope).
- * - Methods are synchronous and throw only `DebriefError` for expected failures.
+ * - Methods are synchronous (except `fillVectors`) and throw only `DebriefError` for expected failures.
  */
 export interface Memory {
   /**
@@ -687,6 +732,15 @@ export interface Memory {
    * throw for unresolved scope or unusable storage (see `problem`).
    */
   status(input?: StatusInput): StatusResult;
+  /**
+   * One bounded step of the background fill (ADR 0001): embeds up to `maxChunks` chunks that have
+   * no vector of the current model, newest first and the current workstream first, and stores them
+   * in one short transaction. Existing, imported and new memory all fill this way. One server per
+   * repository fills at a time (a lease another server takes over when its holder dies). The only
+   * asynchronous method: it waits for the model without holding the caller's thread, so a recall
+   * during a fill does not wait for it. Never loads the model when nothing is missing.
+   */
+  fillVectors(input?: { maxChunks?: number }): Promise<VectorFill>;
   /** Regenerates the search projection from canonical records; canonical rows are untouched. */
   rebuildSearchIndex(): { records: number; chunks: number };
   /**
@@ -732,6 +786,23 @@ function privateNotice(earlierSessions: number): string {
 const FORGET_NOTICE =
   "Nothing has been removed yet. Show the user the targets and the impact, and ask them to confirm explicitly; only then call memory_manage with action forget and this confirmToken. Forgetting cannot be undone. Records listed as invalidated or quarantined keep their own content (forget them too if the user wants). Host transcripts, loaded model contexts, exports and backups are not erased.";
 const DEFAULT_IMPORT_BUDGET_MS = 3_000;
+/** Chunks one fill step embeds before storing them: about 0.3 s of the model's time. */
+const FILL_CHUNKS = 8;
+
+/** A fill pass over the chunks with ids in (`from`, `top`], as of lifecycle `watermark` (see `fillVectors`). */
+interface FillPass {
+  from: number;
+  top: number;
+  watermark: number;
+  /** The region its cursor is in, and the newest record seq the cursor has not passed. */
+  region: Exclude<FillRegion, "fresh"> | "done";
+  below: number;
+}
+
+/** Coverage as a whole percentage, never rounded up to 100 while a chunk is missing. */
+function coveredPercent(chunks: number, embedded: number): number {
+  return chunks === 0 ? 100 : Math.floor((100 * embedded) / chunks);
+}
 /**
  * The pack a start hook works from. A sub-agent's start renders it: pack items carry provenance
  * JSON, so this holds more than the rendered text keeps, and `SUBAGENT_CONTEXT_CHARS` bounds what
@@ -769,6 +840,15 @@ class LocalMemory implements Memory {
   private trace: CallTrace | null = null;
   /** Null for hosts without a transcript adapter. */
   private readonly importer: TranscriptImporter | null;
+  private readonly embedder: Embedder | undefined;
+  /** This instance's claim on the fill lease (src/retrieval/vectors.ts). */
+  private readonly fillHolder = { token: `${process.pid}:${randomUUID()}`, pid: process.pid };
+  /** The fill pass in progress (see `fillVectors`), and where the last finished one left off. */
+  private fillPass: FillPass | null = null;
+  private filledThrough = { chunkId: 0, watermark: -1 };
+  private filled = 0;
+  /** Whether this instance may hold the fill lease (so closing gives it up). */
+  private fillClaimed = false;
 
   constructor(options: OpenMemoryOptions) {
     this.cwd = options.cwd;
@@ -777,6 +857,7 @@ class LocalMemory implements Memory {
     this.busyTimeoutMs = options.busyTimeoutMs;
     this.now = options.now ?? (() => new Date());
     this.hostSessionId = options.hostSessionId;
+    this.embedder = options.embedder;
     const adapter = options.transcriptAdapter ?? hostDescriptor(this.host)?.transcripts?.(options) ?? null;
     this.importer =
       adapter === null
@@ -1246,7 +1327,12 @@ class LocalMemory implements Memory {
         hookRuns: lastHookRuns(this.home),
         lastCaptureAt: null,
         preferenceQuestions: 0,
+        meaning: null,
       };
+      if (this.embedder !== undefined) {
+        const embedder = this.embedder.status();
+        result.meaning = { model: embedder.modelId, state: embedder.state, problem: embedder.problem, coverage: null, filled: this.filled };
+      }
       let db: Db | null = null;
       try {
         if (this.closed) throw new DebriefError("storage_unavailable", "This Memory has been closed.");
@@ -1314,6 +1400,10 @@ class LocalMemory implements Memory {
         result.counts = { records: count("records"), checkpoints: count("checkpoints"), workstreams: count("workstreams"), sessions: count("sessions") };
         result.lastCaptureAt = (db.prepare("SELECT max(created_at) AS at FROM import_events WHERE host = ?").get(this.host) as { at: string | null }).at;
         result.preferenceQuestions = count("preference_candidates");
+        if (result.meaning !== null) {
+          const { chunks, embedded } = vectorCoverage(db, result.meaning.model);
+          result.meaning.coverage = { chunks, embedded, percent: coveredPercent(chunks, embedded) };
+        }
       } catch (error) {
         const mapped = toStorageError(error);
         if (!(mapped instanceof DebriefError)) throw mapped;
@@ -1330,6 +1420,90 @@ class LocalMemory implements Memory {
       const { db } = this.bind();
       return writeTransaction(db, () => rebuildSearchIndex(db));
     });
+  }
+
+  async fillVectors(input: { maxChunks?: number } = {}): Promise<VectorFill> {
+    const step = (state: VectorFill["state"], embedded = 0, stored = 0, problem: string | null = null): VectorFill => ({ state, embedded, stored, problem });
+    const embedder = this.embedder;
+    const bound = this.bound;
+    if (embedder === undefined || bound === undefined || this.closed) return step("idle");
+    const { db, scope } = bound;
+    const batch = this.guard((): MissingChunk[] | "done" | "busy" => {
+      const pass = this.fillPass ?? this.startFillPass(db);
+      if (pass === null) return "done";
+      if (!writeTransaction(db, () => claimFill(db, this.fillHolder, new Date()))) return "busy";
+      this.fillClaimed = true;
+      const limit = input.maxChunks ?? FILL_CHUNKS;
+      const find = (region: FillRegion): MissingChunk[] =>
+        missingChunks(db, { model: embedder.modelId, region, workstreamId: scope.workstreamId, from: pass.from, top: pass.top, below: pass.below, limit });
+      // Chunks written since the pass began come first; then the pass's cursor moves on.
+      let found = find("fresh");
+      while (found.length === 0 && pass.region !== "done") {
+        found = find(pass.region);
+        if (found.length > 0) pass.below = found.at(-1)?.seq ?? pass.below;
+        else [pass.region, pass.below] = [pass.region === "scope" ? "rest" : "done", Number.MAX_SAFE_INTEGER];
+      }
+      if (found.length > 0) return found;
+      // Every chunk up to the pass's start has a vector, as of the lifecycle the pass began with.
+      this.filledThrough = { chunkId: pass.top, watermark: pass.watermark };
+      this.fillPass = null;
+      this.releaseFillLease(db);
+      return "done";
+    });
+    if (batch === "done" || batch === "busy") return step(batch);
+    let vectors: Vector[];
+    try {
+      // One text per request: a recall's query vector waits for at most one chunk.
+      vectors = (await Promise.all(batch.map((chunk) => embedder.embedAsync([chunk.text], "document")))).flat();
+    } catch (error) {
+      if (!(error instanceof EmbedderUnavailable)) throw error;
+      if (this.serving(db)) this.releaseFillLease(db);
+      return step("unavailable", 0, 0, error.message);
+    }
+    // Closed (or switched to another session's database) while the model worked: nothing to store into.
+    if (!this.serving(db)) return step("idle");
+    this.filled += batch.length;
+    const stored = this.guard(() =>
+      writeTransaction(db, () => {
+        claimFill(db, this.fillHolder, new Date());
+        return storeVectors(
+          db,
+          embedder.modelId,
+          batch.map((chunk, i) => ({ textHash: chunk.textHash, values: vectors[i]?.values ?? new Int8Array(0), scale: vectors[i]?.scale ?? 0 })),
+        );
+      }),
+    );
+    return step("filled", batch.length, stored);
+  }
+
+  /**
+   * A new fill pass, or null when nothing can be missing: no chunk was written and no lifecycle
+   * changed since the last pass finished. The first pass of a process looks at every chunk, as does
+   * one after a lifecycle change (a restored record gets a vector again); later ones only at new
+   * chunks. The check costs two index lookups, so a server checks after every call for nothing.
+   */
+  private startFillPass(db: Db): FillPass | null {
+    const top = newestChunkId(db);
+    const watermark = lifecycleWatermark(db);
+    if (top <= this.filledThrough.chunkId && watermark === this.filledThrough.watermark) return null;
+    this.fillPass = { from: watermark === this.filledThrough.watermark ? this.filledThrough.chunkId : 0, top, watermark, region: "scope", below: Number.MAX_SAFE_INTEGER };
+    return this.fillPass;
+  }
+
+  /** Whether `db` is still this open instance's database (an awaited step may outlive either). */
+  private serving(db: Db): boolean {
+    return !this.closed && this.bound?.db === db;
+  }
+
+  private releaseFillLease(db: Db): void {
+    this.fillClaimed = false;
+    try {
+      writeTransaction(db, () => {
+        releaseFill(db, this.fillHolder);
+      });
+    } catch {
+      // Busy or closed: the lease goes stale and another server takes it over.
+    }
   }
 
   checkIntegrity(): IntegrityReport {
@@ -1365,6 +1539,7 @@ class LocalMemory implements Memory {
   }
 
   close(): void {
+    if (this.bound !== undefined && !this.closed && this.fillClaimed) this.releaseFillLease(this.bound.db);
     this.closed = true;
     this.globalDb?.close();
     this.globalDb = undefined;
@@ -1571,6 +1746,10 @@ class LocalMemory implements Memory {
       stages[stage] = (stages[stage] ?? 0) + now - mark;
       mark = now;
     };
+    // Page 1 of a recall with words asks the model for the query's vector before the read
+    // transaction begins: the first such recall also waits for the model to load.
+    const meaning = continued === null && match !== null && query !== null ? this.queryVector(query) : null;
+    if (meaning !== null) lap("embed");
 
     return db.transaction((): ContextPack<C, I> => {
       const head = continued === null ? loadHeadCheckpoint(db, scope.workstreamId) : { row: null, withheld: null };
@@ -1582,6 +1761,8 @@ class LocalMemory implements Memory {
       let trusted: ReadonlyMap<number, TrustReason>;
       // Page 1's freshness check of the records trust compared (and the checkpoint), reused for its labels.
       let trustChecked: ReadonlyMap<string, RecordFreshness> = new Map();
+      // Page 1 only: why meaning search could not take part, or how much of memory it covers.
+      let meaningNotice: string | null = null;
       if (continued === null) {
         const ranked = rankSequence(db, {
           workstreamId: scope.workstreamId,
@@ -1597,6 +1778,23 @@ class LocalMemory implements Memory {
         trusted = trust?.lifted ?? new Map();
         rankedBy = trust === null ? ranked.rankedBy : withTrustBits(ranked.rankedBy, trust.lifted);
         trustChecked = trust?.checked ?? trustChecked;
+        if (meaning !== null && "problem" in meaning) meaningNotice = `meaning search unavailable: ${meaning.problem}`;
+        if (meaning !== null && "vector" in meaning && match !== null) {
+          lap("rank");
+          // Records the tiers lifted lead the sequence and keep their places; the rest is fused.
+          let lifted = 0;
+          while (lifted < sequence.length && ((rankedBy.get(sequence[lifted] ?? -1) ?? 0) & TIER_BITS) !== 0) lifted++;
+          const scan = scanByMeaning(db, { workstreamId: scope.workstreamId, kinds: sequenceKinds, model: meaning.model, query: meaning.vector });
+          const fused = fuseByMeaning(sequence, lifted, scan.order);
+          const keyword = new Set(sequence);
+          // A record meaning admitted that keywords matched beyond the cap is carried now.
+          const carried = ranked.total > ranked.seqs.length ? matchingSeqs(db, match, fused.seqs.filter((seq) => !keyword.has(seq))).size : 0;
+          beyondCap += Math.max(0, fused.seqs.length - SEQUENCE_CAP) - carried;
+          sequence = fused.seqs.slice(0, SEQUENCE_CAP);
+          rankedBy = withMeaningBits(rankedBy, fused.meaning);
+          if (scan.embedded < scan.chunks) meaningNotice = `meaning search covers ${coveredPercent(scan.chunks, scan.embedded)}% of memory`;
+          lap("meaning");
+        }
       } else {
         sequence = continued.remaining;
         beyondCap = continued.beyondCap;
@@ -1707,7 +1905,7 @@ class LocalMemory implements Memory {
               : null,
           budget: { ...budget, usedBytes: 0, usedTokens: 0 },
           empty,
-          notice: withScopeNotice(scope, withheld !== null && notice !== withheld && !starved ? (notice === null ? withheld : `${withheld} ${notice}`) : notice, empty),
+          notice: withScopeNotice(scope, withMeaningNotice(withheld !== null && notice !== withheld && !starved ? (notice === null ? withheld : `${withheld} ${notice}`) : notice, starved ? null : meaningNotice), empty),
           corrections,
         };
       };
@@ -1759,6 +1957,18 @@ class LocalMemory implements Memory {
       this.trace = { returned: entries.map((entry, position) => ({ ...(traced.get(entry) ?? { id: "unknown", kind: null, freshness: null }), position })), stages };
       return packed;
     })();
+  }
+
+  /** The query's vector for page 1's meaning search, or why there is none; null without a model. */
+  private queryVector(query: string): { vector: Vector; model: string } | { problem: string } | null {
+    if (this.embedder === undefined) return null;
+    try {
+      const [vector] = this.embedder.embed([query], "query");
+      return vector === undefined ? { problem: "the model returned no vector" } : { vector, model: this.embedder.modelId };
+    } catch (error) {
+      if (error instanceof EmbedderUnavailable) return { problem: error.message };
+      throw error;
+    }
   }
 
   /** Maps any thrown value to the error contract: zod → invalid_input, SQLite → storage_*. */
@@ -1923,6 +2133,19 @@ function withTrustBits(rankedBy: ReadonlyMap<number, number>, lifted: ReadonlyMa
   const bits = new Map(rankedBy);
   for (const seq of lifted.keys()) bits.set(seq, (bits.get(seq) ?? 0) | RANKED_BY.trust);
   return bits;
+}
+
+/** `rankedBy` plus the meaning bit of every record meaning search placed. */
+function withMeaningBits(rankedBy: ReadonlyMap<number, number>, placed: ReadonlySet<number>): Map<number, number> {
+  const bits = new Map(rankedBy);
+  for (const seq of placed) bits.set(seq, (bits.get(seq) ?? 0) | RANKED_BY.meaning);
+  return bits;
+}
+
+/** A pack's notice with meaning search's own line after it. */
+function withMeaningNotice(notice: string | null, meaning: string | null): string | null {
+  if (meaning === null) return notice;
+  return notice === null ? meaning : `${notice} ${meaning}`;
 }
 
 /** What freshness checks need of a stored record: its references and any test run it reports. */

@@ -1,50 +1,106 @@
-import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
+import { MODEL, RUNTIME_FILES } from "../../src/embedding/model.js";
+import type { ContextPack, StatusResult } from "../../src/memory.js";
 import { initRepo, tempDir } from "../helpers.js";
 import { CLAUDE_PINNED_VERSION } from "../mcp/claude.js";
 import { CLI, spawnServer } from "../mcp/harness.js";
+import { PAYMENTS_SERVICE } from "../memory/meaning-fixture.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
+/** The model's process, bundled beside the CLI. */
+const EMBEDDER = join(dirname(CLI), "embedder.mjs");
 
-/** The packages esbuild inlined, read from the shipped bundle itself: each inlined module keeps a `// node_modules/<package>/…` comment. */
-function bundledPackages(): string[] {
+/** The packages esbuild inlined, read from a shipped bundle itself: each inlined module keeps a `// node_modules/<package>/…` comment. */
+function bundledPackages(bundle = CLI): string[] {
   const names = new Set<string>();
-  for (const [line] of readFileSync(CLI, "utf8").matchAll(/^\/\/ node_modules\/.+$/gm)) {
+  for (const [line] of readFileSync(bundle, "utf8").matchAll(/^\/\/ node_modules\/.+$/gm)) {
     const last = line.slice(line.lastIndexOf("node_modules/") + "node_modules/".length).split("/");
     names.add(last[0]?.startsWith("@") === true ? `${last[0]}/${last[1] ?? ""}` : (last[0] ?? ""));
   }
   return [...names].sort();
 }
 
+/** A package's license text; ONNX Runtime publishes its packages without one, so the build keeps it in scripts/licenses/. */
 function licenseText(name: string): string {
   const dir = join(ROOT, "node_modules", name);
   const file = readdirSync(dir).find((entry) => /^licen[cs]e(\.(md|txt))?$/i.test(entry));
-  if (file === undefined) throw new Error(`${name} has no license file`);
-  return readFileSync(join(dir, file), "utf8").trim();
+  if (file !== undefined) return readFileSync(join(dir, file), "utf8").trim();
+  if (name.startsWith("onnxruntime-")) return readFileSync(join(ROOT, "scripts/licenses/onnxruntime.txt"), "utf8").trim();
+  throw new Error(`${name} has no license file`);
 }
+
+const sha256 = (path: string): string => createHash("sha256").update(readFileSync(path)).digest("hex");
 
 describe("the published package", () => {
   test("ships the MIT license and a notice carrying the license text of every package bundled into the CLI", () => {
     const [packed] = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: ROOT, encoding: "utf8" })) as [{ files: { path: string }[] }];
-    expect(packed.files.map((file) => file.path).sort()).toEqual(["LICENSE", "README.md", "dist/THIRD_PARTY_NOTICES.md", "dist/debrief.mjs", "package.json"]);
+    expect(packed.files.map((file) => file.path).sort()).toEqual([
+      "LICENSE",
+      "README.md",
+      "dist/THIRD_PARTY_NOTICES.md",
+      "dist/debrief.mjs",
+      "dist/embedder.mjs",
+      ...MODEL.files.map((file) => `dist/${MODEL.directory}/${file.name}`).sort(),
+      ...RUNTIME_FILES.map((name) => `dist/${name}`).sort(),
+      "package.json",
+    ]);
 
     const manifest = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { license?: string };
     expect(manifest.license).toBe("MIT");
     expect(readFileSync(join(ROOT, "LICENSE"), "utf8")).toMatch(/^MIT License\n\nCopyright \(c\) 2026 Ayush Rangrej\n/);
 
-    const bundled = bundledPackages();
-    expect(bundled).toEqual(expect.arrayContaining(["@modelcontextprotocol/sdk", "zod"]));
+    const bundled = [...new Set([...bundledPackages(CLI), ...bundledPackages(EMBEDDER)])].sort();
+    expect(bundled).toEqual(expect.arrayContaining(["@modelcontextprotocol/sdk", "zod", "onnxruntime-web", "@huggingface/tokenizers"]));
+    // What every hook loads carries nothing of the model's runtime.
+    expect(bundledPackages(CLI).filter((name) => name.startsWith("onnxruntime") || name.startsWith("@huggingface/"))).toEqual([]);
     const notices = readFileSync(join(ROOT, "dist/THIRD_PARTY_NOTICES.md"), "utf8");
     const sections = notices.split(/^(?=## )/m).slice(1);
-    expect(sections.map((section) => /^## (\S+?)@/.exec(section)?.[1]).sort()).toEqual(bundled);
+    expect(sections.map((section) => /^## (\S+?)@/.exec(section)?.[1]).sort()).toEqual([...bundled, MODEL.repository].sort());
     for (const name of bundled) {
       const section = sections.find((s) => s.startsWith(`## ${name}@`)) ?? "";
       expect(section, name).toContain(licenseText(name));
     }
+    // The model: Apache-2.0, at the pinned revision.
+    const model = sections.find((s) => s.startsWith(`## ${MODEL.repository}@${MODEL.revision} (Apache-2.0)`)) ?? "";
+    expect(model).toContain("Apache License\n                           Version 2.0, January 2004");
     // better-sqlite3 is installed as its own package with its own license, never inlined.
     expect(bundled).not.toContain("better-sqlite3");
+  });
+
+  test("M21: the tarball carries the pinned model and the runtime's WebAssembly, runs no install script, and its debrief mcp searches by meaning with only better-sqlite3 installed", async () => {
+    const dir = tempDir("debrief-tarball-");
+    const tarball = execFileSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: ROOT, encoding: "utf8" }).trim().split("\n").at(-1) ?? "";
+    execFileSync("tar", ["-xzf", join(dir, tarball), "-C", dir]);
+    const pkg = join(dir, "package");
+    for (const file of MODEL.files) expect(sha256(join(pkg, "dist", MODEL.directory, file.name)), file.name).toBe(file.sha256);
+    for (const name of RUNTIME_FILES) expect(sha256(join(pkg, "dist", name)), name).toBe(sha256(join(ROOT, "node_modules/onnxruntime-web/dist", name)));
+    const manifest = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")) as { scripts?: Record<string, string>; dependencies: Record<string, string> };
+    expect(Object.keys(manifest.scripts ?? {}).filter((name) => /^(pre|post)?install$/.test(name))).toEqual([]);
+    expect(Object.keys(manifest.dependencies)).toEqual(["better-sqlite3"]);
+
+    mkdirSync(join(pkg, "node_modules"));
+    symlinkSync(join(ROOT, "node_modules/better-sqlite3"), join(pkg, "node_modules/better-sqlite3"));
+    const networkLog = join(tempDir(), "network.log");
+    const server = await spawnServer({ cwd: initRepo(), home: tempDir(), host: "claude-code", meaning: true, cli: join(pkg, "dist/debrief.mjs"), networkLog });
+    await server.ok("memory_bootstrap", { importChoice: "none" });
+    for (const record of PAYMENTS_SERVICE.slice(0, 16)) await server.ok("memory_record", { kind: record.kind, body: record.body, attribution: "agent_inference" });
+    for (const deadline = Date.now() + 60_000; ; ) {
+      const { meaning } = await server.ok<StatusResult>("memory_status");
+      if (meaning?.coverage?.percent === 100) break;
+      expect(Date.now()).toBeLessThan(deadline);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const pack = await server.ok<ContextPack>("memory_recall", { query: "socket resets" });
+    expect(pack.items[0]).toMatchObject({ why: "meaning", excerpt: expect.stringMatching(/^ECONNRESET/) as unknown });
+    // The model ran from the unpacked package, not from this checkout.
+    const model = spawnSync("pgrep", ["-P", String(server.pid), "-f", "embedder.mjs"], { encoding: "utf8" }).stdout.trim();
+    expect(spawnSync("ps", ["-o", "command=", "-p", model], { encoding: "utf8" }).stdout).toContain(join(pkg, "dist", "embedder.mjs"));
+    await server.close();
+    expect(existsSync(networkLog) ? readFileSync(networkLog, "utf8") : "").toBe("");
   });
 
   test("is ready to publish: public, one version in the package, the plugin and the MCP server, and a support matrix that matches what the tests pin", async () => {

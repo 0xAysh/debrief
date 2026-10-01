@@ -85,6 +85,19 @@ function renderStatus(host: HostId, facts: PluginFacts, status: StatusResult, pl
   else if (imported.state === "consent_required") row("import", "not answered yet: the agent asks at the next session start");
   else row("import", imported.consent?.choice ?? imported.state);
   row("preferences", status.preferenceQuestions === 0 ? "no questions waiting" : `${status.preferenceQuestions} question${status.preferenceQuestions === 1 ? "" : "s"} waiting for the user`);
+  const meaning = status.meaning;
+  if (meaning?.state === "failed") {
+    row("meaning search", `${meaning.model} failed to load: ${meaning.problem ?? "unknown"}; recall finds memory by its words only`, "✘");
+  } else if (meaning !== null) {
+    const coverage = meaning.coverage;
+    const covered =
+      coverage === null
+        ? ""
+        : coverage.embedded === coverage.chunks
+          ? "; all of this repository's memory is searchable by meaning"
+          : `; ${coverage.percent}% of this repository's memory is searchable by meaning (the MCP server embeds the rest in the background)`;
+    row("meaning search", `${meaning.model} loads${covered}`, "✔");
+  }
   row("storage", status.storage.dbPath ?? status.storage.home);
   if (status.problem !== null && imported !== null) row("storage", `${status.problem.code}: ${status.problem.message}`, "✘");
 

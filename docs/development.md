@@ -4,7 +4,9 @@ Requires Node `>=24` (`.node-version` pins 25.9.0) and Git.
 
 ```sh
 npm ci
-npm run build       # tsc → dist/, then one bundled CLI: dist/debrief.mjs (the package bin)
+npm run build       # tsc → dist/, then one bundled CLI: dist/debrief.mjs (the package bin), and meaning search beside it
+                    # (dist/embedder.mjs, ONNX Runtime's .wasm, dist/models/): the model is fetched once into .cache/models/
+                    # at the revision src/embedding/model.ts pins, and every file must match its pinned SHA-256
 npm run typecheck
 npm run lint
 npm test            # builds dist/, then runs all suites against real SQLite, Git and server processes
@@ -30,7 +32,8 @@ src/
 ├── bootstrap/             # cwd → workspace → workstream → session
 ├── import/                # consent, transcript adapters (claude, codex), reconcile, privacy
 ├── integrity/             # checkpoints, lifecycle and taints, provenance, preferences, private sessions
-├── retrieval/             # eligibility, search, freshness, context packs, index lines, timelines, digest, session-start text
+├── embedding/             # the model's pins, its process (dist/embedder.mjs) and the embedder seam the server owns
+├── retrieval/             # eligibility, search, meaning search and vectors, freshness, context packs, index lines, timelines, digest, session-start text
 └── storage/               # SQLite, records, migrations, home-level logs, delete-data
 ```
 
@@ -65,7 +68,9 @@ The driven host tests run only against the pinned builds. When a host is missing
 
 To move a pin, change the constant (`CLAUDE_PINNED_VERSION` in `tests/mcp/claude.ts`, `CODEX_PINNED_VERSION` in `tests/mcp/codex.ts`), run that host's suites with `DEBRIEF_REQUIRE_HOSTS=claude` or `=codex`, and keep it only if they all pass. `tests/release/package.test.ts` then fails until the README, `docs/hosts.md` and this page name the new Claude Code build.
 
-Every Debrief process a driven test starts loads `tests/mcp/no-network.mjs`, which refuses and logs any socket, DNS lookup or fetch; the tests assert the logs are empty.
+Every Debrief process a driven test starts loads `tests/mcp/no-network.mjs`, which refuses and logs any socket, DNS lookup or fetch; the tests assert the logs are empty. The model's process inherits the guard.
+
+Meaning search runs the real model in its tests, never a stand-in: `tests/memory/meaning.test.ts` (the memory module, with `openEmbedder({ dir: "dist" })`), `tests/mcp/meaning.test.ts` (servers, SIGKILLs, hooks without the model, memory after the idle unload) and `tests/release/package.test.ts` (the tarball, run with only better-sqlite3 installed). Servers that `spawnServer` starts run without it (`DEBRIEF_MEANING_SEARCH=off`) unless a test passes `meaning: true`, so suites about something else neither race the background fill nor load a model per server; `embedderIdleMs` shortens the idle unload (`DEBRIEF_EMBEDDER_IDLE_MS`).
 
 | Test | Drives |
 |---|---|
@@ -103,7 +108,7 @@ npx vitest run tests/handoff # the Claude → Codex → Claude packs and the ide
 ## Commands
 
 ```sh
-debrief status                                      # is Debrief installed and working here? (exit 1 on a problem)
+debrief status                                      # is Debrief installed and working here? (exit 1 on a problem, a model that fails to load included)
 debrief import [--set all|current_project|none]     # put the transcript question, or record the answer and import to completion
 debrief delete-data [--yes]                         # delete all stored memory, after typing delete (--yes: without asking)
 debrief mcp [--host claude-code|codex|pi|unknown]   # MCP server over stdio (the host starts this)

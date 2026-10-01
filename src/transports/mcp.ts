@@ -8,6 +8,7 @@ import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, typ
 import { z } from "zod";
 import { sessionOfCall, sessionOfServer } from "../bootstrap/host-sessions.js";
 import { resolveHome } from "../bootstrap/workspace-resolution.js";
+import type { Embedder } from "../embedding/embedder.js";
 import { DebriefError } from "../errors.js";
 import type { HostReply, Memory, PreferenceQuestion } from "../memory.js";
 import { openMemory } from "../memory.js";
@@ -37,7 +38,7 @@ const TOOLS: Record<OperationName, ToolSpec> = {
   },
   memory_recall: {
     description:
-      "Return a bounded, cited context pack: the head checkpoint first, then eligible records ranked for the query. Respects maxTokens/maxBytes (bodies are cut first, never warnings or citations); follow `continuation` for more. Items carry recordIds, citations, attribution, host/session/source provenance, live freshness per reference with a warning (stale/unknown: read the current file; remote refs: verify with your own tools), and corroboration counted by independent roots, with copies (branched transcripts, derived or cited restatements) collapsed under copies. Debrief never returns file content. While scope.ambiguity is set, only workspace-level memory is returned. mode \"compact\" returns the same sequence as one line per entry (id, date, kind, attribution, host, freshness, a short excerpt), several times as many per budget: survey with it, then memory_read the few that matter (around: N for what came just before and after). A continuation works in either mode.",
+      "Return a bounded, cited context pack: the head checkpoint first, then eligible records ranked for the query, by its words and by meaning (an item placed by meaning says why: meaning). Respects maxTokens/maxBytes (bodies are cut first, never warnings or citations); follow `continuation` for more. Items carry recordIds, citations, attribution, host/session/source provenance, live freshness per reference with a warning (stale/unknown: read the current file; remote refs: verify with your own tools), and corroboration counted by independent roots, with copies (branched transcripts, derived or cited restatements) collapsed under copies. Debrief never returns file content. While scope.ambiguity is set, only workspace-level memory is returned. mode \"compact\" returns the same sequence as one line per entry (id, date, kind, attribution, host, freshness, a short excerpt), several times as many per budget: survey with it, then memory_read the few that matter (around: N for what came just before and after). A continuation works in either mode.",
     run: (memory, args) => memory.recall(args as never),
   },
   memory_read: {
@@ -62,7 +63,7 @@ const TOOLS: Record<OperationName, ToolSpec> = {
   },
   memory_status: {
     description:
-      "Report Debrief health: embedded SQLite/FTS5 runtime, schema version, database paths, resolved scope, counts, capabilities, transcript-import consent, progress and capture gaps, and whether this host lets Debrief ask the user a question directly (client.elicitation).",
+      "Report Debrief health: embedded SQLite/FTS5 runtime, schema version, database paths, resolved scope, counts, capabilities, transcript-import consent, progress and capture gaps, meaning search (model, whether it is loaded, and how much of memory has vectors), and whether this host lets Debrief ask the user a question directly (client.elicitation).",
     run: (memory, args) => memory.status(args as never),
   },
 };
@@ -81,6 +82,13 @@ const BACKFILL_PAUSE_MS = 25;
 /** Consecutive failed steps retried (after 2 s, 4 s, … 32 s) before waiting for the next bootstrap. */
 const BACKFILL_RETRIES = 5;
 
+/**
+ * Meaning search's background fill (ADR 0001): the pause between steps while chunks are missing,
+ * and how often a server whose repository another server is filling checks whether it must take over.
+ */
+const FILL_PAUSE_MS = 25;
+const FILL_BUSY_RETRY_MS = 3_000;
+
 /** How long a preference question waits for the user before it stays pending (decided with the user, #21). */
 const DEFAULT_ELICITATION_TIMEOUT_MS = 60_000;
 /** The SDK's error when a request (here: the question to the user) gets no answer in time. */
@@ -96,6 +104,8 @@ export interface McpServerOptions {
   /** Where the host's session id may be read (`sessionEnv` in src/hosts.ts); defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
   log?: (message: string) => void;
+  /** The model for meaning search, shared by every Memory the server opens and closed with it; none means keyword search only. */
+  embedder?: Embedder;
 }
 
 /**
@@ -118,6 +128,8 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     if (memory !== undefined && named !== undefined && named !== memorySession) {
       if (backfill !== undefined) clearTimeout(backfill);
       backfill = undefined;
+      clearTimeout(filling);
+      filling = undefined;
       memory.close();
       memory = undefined;
     }
@@ -128,6 +140,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
         host,
         ...(options.home === undefined ? {} : { home: options.home }),
         ...(memorySession === undefined ? {} : { hostSessionId: memorySession }),
+        ...(options.embedder === undefined ? {} : { embedder: options.embedder }),
       });
     }
     return memory;
@@ -165,6 +178,37 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
       }
     }, delayMs);
     backfill.unref();
+  };
+
+  // Meaning search's background fill: after every call, a bounded step at a time until every chunk
+  // has a vector. A step waits for the model without holding the event loop, so calls are served
+  // meanwhile, and a step that finds nothing missing never loads the model.
+  let filling: NodeJS.Timeout | undefined;
+  let fillRunning = false;
+  let fillProblem: string | null = null;
+  const scheduleFill = (delayMs: number): void => {
+    if (filling !== undefined || fillRunning || memory === undefined || options.embedder === undefined) return;
+    filling = setTimeout(() => {
+      filling = undefined;
+      const current = memory;
+      if (current === undefined) return;
+      fillRunning = true;
+      current.fillVectors().then(
+        (step) => {
+          fillRunning = false;
+          if (step.state === "filled") scheduleFill(FILL_PAUSE_MS);
+          else if (step.state === "busy") scheduleFill(FILL_BUSY_RETRY_MS);
+          if (step.state === "unavailable" && step.problem !== fillProblem) log(`meaning search unavailable: ${step.problem ?? "unknown"}`);
+          fillProblem = step.problem;
+        },
+        (error: unknown) => {
+          fillRunning = false;
+          if (error instanceof DebriefError && error.retryable) scheduleFill(FILL_BUSY_RETRY_MS);
+          else log(`meaning search fill stopped: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+        },
+      );
+    }, delayMs);
+    filling.unref();
   };
 
   const elicitationTimeoutMs = options.elicitationTimeoutMs ?? (Number(process.env["DEBRIEF_ELICITATION_TIMEOUT_MS"]) || DEFAULT_ELICITATION_TIMEOUT_MS);
@@ -268,6 +312,7 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
       }
       const text = JSON.stringify(result);
       note(text, ms, { result });
+      scheduleFill(FILL_PAUSE_MS);
       return { content: [{ type: "text", text }], structuredContent: result };
     } catch (error) {
       const ms = performance.now() - started;
@@ -288,8 +333,11 @@ export function createMcpServer(options: McpServerOptions): { server: Server; cl
     close: () => {
       clearTimeout(backfill);
       backfill = undefined;
+      clearTimeout(filling);
+      filling = undefined;
       memory?.close();
       memory = undefined;
+      options.embedder?.close();
     },
   };
 }

@@ -223,3 +223,15 @@ Bundling costs about 38 MB of disk per install and needs no new trust boundary. 
 The strongest case against: LongMemEval_S is chat, most of its gain is in preference questions ("suggest something for my evening"), and those barely exist in coding memory. The code-memory set is only 30 questions, and they were written by the same person who chose the options, with paraphrases deliberately stripped of shared words. The price is real and permanent: about 38 MB per install, about 0.6 GB of resident memory per active session while the model is loaded, tens of minutes of background CPU to backfill a large history, and a model to maintain. The caller is itself a language model. It could expand its own query ("doctor OR physician OR Dr") at no install cost, and that alternative was **not measured**. If a driven run shows agents recovering these misses by rephrasing, meaning search buys little for coding work.
 
 The user decided on 2026-09-30 to build it anyway. The rephrasing run is reported in PR 2's body; it no longer decides whether PR 2 ships.
+
+## Built in PR 2 (2026-10-01)
+
+PR 2 follows this record, with three changes its measurements forced (Apple M4 Pro, Node 25.9, macOS 26; RSS from `ps`, so it includes freed pages macOS has not reclaimed):
+
+| | Planned | Built | Why |
+|---|---|---|---|
+| Where the model runs | a worker thread in the MCP server, terminated after 2 idle minutes | **a separate process** (`dist/embedder.mjs`), killed after 2 idle minutes; a small proxy thread in the server owns it | terminating the worker left the server 150–270 MB above its pre-load RSS (54 MB bare: 207 MB after `worker.terminate()` with Liftoff, 546 MB with V8's optimizing tier); releasing the ONNX session in-process freed nothing (666 → 663 MB). After the process exits, the server is within 15 MB of where it started |
+| V8 tier for ONNX Runtime's WebAssembly | default | **`--liftoff-only`** in the model's process | the optimizing tier compiles about 400 MB of code for ORT's 14 MB module: model loaded, 4 threads, 200 chunks embedded: 710 MB RSS and 62 chunks/s by default, 313 MB and 28 chunks/s Liftoff-only (query p50 3.8 vs 7.5 ms). Vectors are identical either way |
+| Records found only by meaning | the vector order over eligible records | **the vector order's best 50** enter the sequence; keyword matches take their vector rank from the whole order | every eligible record is somewhere in the vector order, so without a bound every recall would carry all of memory (up to 500 records) |
+
+Also added: `DEBRIEF_MEANING_SEARCH=off` turns meaning search off (the model is never loaded), and test servers run with it unless a test asks for meaning search, so suites about something else do not race the background fill. Measured RSS with the model loaded: the server about +14 MB, the model's process about 280–300 MB; after the idle unload, the server about +13 MB and no model process. So the #51 target (+150 MB at peak, about 0 idle) is met when idle and not while the model is loaded (about +300 MB in all).

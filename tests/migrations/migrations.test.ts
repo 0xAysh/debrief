@@ -1,6 +1,8 @@
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
+import { openEmbedder } from "../../src/embedding/embedder.js";
 import { openMemory } from "../../src/memory.js";
 import { rebuildSearchIndex } from "../../src/retrieval/search.js";
 import { openDatabase, SCHEMA_VERSION, writeTransaction } from "../../src/storage/database.js";
@@ -15,6 +17,7 @@ const CANONICAL_TABLES = [
   "call_log",
   "call_reviews",
   "checkpoints",
+  "chunk_vectors",
   "chunks",
   "chunks_fts",
   "consents",
@@ -31,6 +34,7 @@ const CANONICAL_TABLES = [
   "suppressions",
   "taints",
   "transcript_sessions",
+  "vector_fill",
   "workspaces",
   "workstreams",
   "worktree_bindings",
@@ -61,8 +65,8 @@ function atVersionZero(setup = ""): string {
 }
 
 describe("migrations", () => {
-  test("this build introduces schema version 8", () => {
-    expect(SCHEMA_VERSION).toBe(9);
+  test("this build introduces schema version 10", () => {
+    expect(SCHEMA_VERSION).toBe(10);
   });
 
   test.each([1, 2, 3, 4, 5])("a version-%i database upgrades through version 6: every session is non-private, and there are no preference questions", (from) => {
@@ -383,9 +387,13 @@ describe("migrations", () => {
     const words = first.record({ kind: "note", body: "each sequence has a rank", attribution: "agent_inference" }).recordId;
     const dbPath = first.status().storage.dbPath ?? "";
     first.close();
-    // Put the projection back as 0.1.0 wrote it: chunks without terms, chunks_fts over text alone (and no call log or reviews, which came after).
+    // Put the projection back as 0.1.0 wrote it: chunks without terms, chunks_fts over text alone (and no call log, reviews or vectors, which came after).
     const raw = new Database(dbPath);
-    raw.exec(`DROP TABLE call_reviews;
+    raw.exec(`DROP TABLE vector_fill;
+      DROP TABLE chunk_vectors;
+      DROP INDEX chunks_text_hash;
+      ALTER TABLE chunks DROP COLUMN text_hash;
+      DROP TABLE call_reviews;
       DROP TABLE call_log;
       DROP TABLE chunks_fts;
       ALTER TABLE chunks DROP COLUMN terms;
@@ -431,5 +439,66 @@ describe("migrations", () => {
     expect(catchDebriefError(() => second.bootstrap()).code).toBe("unsupported_runtime");
     expect(second.status().problem?.code).toBe("unsupported_runtime");
     second.close();
+  });
+
+  test("M18: a version-9 database gets chunk_vectors and every chunk's text hash, keeps its data, and a reindex keeps every vector", async () => {
+    const repo = initRepo();
+    const home = tempDir();
+    const first = openMemory({ cwd: repo, host: "codex", home });
+    first.record({ kind: "note", title: "Queue", body: "We dropped Redis for the job queue; background jobs now live in Postgres.", attribution: "agent_inference" });
+    first.record({ kind: "evidence", body: `ECONNRESET from the ledger service. ${"The pool held 50 clients and refused more. ".repeat(40)}`, attribution: "direct_observation" });
+    first.record({ kind: "note", body: "Amounts are integer minor units.", attribution: "agent_inference", externalRefs: [{ kind: "code", locator: "src/money.ts", path: "src/money.ts" }] });
+    const dbPath = first.status().storage.dbPath ?? "";
+    first.close();
+    const raw = new Database(dbPath);
+    raw.exec(`DROP TABLE vector_fill;
+      DROP TABLE chunk_vectors;
+      DROP INDEX chunks_text_hash;
+      ALTER TABLE chunks DROP COLUMN text_hash;
+      PRAGMA user_version = 9;`);
+    const canonical = (db: Database.Database): unknown[] => [
+      db.prepare("SELECT * FROM records ORDER BY seq").all(),
+      db.prepare("SELECT id, record_id, ordinal, field, text, terms FROM chunks ORDER BY id").all(),
+    ];
+    const before = canonical(raw);
+    raw.close();
+
+    const embedder = openEmbedder({ dir: resolve(import.meta.dirname, "../../dist"), execArgv: [] });
+    const upgraded = openMemory({ cwd: repo, host: "codex", home, embedder });
+    try {
+      upgraded.bootstrap();
+      const read = (): Database.Database => new Database(dbPath, { readonly: true });
+      const db = read();
+      expect(db.pragma("user_version", { simple: true })).toBe(10);
+      expect(canonical(db)).toEqual(before);
+      const chunks = db.prepare("SELECT text, text_hash FROM chunks").all() as { text: string; text_hash: string }[];
+      expect(chunks.length).toBeGreaterThan(4);
+      for (const chunk of chunks) expect(chunk.text_hash).toBe(createHash("sha256").update(chunk.text, "utf8").digest("hex"));
+      expect(db.prepare("SELECT count(*) AS n FROM chunk_vectors").get()).toEqual({ n: 0 });
+      db.close();
+
+      for (let step = await upgraded.fillVectors(); step.state === "filled"; step = await upgraded.fillVectors()) expect(step.stored).toBe(step.embedded);
+      const vectors = (): unknown[] => {
+        const d = read();
+        try {
+          return d.prepare("SELECT model, text_hash, scale, vec FROM chunk_vectors ORDER BY text_hash").all();
+        } finally {
+          d.close();
+        }
+      };
+      const filled = vectors();
+      expect(filled.length).toBe(new Set(chunks.map((chunk) => chunk.text_hash)).size);
+      const found = (): string | undefined => upgraded.recall({ query: "socket resets" }).items[0]?.excerpt;
+      expect(found()).toMatch(/^ECONNRESET/);
+
+      // A reindex deletes and regenerates every chunk; text hashes, and so every vector, stay valid.
+      expect(upgraded.rebuildSearchIndex()).toEqual({ records: 3, chunks: chunks.length });
+      expect(vectors()).toEqual(filled);
+      expect(upgraded.status().meaning?.coverage).toMatchObject({ percent: 100 });
+      expect(found()).toMatch(/^ECONNRESET/);
+    } finally {
+      upgraded.close();
+      embedder.close();
+    }
   });
 });

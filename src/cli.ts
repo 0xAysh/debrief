@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { resolveHome } from "./bootstrap/workspace-resolution.js";
+import { type Embedder, EmbedderUnavailable, openEmbedder } from "./embedding/embedder.js";
 import { DebriefError } from "./errors.js";
 import { HOOK_HOSTS, HOST_IDS, type HostId, HOSTS, hostDescriptor, type PluginFacts, TRANSCRIPT_HOSTS } from "./hosts.js";
 import { consentFacts } from "./import/reconcile.js";
@@ -56,7 +58,8 @@ async function main(argv: string[]): Promise<number> {
     if (values.host !== undefined && hostDescriptor(values.host) === null) return usage(`unknown --host ${values.host}`);
     // Fail at startup, visibly, rather than on the first tool call inside the host.
     assertEmbeddedRuntime();
-    await runStdioServer({ cwd: process.cwd(), ...(values.host === undefined ? {} : { host: values.host }) });
+    const embedder = bundledEmbedder();
+    await runStdioServer({ cwd: process.cwd(), ...(values.host === undefined ? {} : { host: values.host }), ...(embedder === undefined ? {} : { embedder }) });
     return -1; // keep running until stdin ends or a signal arrives
   }
   if (command === "hook") {
@@ -283,20 +286,47 @@ async function deleteData(yes: boolean): Promise<number> {
   return 1;
 }
 
-/** Each host Debrief installs into as a plugin, checked from this directory; exit 1 when any has a problem. */
+/**
+ * Each host Debrief installs into as a plugin, checked from this directory; exit 1 when any has a
+ * problem. The model is loaded once, as the MCP server would load it, so a model that cannot load
+ * is a problem here rather than a silent fall back to keyword search there.
+ */
 async function status(): Promise<number> {
   let problems = 0;
-  for (const { host, facts } of installedHosts()) {
-    const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined) });
+  const embedder = bundledEmbedder();
+  try {
     try {
-      const report = await hostStatus(host, facts, memory.status(), { cwd: process.cwd(), env: process.env });
-      process.stdout.write(report.text);
-      problems += report.problems;
-    } finally {
-      memory.close();
+      embedder?.embed(["debrief status"], "query");
+    } catch (error) {
+      if (!(error instanceof EmbedderUnavailable)) throw error;
+      // Reported by status().meaning as a failed load.
     }
+    for (const { host, facts } of installedHosts()) {
+      const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined), ...(embedder === undefined ? {} : { embedder }) });
+      try {
+        const report = await hostStatus(host, facts, memory.status(), { cwd: process.cwd(), env: process.env });
+        process.stdout.write(report.text);
+        problems += report.problems;
+      } finally {
+        memory.close();
+      }
+    }
+  } finally {
+    embedder?.close();
   }
   return problems === 0 ? 0 : 1;
+}
+
+/**
+ * The model shipped beside this bundle (`dist/embedder.mjs`, `dist/models/`). Only `debrief mcp`
+ * and `debrief status` create it; hooks never do. `DEBRIEF_MEANING_SEARCH=off` turns meaning
+ * search off (the model is never loaded, and recall ranks by keywords alone);
+ * `DEBRIEF_EMBEDDER_IDLE_MS` shortens the idle unload for tests.
+ */
+function bundledEmbedder(): Embedder | undefined {
+  if (process.env["DEBRIEF_MEANING_SEARCH"] === "off") return undefined;
+  const idleMs = Number(process.env["DEBRIEF_EMBEDDER_IDLE_MS"]);
+  return openEmbedder({ dir: dirname(fileURLToPath(import.meta.url)), ...(idleMs > 0 ? { idleMs } : {}) });
 }
 
 /** The tracer-bullet flow through the public interface; returns the recalled pack. */
