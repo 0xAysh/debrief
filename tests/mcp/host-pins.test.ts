@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { describe, expect, test } from "vitest";
 import { tempDir } from "../helpers.js";
 import { hostGate, hostSkipBanner, readHostSkips } from "../host-skips.js";
@@ -76,7 +77,8 @@ function hostSuitesRun(require: Record<string, string>): { code: number | null; 
     encoding: "utf8",
     timeout: 60_000,
   });
-  return { code: run.status, output: run.stdout + run.stderr };
+  // Vitest colours its summary under CI (GITHUB_ACTIONS), even into a pipe.
+  return { code: run.status, output: stripVTControlCharacters(run.stdout + run.stderr) };
 }
 
 describe("host suites that cannot run", () => {
