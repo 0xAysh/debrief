@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { type ContextPack, type Memory, openMemory } from "../../src/memory.js";
 import type { RecordInput } from "../../src/schemas.js";
@@ -367,7 +367,7 @@ describe("debrief report", () => {
     const all = ok(first, ["--all"]);
     expect(line(all, "sessions")).toBe("3 searched 0 · never 3");
     const header = all.split("\n")[0] ?? "";
-    for (const repo of [first.repo, second.repo]) expect(header).toContain(repo.split("/").at(-1));
+    for (const repo of [first.repo, second.repo]) expect(header).toContain(basename(repo));
   });
 
   test("R9: --review offers at most 10 unrated searches from the window with what came back, stores good/partial/missed and a note; a later report shows them and a rated search is not offered again", async () => {
