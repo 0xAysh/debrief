@@ -47,8 +47,17 @@ export async function spawnServer(options: {
   elicitation?: { capability: Record<string, unknown>; respond: (request: ElicitRequest["params"]) => Promise<ElicitResult> };
   /** `DEBRIEF_ELICITATION_TIMEOUT_MS` for the server. */
   elicitationTimeoutMs?: number;
+  /**
+   * Meaning search (the bundled model). Off unless asked for: the suites that test something else
+   * get keyword search alone, as they were written for, without racing the background fill.
+   */
+  meaning?: boolean;
+  /** `DEBRIEF_EMBEDDER_IDLE_MS` for the server: how long the model stays loaded without a request. */
+  embedderIdleMs?: number;
+  /** Another copy of the bundle to run (a package unpacked elsewhere, one missing its model). */
+  cli?: string;
 }): Promise<ServerHandle> {
-  const args = [...(options.networkLog === undefined ? [] : ["--import", NO_NETWORK]), CLI, "mcp", ...(options.host === undefined ? [] : ["--host", options.host])];
+  const args = [...(options.networkLog === undefined ? [] : ["--import", NO_NETWORK]), options.cli ?? CLI, "mcp", ...(options.host === undefined ? [] : ["--host", options.host])];
   const transport = new StdioClientTransport({
     command: process.execPath,
     args,
@@ -62,6 +71,8 @@ export async function spawnServer(options: {
       CODEX_HOME: options.codexHome ?? resolve(options.home, "no-codex-home"),
       ...(options.networkLog === undefined ? {} : { DEBRIEF_NETWORK_LOG: options.networkLog }),
       ...(options.elicitationTimeoutMs === undefined ? {} : { DEBRIEF_ELICITATION_TIMEOUT_MS: String(options.elicitationTimeoutMs) }),
+      ...(options.meaning === true ? {} : { DEBRIEF_MEANING_SEARCH: "off" }),
+      ...(options.embedderIdleMs === undefined ? {} : { DEBRIEF_EMBEDDER_IDLE_MS: String(options.embedderIdleMs) }),
     },
     stderr: "pipe",
   });
