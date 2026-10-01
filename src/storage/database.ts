@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { DebriefError } from "../errors.js";
+import { compareVersions } from "../import/versions.js";
 import { assertSupportedSchema, migrate, SCHEMA_VERSION } from "./migrations/index.js";
 
 export type Db = Database.Database;
@@ -300,16 +301,6 @@ function inspectRuntime(db: Db): RuntimeReport {
     fts5: facts.fts5Works && facts.compileOptions.includes("ENABLE_FTS5"),
     supported,
   };
-}
-
-function compareVersions(a: string, b: string): number {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
 }
 
 export { SCHEMA_VERSION };
