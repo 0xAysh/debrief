@@ -14,7 +14,9 @@ export interface ProcessEntry {
 /** Every process whose command line contains `match`, with its parent. */
 export function processesMatching(match: string): ProcessEntry[] {
   if (process.platform === "win32") {
-    const script = `Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" }`;
+    // Filtered by WMI itself, which is several times faster than listing every process.
+    const like = match.replace(/[[\]%_']/g, (c) => (c === "'" ? "''" : `[${c}]`));
+    const script = `Get-CimInstance Win32_Process -Filter "CommandLine LIKE '%${like}%' AND ProcessId != $PID" | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" }`;
     const run = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 30_000 });
     return parse(run.stdout, match);
   }

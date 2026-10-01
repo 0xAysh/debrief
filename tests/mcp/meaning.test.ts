@@ -7,7 +7,7 @@ import { MODEL } from "../../src/embedding/model.js";
 import { type ContextPack, type MeaningStatus, openMemory, type StatusResult } from "../../src/memory.js";
 import { textHash } from "../../src/retrieval/vectors.js";
 import { initRepo, tempDir } from "../helpers.js";
-import { alive, childrenMatching, rssMb } from "../processes.js";
+import { alive, childrenMatching, processesMatching, rssMb } from "../processes.js";
 import { claudeConfigDir, claudeTurn, installTranscript } from "../import/fixtures.js";
 import { PAYMENTS_SERVICE } from "../memory/meaning-fixture.js";
 import { CLI, NO_NETWORK, type ServerHandle, spawnServer } from "./harness.js";
@@ -43,6 +43,12 @@ async function until<T>(what: string, probe: () => Promise<T> | T, done: (value:
 /** Whether the model's process runs under `pid` (the server). */
 function modelProcess(pid: number): number[] {
   return childrenMatching(pid, "embedder.mjs").map((entry) => entry.pid);
+}
+
+/** The servers with a model process, from one look at the process table (slow on Windows). */
+function withModel(servers: ServerHandle[]): number[] {
+  const models = processesMatching("embedder.mjs");
+  return servers.filter((server) => models.some((model) => model.parent === server.pid)).map((server) => server.pid);
 }
 
 function readDb<T>(path: string, read: (db: Database.Database) => T): T {
@@ -138,18 +144,23 @@ describe("meaning search in the MCP server", () => {
   test("M10: SIGKILL mid-fill loses nothing and repeats nothing; one vector per text, shared by identical chunks", async () => {
     const repo = initRepo();
     const home = tempDir();
-    const first = await meaningServer(repo, home);
-    await first.ok("memory_bootstrap", { importChoice: "none" });
-    const dbPath = (await first.ok<StatusResult>("memory_status")).storage.dbPath ?? "";
     const backlog = [...PAYMENTS_SERVICE.map((r) => r.body), ...Array.from({ length: 60 }, (_, i) => `Payout batch ${i} settled with ${i * 3} transfers and no failures in region ${i % 7}.`)];
     const copies = Array.from({ length: 10 }, () => "The same retry warning was logged again by the payouts worker.");
-    await record(first, [...backlog, ...copies]);
+    // The backlog is written before the server starts (as hooks and imports write it), so the
+    // fill cannot finish while the records are still arriving over MCP.
+    const writer = openMemory({ cwd: repo, host: "claude-code", home });
+    writer.bootstrap({ importChoice: "none" });
+    for (const body of [...backlog, ...copies]) writer.record({ kind: "note", body, attribution: "agent_inference" });
+    const dbPath = writer.status().storage.dbPath ?? "";
+    writer.close();
     const distinct = backlog.length + 1;
+    const first = await meaningServer(repo, home);
+    await first.ok("memory_bootstrap");
 
     // Killed once some vectors are stored and others are not.
-    const atKill = await until("a partial fill", () => vectorsIn(dbPath), (n) => n >= 16, 60_000);
-    const embedderPids = modelProcess(first.pid);
+    const embedderPids = await until("the model's process", () => modelProcess(first.pid), (pids) => pids.length > 0, 60_000);
     expect(embedderPids).toHaveLength(1);
+    const atKill = await until("a partial fill", () => vectorsIn(dbPath), (n) => n >= 16, 60_000);
     process.kill(first.pid, "SIGKILL");
     await until("the killed server's model process to exit with it", () => embedderPids.filter(alive), (running) => running.length === 0, 10_000);
     const stored = vectorsIn(dbPath);
@@ -194,7 +205,7 @@ describe("meaning search in the MCP server", () => {
     await until("the filler's model", () => modelProcess(holder ?? 0), (pids) => pids.length > 0, 30_000);
     for (let sample = 0; sample < 10; sample++) {
       // Only the filler has the model loaded: nobody else recalled with a query, and nobody else fills.
-      expect(servers.filter((s) => modelProcess(s.pid).length > 0).map((s) => s.pid)).toEqual([holder]);
+      expect(withModel(servers)).toEqual([holder]);
       expect(lease()?.pid).toBe(holder);
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -208,7 +219,7 @@ describe("meaning search in the MCP server", () => {
     const survivor = rest.find((s) => s.pid === next) as ServerHandle;
     // 350 long texts: seconds on a laptop, minutes on a shared 3-core CI runner.
     await until("the fill to finish", () => meaningOf(survivor), (m) => m.coverage?.percent === 100, 240_000);
-    expect(rest.filter((s) => modelProcess(s.pid).length > 0).map((s) => s.pid)).toEqual([next]);
+    expect(withModel(rest)).toEqual([next]);
     for (const server of rest) await server.close();
   }, 300_000);
 
