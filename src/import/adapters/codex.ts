@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { asObject, type JsonObject, type Line, listDir, parseAny, parseObject, readLines } from "../jsonl.js";
 import type {
   CompatibilityRow,
@@ -548,7 +548,8 @@ function describeCall(tool: string, input: unknown, raw: unknown, cwd: string): 
   if (debrief !== null) return { summary: `${debrief[1] ?? tool} ${JSON.stringify(input ?? {})}`, paths: [], urls: [], toolKind: "debrief" };
   const args = asObject(input);
   const str = (key: string): string | null => (typeof args[key] === "string" ? args[key] : null);
-  const at = (path: string): string => (isAbsolute(path) ? path : resolve(cwd, path));
+  // Resolved even when absolute, so a Windows path written with / (D:/work/…) is normalized too.
+  const at = (path: string): string => resolve(cwd, path);
   const omitted = () => ({
     summary: `${tool} [arguments omitted]`,
     paths: [],
