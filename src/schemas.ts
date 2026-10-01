@@ -140,7 +140,6 @@ export const TestRunInput = z.strictObject({
   outcome: z.enum(["passed", "failed"]),
   exitCode: z.int().min(0).max(255).optional(),
 });
-export type TestRunInput = z.infer<typeof TestRunInput>;
 
 const OperationKey = z
   .string()
