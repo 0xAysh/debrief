@@ -247,3 +247,38 @@ A calibration on LongMemEval_S and the code-memory set looked for a cosine floor
 | **An honest miss says so** | When no record matches the query's words and meaning returned records, page 1's notice adds `No record shares words with the query; the N below are only nearest by meaning and may be unrelated.`, N counting that page's items. It follows the pack's own notice and comes before the coverage line. Later pages carry the labels, not the notice: a continuation does not know whether the keyword side was empty, and the tail of a mixed sequence can hold only meaning-only records |
 
 `meaning only` rides the continuation as `RANKED_BY.meaningOnly` = 32, a value rather than a combinable bit: such a record is in no tier (the tiers and trust only order keyword matches) and is not also `meaning`, so it never carries another bit and its base-36 digit is always `w`. Tokens keep version 3: old tokens decode as before, and `sealContinuation` throws on a value that would need a second digit rather than shift every reason after it.
+
+## Decided on 2026-10-01
+
+Two measurements came in after PR 2, and the user decided on them: **meaning search is opt-in**, and **#51 closes** with the RAM target unmet.
+
+**Agents rephrase.** The driven run that "What would make this not worth it" asked for: `claude -p` with Opus (high effort) and Debrief's MCP server on seeded workspaces, keyword-only against meaning on, 3 runs per question, 150 runs in all. Set A and B2 prompts end with "Check memory."; set B prompts are the bare question.
+
+| Set | Keyword only: answer correct | Meaning on: answer correct | Mean recalls per run (keyword / meaning) |
+|---|---:|---:|---:|
+| A: code memory, questions sharing no word with their answer | 30/30 | 30/30 | 1.57 / 1.83 |
+| Control: questions that share words | 9/9 | 9/9 | 1.11 / 1.67 |
+| B: LongMemEval-style questions | 12/24 | 12/24 | 0.75 / 0.75 |
+| B2: B's four unanswered questions, ending with "Check memory." | 12/12 | 12/12 | 1.25 / 1.42 |
+
+In B every failure, in both conditions, was a run that never called `memory_recall`; no search missed. Replaying every query the agents wrote, in both modes, on identical workspaces: keyword search put the answer on the page for 42 of 43 queries in set A (meaning: 43 of 43), and for every run at least one query did. In every run the agent's **first** query alone found the answer by keywords, because the agent does not search with the user's words: its first query carried a median of 3 to 8 words that were not in the prompt. Meaning search cost about 9% more per run on set A ($0.255 against $0.234), with more recalls. On coding work, as this record's case against it predicted, the agent recovers meaning search's gain by writing its own queries.
+
+**The RAM floor.** A spike measured where the model's process spends its memory and what cuts it (macOS arm64, Node 25.9, Liftoff). About 61–78 MB of WebAssembly linear memory is the load's high-water mark, which WebAssembly never gives back, and ONNX Runtime's 14 MB module is held twice (its bytes and its compiled code). The floor for this runtime and model is about 186 MB RSS loaded and 213 MB at peak, at 1 thread and 8 chunks/s, which is too slow; at 15 chunks/s or more it is about 201 / 227 MB. With the server's +14 MB, that is **about +215 to +245 MB against the +150 MB target: unreachable with WebAssembly** (by physical footprint, which counts no shared or reclaimable pages, about +140 MB in steady state, but still over at peak). Native ONNX Runtime is no smaller (footprint about 155 MB after a fill); its gain is speed. Going lower needs changes outside configuration that were not tried: an ORT-format model, an operator-reduced runtime build, or feeding the model's bytes into the runtime without a JS copy.
+
+The model's process now ships the spike's best trade-off, which changes no vector (bit-identical, pinned by a test):
+
+| Model process | 4 threads, `--liftoff-only` (before) | 3 threads, tuned (now) |
+|---|---:|---:|
+| RSS loaded / after a 500-chunk fill / peak | 280 / 294 / 294 MB | 213 / 216 / 242–257 MB |
+| Physical footprint loaded / peak | 235 / 250 MB | 134 / 167–182 MB |
+| Chunks/s (synthetic corpus) / query p50 | 43 / 6.6 ms | 34 / 8.1 ms |
+| Server after the idle unload (M20) | +12 MB | +12 MB |
+
+The changes: `MallocSpaceEfficient=1` in the fork's environment on macOS, so libmalloc returns freed pages; the model's file bytes released after the session is created and collected (`--expose-gc`); `--max-semi-space-size=1`; 3 ONNX Runtime threads instead of 4. `--liftoff-only` and 512 tokens stay.
+
+| Decision | Consequence |
+|---|---|
+| **Meaning search is opt-in.** `DEBRIEF_MEANING_SEARCH=on` turns it on; unset, or any other value, it is off | Off, `debrief mcp` never starts the model or writes a vector, and recall is keyword search's byte for byte. `debrief status` and `memory_status` say `meaning search: off (DEBRIEF_MEANING_SEARCH=on to enable)` and name a value they did not recognise; missing model files are then no problem. The model still ships in the package, so turning it on downloads nothing. This replaces PR 2's `DEBRIEF_MEANING_SEARCH=off` |
+| **#51 closes.** +150 MB is out of reach with WebAssembly, and with meaning search off by default nobody pays the +215 MB who did not ask for it | The tuned process above is what an opted-in session pays. Further cuts (an ORT-format model, a reduced runtime build, a native runtime) are new issues if anyone needs them |
+
+**What would make it the default again:** `debrief report --review` showing missed searches caused by mismatched vocabulary, where the answer was in memory and no query the agent wrote shared its words. That is the miss meaning search fixes and rephrasing did not in this run. Measure it on the user's own ratings, then weigh it against the RAM above.

@@ -4,4 +4,4 @@ Decisions that are hard to reverse, would surprise a reader of the code, and cam
 
 | # | Decision | Status |
 |---|---|---|
-| [0001](0001-meaning-search.md) | Meaning search: bundled WASM embedder, int8 vectors in SQLite, brute-force scan, fused into page 1's frozen order | accepted |
+| [0001](0001-meaning-search.md) | Meaning search: bundled WASM embedder, int8 vectors in SQLite, brute-force scan, fused into page 1's frozen order; opt-in since 2026-10-01 | accepted |
