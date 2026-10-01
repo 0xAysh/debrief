@@ -81,7 +81,7 @@ interface Activity {
   at: string;
 }
 
-export function emptyReport(labels: string[]): ReportData {
+function emptyReport(labels: string[]): ReportData {
   const tally = (): UsedTally => ({ returned: 0, used: 0, read: 0, cited: 0, edited: 0 });
   return {
     labels,

@@ -29,9 +29,12 @@ export function recordHookFailure(home: string, failure: Omit<HookFailure, "at">
   return LOG.append(home, { at: new Date().toISOString(), ...failure });
 }
 
+/** How many of the newest failures are reported. */
+const RECENT = 5;
+
 /** The newest failures (only those run inside `within`, when given), oldest first; an unreadable or missing log is no failures. */
-export function recentHookFailures(home: string, options: { limit?: number; within?: string } = {}): HookFailure[] {
-  const { limit = 5, within } = options;
+export function recentHookFailures(home: string, options: { within?: string } = {}): HookFailure[] {
+  const { within } = options;
   const failures: HookFailure[] = [];
   for (const line of LOG.lines(home)) {
     try {
@@ -44,5 +47,5 @@ export function recentHookFailures(home: string, options: { limit?: number; with
     }
   }
   const inside = within === undefined ? failures : failures.filter((f) => f.cwd === within || f.cwd.startsWith(within + sep));
-  return inside.slice(-limit);
+  return inside.slice(-RECENT);
 }

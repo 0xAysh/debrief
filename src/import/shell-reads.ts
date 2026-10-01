@@ -152,7 +152,7 @@ type Token = Word | { op: "|" | "&&" | ";" };
  * must be inside `root`. A path given as a glob is a read but has no single path, so it is
  * left out of the list.
  */
-export function shellFileReads(command: string | readonly string[], cwd: string, root: string, depth = 0): string[] | null {
+function shellFileReads(command: string | readonly string[], cwd: string, root: string, depth = 0): string[] | null {
   if (depth > 2) return null;
   let tokens: Token[] | null;
   if (typeof command === "string") tokens = tokenize(command);
@@ -228,7 +228,7 @@ export function shellCall(command: string | readonly unknown[] | null, cwd: stri
  * default: several files, `echo` separators, chained reads, other options, `tail`, and sed
  * addresses that are not two line numbers (regex, step, `$`, `+N`).
  */
-export function shellRead(command: string | readonly string[], cwd: string, root: string, depth = 0): Omit<FileRead, "trimmed"> | null {
+function shellRead(command: string | readonly string[], cwd: string, root: string, depth = 0): Omit<FileRead, "trimmed"> | null {
   if (depth > 2) return null;
   const tokens = typeof command === "string" ? tokenize(command) : command.map((word) => ({ word, glob: false }));
   if (tokens === null || tokens.length === 0) return null;

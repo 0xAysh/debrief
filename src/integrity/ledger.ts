@@ -48,7 +48,7 @@ export interface PrivateSessionEntry {
   at: string;
 }
 
-export function ledgerPath(db: Db): string {
+function ledgerPath(db: Db): string {
   return join(dirname(db.name), "lifecycle.jsonl");
 }
 

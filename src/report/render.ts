@@ -102,7 +102,7 @@ function more(out: string[], total: number): void {
 }
 
 /** Nearest rank: the smallest value with at least `p` of the values at or below it. */
-export function percentile(values: readonly number[], p: number): number {
+function percentile(values: readonly number[], p: number): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)] ?? 0;

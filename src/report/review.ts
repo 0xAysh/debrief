@@ -1,5 +1,6 @@
 import { randomInt } from "node:crypto";
 import { createInterface } from "node:readline/promises";
+import { oneLine } from "../retrieval/session-context.js";
 import { type Db, prepared } from "../storage/database.js";
 import { REVIEWABLE } from "./collect.js";
 import { localTime } from "./render.js";
@@ -102,7 +103,7 @@ function describeReturned(candidate: Candidate): string {
   return candidate.returned
     .map((item, i) => {
       const record = byId.get(item.id);
-      const shown = record === undefined || record.lifecycle === "forgotten" ? "[forgotten]" : `${record.kind}  ${item.freshness ?? "-"}  ${oneLine(record.title ?? record.body)}${record.lifecycle === "active" ? "" : `  (${record.lifecycle} since)`}`;
+      const shown = record === undefined || record.lifecycle === "forgotten" ? "[forgotten]" : `${record.kind}  ${item.freshness ?? "-"}  ${oneLine(record.title ?? record.body, 100)}${record.lifecycle === "active" ? "" : `  (${record.lifecycle} since)`}`;
       return `    ${String(i + 1).padStart(2)}. ${item.id}  ${shown}\n`;
     })
     .join("");
@@ -115,9 +116,4 @@ function sample<T>(items: readonly T[], count: number): T[] {
     [pool[i], pool[j]] = [pool[j] as T, pool[i] as T];
   }
   return pool.slice(0, count);
-}
-
-function oneLine(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > 100 ? `${flat.slice(0, 99)}…` : flat;
 }

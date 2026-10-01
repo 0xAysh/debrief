@@ -54,7 +54,7 @@ const AFTER_SQL = `(${AT} > ${THEN} OR (${AT} = ${THEN} AND r.seq > $seq))`;
  * session is bridged in (by its own mark, or by another session of its host session, as
  * `sessionIsPrivate` rules), although its records were forgotten when it was marked.
  */
-export function conversationSessions(db: Db, sessionId: string): string[] {
+function conversationSessions(db: Db, sessionId: string): string[] {
   const bridged = prepared(
     db,
     `WITH transcripts AS (

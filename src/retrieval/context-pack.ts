@@ -121,11 +121,6 @@ function sign(secret: Buffer, scope: { workspaceId: string; workstreamId: string
   return createHmac("sha256", secret).update(`${scope.workspaceId}\u0000${scope.workstreamId}\u0000${payload}`).digest("base64url");
 }
 
-export interface Budget {
-  maxTokens: number;
-  maxBytes: number;
-}
-
 /** An entry whose `excerpt` can be shortened to fit; `build` must be pure. */
 export interface Packable<T> {
   recordId: string;
