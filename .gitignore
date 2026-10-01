@@ -11,6 +11,8 @@ node_modules/
 
 # Build and test output
 /dist/
+# The embedding model, fetched at build time at its pinned revision (scripts/bundle.mjs); shipped in the package, never committed
+/.cache/
 /coverage/
 *.tsbuildinfo
 

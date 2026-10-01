@@ -26,6 +26,10 @@
   },
   "files": [
     "dist/debrief.mjs",
+    "dist/embedder.mjs",
+    "dist/ort-wasm-simd-threaded.mjs",
+    "dist/ort-wasm-simd-threaded.wasm",
+    "dist/models/",
     "dist/THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
@@ -46,12 +50,14 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@huggingface/tokenizers": "0.2.0",
     "@modelcontextprotocol/sdk": "1.30.1",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.13.6",
     "esbuild": "0.25.12",
     "eslint": "10.11.0",
     "globals": "17.12.0",
+    "onnxruntime-web": "1.30.0",
     "typescript": "6.0.3",
     "typescript-eslint": "8.70.1",
     "vitest": "4.1.11",
