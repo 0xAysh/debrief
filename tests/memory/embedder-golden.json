@@ -1,0 +1,32 @@
+[
+  {
+    "kind": "document",
+    "text": "Charges are retried with the same idempotency key, so a timeout never bills a customer twice.",
+    "scale": 0.0027664429594471637,
+    "values": "8BX/APH/Cu/5/vYVBAIKBRj55eMMC/v97QQEEd6eDADu9Pzq9QsL9QkC8Pj69gP1DBD/Ff8V9fME+PXvAPmBBAoC+wz07f4Z/Aj4+Qv8Ff8DHBD7/R3xBwUFFgoG8PgW8Af/dxQCDf4X/vP99gnyCP4PCRLhCgUHAQMD9Pb3/A77Bwzi8fb0/v7u+/ME0iHjIBjw/fMLAxQJBB3vEgbqDBAACzkY9RUKCPgEDvgcEOgMCxruBiTz8gL+B/T7Euca5vL8/fjwCQr7/PcB5AEB6ALjAgANBhDqAf3yDgwP+OQL/QP3FAYI+xj/CgX/CRHyCBIF8//tHfj4PQ7tCBYEAtMJ6g76/QEBCQb/BvLyAQ7rDQAE+A36CwTrDQj7+PT98R0L/O/7Lxn7EAMI+woMAAb6Egj9Awj+9v8B7QADAr8J9/Ds9wnwDvIZCvL6+RgA+vH37v0rAwL5DPbLJfPxFRL3G/0BCPUQ//j7DQESAALnFwQGBAUGEPobAPID9+n1"
+  },
+  {
+    "kind": "document",
+    "text": "ECONNRESET from the ledger socket: the pool closed idle connections after 30 seconds.",
+    "scale": 0.002554966802673952,
+    "values": "7goG9+b4DfP4BvkLBAoD9wUG3Qf7DP8R+wsD+Nq0/QvP7P/nAAz5//0X7/P58AbxC/cJAeHy6AEH6/n/Dw6BERv/DCD1/fn49QIJ+Rb3DAEMEgYL+w33EAr/+fb96voP+RMDexQNHPoY+P/6AgD88h4RDP/oD/Ui4AHx+PYM8BDxIBTz5wj7BAjo+vn96Cn5HBoE/u0VBRMH8xn2BwL9APD2FRwh6QQAEPn2APYG/AnyChHv/yDx+wzzCQcQH80l2hgHAe8DA/8I9O0K2/72CgDtAfj4CSYIEQMbBRb97uTs8fbxFPkL6xXmGwoWDQcF7BDw/QnaKwMBNfzxGP/2BNr12ir/+AkFCP/wCOf+8Av+AQz9DxPyIBD4FRIH9uIIAAf6A+cHNxgLAAwW/gkBBe74B+zo9fr3//387voK/7sI8wMN8g32CPQfD/T2BiIEC+jy6gYtExDwDQC+CP/tFPjfFBT9CfId9QX8HwMTDu3y/AsFAgAfBgQVGP7tDujk"
+  },
+  {
+    "kind": "document",
+    "text": "Amounts are stored as integer minor units; never use floats for money.",
+    "scale": 0.002670538991652823,
+    "values": "DRL87+/9AvwEBfYJ/gT89fr4vu0XCAII/QUH+telBQLu7RT8EAvjBQX1AAUJAhL7BgzrBPMG9un98xb/9xeBARcEEQL24voK9RD9+Ab4AewMEwf5AgvqEgYFAfEH++YOBgAecBb4EPYL8Ar5Av0F/gwBFCHg+wD+2wX4BPoM+g33CQ3v6AQC9xTfCuj+zhzpFQgO8PwA+QUGECIK/e3z+O/1Axcc+gEDAf0MEvUYEwAk9xH17h7o8gP49wEUJPEP6gETB/n5CAD19fz5BuUF9gniEfsLCgscDusQGAkBC+Xx+/wA+/0N/h8aFP72CgThBQcD7vjrA/bxUAnx+h37Acz49A315wMfEgcB/P/3Bxj59QT0CAD5Fgz2Av7u/wL9BxHxAuwUGAcPFP7/6xv98/YJFAzpF/wEAg8F+w0N97wEAff38xQH/woZCvvk+R7xAwD18A4uFgP8APLdEfj1HAD6/yH6B+0v+O74Dw0G+fwBCggEBggXDP4WFf0F4OLy"
+  },
+  {
+    "kind": "query",
+    "text": "why did the payment get charged twice",
+    "scale": 0.002361354485753696,
+    "values": "+vX+Euf6DQHgCQIR/xT2Byrt+fckCgn4AxYQBwHHEffW6RAUBv799vr7+ff/BAr8EhwRGQ/+6/YB7uP4/f+eJgDh/hvZFPv/+wMU6/v9CPcLCxX6/gzzBvX7KRkM4u0J4PUEfxH8/Sg2+P8J7Afr9A8HCwnv+AvwHwsR6uv97zLqAw3v+v3pCO7rAAUl4w0GCR0D+PYK+gUL6wvuFA7uBwcB7Tgv/RAIAf8UDeU1DvUO+wkHCQ3w9SEA7vUFA+oD0vL+Be8RCBQpFfEW9v0G6v/NBvck7/33CxMIBAz9AMYYCvASLfoA7Cfw6yHbCRQB7wkg9OMNLP7sLA3L/wjz99IJ2RHk7gELEAb1+u/mAwb2Hvrg7hvyCfnS7xAO5/cR7xoLCuzzHgoTI/8nEBsaDOwCERjrAfz/AfoO+Ab/+7ny3vXgFAP8/AMa9uT9+BEA5PPmEe4o2Afm+ArpDd/wFQIBDOT7DfMfBuwXHAAUCOkGCOMNGA0R+eck+gQT/RTT"
+  },
+  {
+    "kind": "query",
+    "text": "socket resets",
+    "scale": 0.0026003984279037535,
+    "values": "5xT6+vEEGPsSBQETCxf49R4C5+gBIh72+wMEC/zW8uPi4Pz0FPjt+xIY+AAAIP4BGf0dJQb4/vvz6fn78vmqHRjhFB3yEu/xDBYb+gUCAOf9HSAE6wX+BP76//8L7/kD8iL4fwIO9w0H9Ob79vsC9gQJBefp9AEb7gP2+vv8/S7hARIWAff6+PT63gcR+gz/DR358u/3ARj57w/29hX29wga+BAh9QbaFhbs8goHFw7uAQIP+xgS6xoY9g39F98I7hX7AfYOBwoc8N0U1PwR8Q/yAeYP7vnt9wYd8RYE88n1/fz7FwEN6wsIFAgH9wgU/P7+6wj3QA4PIRHw+wH49f4D7Q71IAoGAg8DGPsGAxL2Bh/68v4H/fPwDQUL3fvnABD+EQUDKg4FBfwxBhf+Bej09gcA8AsqBwf0BfYN+r/86/709wPs5PULHAb49jwE+NLW9xQWAObv/fzM+/L2De8OG/7qD+779ewNOOz6CegGDQjy/f366RPwDQPoAwAB"
+  }
+]
