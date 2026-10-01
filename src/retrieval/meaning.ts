@@ -65,7 +65,10 @@ export function scanByMeaning(db: Db, request: { workstreamId: string; kinds: re
  * phrases, time window or "now" lifted) keep their places. The rest of the keyword order and the
  * vector order (without the head) are fused by RRF: each record scores 1/(k + rank) in each list it
  * is in. A record not in the keyword order is admitted only from the vector order's best
- * {@link MEANING_ONLY}. Ties keep the keyword order, then the vector order.
+ * {@link MEANING_ONLY}. A keyword match with no vector yet (the fill has not reached it) is not
+ * judged by meaning: it takes its keyword rank in both lists, so a new record keeps its keyword
+ * place while the fill catches up, and with no vectors at all the order is exactly the keyword order.
+ * Ties keep the keyword order, then the vector order.
  *
  * `meaning` holds the records meaning placed: found only by it, or ranked above their keyword place.
  */
@@ -78,7 +81,7 @@ export function fuseByMeaning(keyword: readonly number[], head: number, vector: 
   const candidates = [...rest, ...[...vectorRank].filter(([seq, rank]) => !keywordRank.has(seq) && rank < MEANING_ONLY).map(([seq]) => seq)];
   const score = (seq: number): number => {
     const k = keywordRank.get(seq);
-    const v = vectorRank.get(seq);
+    const v = vectorRank.get(seq) ?? k;
     return (k === undefined ? 0 : 1 / (RRF_K + k + 1)) + (v === undefined ? 0 : 1 / (RRF_K + v + 1));
   };
   const scores = new Map(candidates.map((seq) => [seq, score(seq)]));
@@ -88,6 +91,7 @@ export function fuseByMeaning(keyword: readonly number[], head: number, vector: 
       (keywordRank.get(a) ?? Infinity) - (keywordRank.get(b) ?? Infinity) ||
       (vectorRank.get(a) ?? Infinity) - (vectorRank.get(b) ?? Infinity),
   );
-  const meaning = new Set(fused.filter((seq, i) => (keywordRank.get(seq) ?? Infinity) > i));
+  // Only a record meaning could judge (it has a vector) is said to be placed by it.
+  const meaning = new Set(fused.filter((seq, i) => vectorRank.has(seq) && (keywordRank.get(seq) ?? Infinity) > i));
   return { seqs: [...lifted, ...fused], meaning };
 }

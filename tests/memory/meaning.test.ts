@@ -378,6 +378,16 @@ describe("meaning search", () => {
     await fill(memory);
     expect(memory.recall({ query: "webhook latency", maxTokens: 8_000 }).notice ?? "").not.toMatch(/meaning search/);
     expect(memory.status().meaning?.coverage).toEqual({ chunks: PAYMENTS_SERVICE.length, embedded: PAYMENTS_SERVICE.length, percent: 100 });
+
+    // A new record the fill has not reached keeps its keyword place, ahead of records that only share some of its words.
+    const fresh = memory.record({ kind: "decision", body: "Merchant payouts for the webhook retry plan go through the ledger reconciliation job at 03:00.", attribution: "user_direction" }).recordId;
+    const query = "merchant payouts webhook retry ledger reconciliation";
+    const before = idsOf(keywords.recall({ query, maxTokens: 8_000 }));
+    expect(before[0]).toBe(fresh);
+    const after = memory.recall({ query, maxTokens: 8_000 });
+    expect(after.items[0]).toMatchObject({ recordId: fresh });
+    expect(after.items[0]?.why).toBeUndefined();
+    expect(after.notice ?? "").toMatch(/meaning search covers 98% of memory$/);
   });
 
   test("M11: forgotten and private-session records are never embedded, even when forgotten while their text is with the model", async () => {
