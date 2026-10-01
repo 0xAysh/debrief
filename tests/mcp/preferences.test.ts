@@ -1,7 +1,7 @@
 import type { ElicitRequest, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, test } from "vitest";
 import type { BootstrapResult, ManageResult, PreferenceQuestion } from "../../src/memory.js";
-import { initRepo, onCleanup, tempDir } from "../helpers.js";
+import { initRepo, tempDir } from "../helpers.js";
 import { type ServerHandle, spawnServer } from "./harness.js";
 
 /** The two capability shapes the pinned hosts advertise (captured 2026-09-25). */
@@ -32,7 +32,6 @@ async function server(repo: string, home: string, options: { capability?: Record
         }),
     ...(options.timeoutMs === undefined ? {} : { elicitationTimeoutMs: options.timeoutMs }),
   });
-  onCleanup(() => void handle.close());
   return { handle, asked };
 }
 
