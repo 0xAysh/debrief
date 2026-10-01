@@ -30,7 +30,8 @@ function machine(installed: string, kept: string[]): { bin: string; versionsDir:
   return { bin: fakeHost(join(root, "claude"), installed), versionsDir };
 }
 
-describe("resolving the pinned Claude Code", () => {
+// The stand-in hosts are `#!/bin/sh` scripts, which Windows cannot run (nor do the driven host suites run there).
+describe.skipIf(process.platform === "win32")("resolving the pinned Claude Code", () => {
   test("V1: when the installed claude auto-updated past the pin, the native installer's kept copy of the pinned build is used", () => {
     const { bin, versionsDir } = machine("2.1.284", ["2.1.283", "2.1.284"]);
 

@@ -33,8 +33,9 @@ const S3 = "5e550000-0000-4000-8000-0000000000b3";
 const S4 = "5e550000-0000-4000-8000-0000000000b4";
 
 const ON_PTY = resolve(import.meta.dirname, "on-pty.py");
-const PYTHON = spawnSync("python3", ["--version"]).status === 0 ? "python3" : null;
-if (PYTHON === null) process.stderr.write("report terminal test skipped: python3 (for a pty) is not on PATH\n");
+/** Python with its pty module, which drives the CLI on a terminal; Windows has no pty (on-pty.py is POSIX only). */
+const PYTHON = spawnSync("python3", ["-c", "import pty"]).status === 0 ? "python3" : null;
+if (PYTHON === null) process.stderr.write("report terminal test skipped: python3 (for a pty) is not on PATH or has no pty module (Windows)\n");
 
 function open(e: Env, hostSessionId?: string): Memory {
   const memory = openMemory({ cwd: e.repo, home: e.home, host: "claude-code", claudeConfigDir: e.config, now: () => clock.at, ...(hostSessionId === undefined ? {} : { hostSessionId }) });

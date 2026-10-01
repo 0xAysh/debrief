@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
@@ -14,12 +14,12 @@ import { tempDir } from "../helpers.js";
 
 const STREAM_JSON = pathToFileURL(join(import.meta.dirname, "stream-json.ts")).href;
 
+/** The host's script, which this node runs (Windows runs no shebang script). */
 function fakeHost(): string {
-  const path = join(tempDir("debrief-stream-host-"), "host");
+  const path = join(tempDir("debrief-stream-host-"), "host.cjs");
   writeFileSync(
     path,
-    `#!${process.execPath}
-let first = true;
+    `let first = true;
 require("node:readline").createInterface({ input: process.stdin }).on("line", (line) => {
   const text = JSON.parse(line).message.content;
   const out = [{ type: "system", subtype: "init" }, { type: "result", result: text }];
@@ -30,14 +30,13 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", (l
 });
 `,
   );
-  chmodSync(path, 0o755);
   return path;
 }
 
 test("V6: a result nobody waits for does not hang the stream, and later prompts still get their own results", () => {
   const driver = `
 import { streamJson } from ${JSON.stringify(STREAM_JSON)};
-const stream = streamJson(${JSON.stringify(fakeHost())}, [], { cwd: process.cwd(), env: process.env, timeoutMs: 5000 });
+const stream = streamJson(${JSON.stringify(process.execPath)}, [${JSON.stringify(fakeHost())}], { cwd: process.cwd(), env: process.env, timeoutMs: 5000 });
 const first = await stream.send("first");
 stream.post("posted");
 const second = await stream.send("second");

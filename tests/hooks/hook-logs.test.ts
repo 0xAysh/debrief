@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory } from "../../src/memory.js";
 import { initRepo, tempDir } from "../helpers.js";
@@ -11,14 +11,14 @@ import { CLI } from "../mcp/harness.js";
 const MARKER = "Q7XK-payload-content";
 const SECRET = "ghp_Q7XKa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
 
-/** Every text file under the home except workspace databases (memory itself, not a diagnostic). */
+/** Every text file under the home (by `/`-separated path) except workspace databases (memory itself, not a diagnostic). */
 function diagnostics(home: string): Map<string, string> {
   const files = new Map<string, string>();
   const walk = (dir: string): void => {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name);
       if (statSync(path).isDirectory()) walk(path);
-      else if (!/\.sqlite(-wal|-shm)?$/.test(name)) files.set(relative(home, path), readFileSync(path, "utf8"));
+      else if (!/\.sqlite(-wal|-shm)?$/.test(name)) files.set(relative(home, path).split(sep).join("/"), readFileSync(path, "utf8"));
     }
   };
   walk(home);
