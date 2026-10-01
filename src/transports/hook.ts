@@ -73,6 +73,27 @@ export function runHook(run: HookRun): HookOutcome {
     recordHookFailure(run.home, { host, event, cwd: run.cwd, code, message });
     return { stdout, stderr: `debrief hook ${event}: ${code}: ${message}\n` };
   };
+  /**
+   * `withMemory`, and one call-log row for the run: how long it took and what it printed. The row is
+   * written after the output is decided, so it cannot change it, and only when the run's own work
+   * opened the database (see `noteCall`). UserPromptSubmit and PreToolUse are not logged: they run on
+   * every prompt and before every Debrief tool call, and open no database.
+   */
+  const logged = (hostSessionId: string, serve: (memory: Memory) => HookOutcome): HookOutcome => {
+    const started = performance.now();
+    return withMemory(run, host, (memory) => {
+      const outcome = serve(memory);
+      memory.noteCall({
+        source: "hook",
+        name: event,
+        ...(failureCode === null ? {} : { error: failureCode }),
+        ms: performance.now() - started,
+        bytes: Buffer.byteLength(outcome.stdout, "utf8"),
+        hostSessionId,
+      });
+      return outcome;
+    });
+  };
   // What a start hook prints when it fails unexpectedly: that memory was not loaded, never that there is none.
   let unreadable: ((code: string) => string) | null = null;
   try {
@@ -93,31 +114,31 @@ export function runHook(run: HookRun): HookOutcome {
     if (event === "stop") {
       const stop = payload(StopPayload);
       if (stop === null) return fail("invalid_input", "the hook payload is not a Stop payload with session_id and transcript_path");
-      return logged(run, host, event, stop.session_id, (memory) => {
+      return logged(stop.session_id, (memory) => {
         const ended = memory.endTurn({ transcriptPath: stop.transcript_path, stopHookActive: stop.stop_hook_active });
         failureCode = ended.failure?.code ?? ended.nudgeFailure?.code ?? null;
         return { stdout: hooks.stop(ended), stderr: ended.failure === null ? "" : `debrief hook stop: ${ended.failure.code}: ${ended.failure.message}\n` };
-      }, () => failureCode);
+      });
     }
     if (event === "session-start") {
       unreadable = (code) => hooks.sessionStart(unreadableSessionStart(code));
       const start = payload(SessionStartPayload);
       if (start === null) return fail("invalid_input", "the hook payload is not a SessionStart payload with session_id");
-      return logged(run, host, event, start.session_id, (memory) => {
+      return logged(start.session_id, (memory) => {
         const rendered = memory.sessionStart({ hostSessionId: start.session_id });
         failureCode = rendered?.failure ?? null;
         return rendered === null ? QUIET : { stdout: hooks.sessionStart(rendered), stderr: "" };
-      }, () => failureCode);
+      });
     }
     if (event === "subagent-start") {
       unreadable = (code) => hooks.subagentStart(unreadableSubagentStart(code));
       const start = payload(SubagentStartPayload);
       if (start === null) return fail("invalid_input", "the hook payload is not a SubagentStart payload with session_id");
-      return logged(run, host, event, start.session_id, (memory) => {
+      return logged(start.session_id, (memory) => {
         const rendered = memory.subagentStart({ hostSessionId: start.session_id });
         failureCode = rendered?.failure ?? null;
         return rendered === null ? QUIET : { stdout: hooks.subagentStart(rendered), stderr: "" };
-      }, () => failureCode);
+      });
     }
     if (event === "user-prompt-submit") {
       const submitted = payload(UserPromptSubmitPayload);
@@ -143,29 +164,6 @@ export function runHook(run: HookRun): HookOutcome {
   } finally {
     recordHookRun(run.home, { host, event, cwd: run.cwd, outcome: failureCode === null ? "ok" : "failed", code: failureCode });
   }
-}
-
-/**
- * `withMemory`, and one call-log row for the run: how long it took and what it printed. The row is
- * written after the output is decided, so it cannot change it, and only when the run's own work
- * opened the database (see `noteCall`). UserPromptSubmit and PreToolUse are not logged: they run on
- * every prompt and before every Debrief tool call, and open no database.
- */
-function logged(run: HookRun, host: string, event: string, hostSessionId: string | undefined, serve: (memory: Memory) => HookOutcome, failure: () => string | null): HookOutcome {
-  const started = performance.now();
-  return withMemory(run, host, (memory) => {
-    const outcome = serve(memory);
-    const code = failure();
-    memory.noteCall({
-      source: "hook",
-      name: event,
-      ...(code === null ? {} : { error: code }),
-      ms: performance.now() - started,
-      bytes: Buffer.byteLength(outcome.stdout, "utf8"),
-      ...(hostSessionId === undefined ? {} : { hostSessionId }),
-    });
-    return outcome;
-  });
 }
 
 function withMemory<T>(run: HookRun, host: string, use: (memory: Memory) => T): T {
