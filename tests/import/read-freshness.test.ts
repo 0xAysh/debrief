@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { describe, expect, test } from "vitest";
 import { openMemory, type Memory } from "../../src/memory.js";
 import { claudeCodeAdapter } from "../../src/import/adapters/claude.js";
@@ -20,6 +20,11 @@ const GATEWAY = Array.from({ length: 30 }, (_, i) => `export const step${i + 1} 
 function writeFile(repo: string, path: string, content: string): void {
   mkdirSync(dirname(join(repo, path)), { recursive: true });
   writeFileSync(join(repo, path), content);
+}
+
+/** `path` as a shell command names it: with `/`, which Git Bash takes on Windows too (a `\` there is an escape). */
+function shellPath(path: string): string {
+  return path.split(sep).join("/");
 }
 
 /** A repository with `files` committed. */
@@ -214,14 +219,14 @@ describe("reads Debrief cannot rebuild exactly", () => {
   const persisted = `<persisted-output>\nOutput too large (97.7KB). Full output saved to: /tmp/claude/tool-results/b1.txt\n\nPreview (first 2KB):\n${sedPrint(FILE, 1, 6)}...\n</persisted-output>`;
   const gap = claudeReadStep("", FILE);
   const cases: [string, (path: string) => SessionStep[], "claude-code" | "codex"][] = [
-    ["Claude Code output persisted to a file (only a preview reached the model)", (path) => [{ ...claudeBashStep(`sed -n '1,12p' ${path}`, FILE, { persistedOutputPath: "/tmp/claude/tool-results/b1.txt", persistedOutputSize: 100_000 }), result: persisted }], "claude-code"],
+    ["Claude Code output persisted to a file (only a preview reached the model)", (path) => [{ ...claudeBashStep(`sed -n '1,12p' ${shellPath(path)}`, FILE, { persistedOutputPath: "/tmp/claude/tool-results/b1.txt", persistedOutputSize: 100_000 }), result: persisted }], "claude-code"],
     ["a Read line longer than Claude Code shows whole", (path) => [claudeReadStep(path, FILE.replace("line1 = 1", `line1 = "${"x".repeat(2_100)}"`))], "claude-code"],
-    ["Codex output cut to its token budget", (path) => [{ tool: "exec_command", input: { cmd: `cat ${path}` }, result: `${sedPrint(FILE, 1, 4)}…120 tokens truncated…${sedPrint(FILE, 9, 12)}` }], "codex"],
+    ["Codex output cut to its token budget", (path) => [{ tool: "exec_command", input: { cmd: `cat ${shellPath(path)}` }, result: `${sedPrint(FILE, 1, 4)}…120 tokens truncated…${sedPrint(FILE, 9, 12)}` }], "codex"],
     ["an image Read", (path) => [{ tool: "Read", input: { file_path: path }, result: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } }], toolUseResult: { type: "image", file: { base64: "iVBORw0KGgo=", type: "image/png", originalSize: 8 } } }], "claude-code"],
-    ["a multi-file cat", (path) => [{ tool: "exec_command", input: { cmd: `cat ${path.replace("read.ts", "other.ts")} ${path}` }, result: FILE + FILE }], "codex"],
-    ["output with echo separators", (path) => [{ tool: "exec_command", input: { cmd: `echo '== read.ts' && cat ${path}` }, result: `== read.ts\n${FILE}` }], "codex"],
+    ["a multi-file cat", (path) => [{ tool: "exec_command", input: { cmd: `cat ${shellPath(path).replace("read.ts", "other.ts")} ${shellPath(path)}` }, result: FILE + FILE }], "codex"],
+    ["output with echo separators", (path) => [{ tool: "exec_command", input: { cmd: `echo '== read.ts' && cat ${shellPath(path)}` }, result: `== read.ts\n${FILE}` }], "codex"],
     ["line numbers that do not run consecutively", (path) => [{ ...gap, input: { file_path: path }, result: (gap.result as string).replace("4\t", "5\t") }], "claude-code"],
-    ["a regex range", (path) => [{ tool: "exec_command", input: { cmd: `sed -n '/line3/,/line9/p' ${path}` }, result: sedPrint(FILE, 3, 9) }], "codex"],
+    ["a regex range", (path) => [{ tool: "exec_command", input: { cmd: `sed -n '/line3/,/line9/p' ${shellPath(path)}` }, result: sedPrint(FILE, 3, 9) }], "codex"],
     ["a range of fewer than 3 non-blank lines", (path) => [claudeReadStep(path, FILE.replace("export const line6 = 6;", ""), { offset: 5, limit: 3 })], "claude-code"],
   ];
 
@@ -251,7 +256,7 @@ describe("what is stored", () => {
     const repo = repoWith({ "src/secret.ts": secret });
     const path = join(repo, "src/secret.ts");
     const home = tempDir();
-    const claude = importClaude(repo, [claudeReadStep(path, secret), claudeReadStep(path, secret, { offset: 3, limit: 6 }), claudeBashStep(`sed -n '2,9p' ${path}`, sedPrint(secret, 2, 9))], home);
+    const claude = importClaude(repo, [claudeReadStep(path, secret), claudeReadStep(path, secret, { offset: 3, limit: 6 }), claudeBashStep(`sed -n '2,9p' ${shellPath(path)}`, sedPrint(secret, 2, 9))], home);
     const codex = importCodex(repo, [{ cmd: "cat src/secret.ts", output: secret }, { cmd: "nl -ba src/secret.ts | sed -n '4,10p'", output: numbered(secret, 4, 10) }], home);
     for (const memory of [claude, codex]) {
       for (const tool of ["Read", "Bash", "exec_command"]) for (const id of recordsOf(memory, tool)) expect(memory.read({ recordId: id }).freshness).toBe("current");
