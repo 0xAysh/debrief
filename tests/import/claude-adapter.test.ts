@@ -4,7 +4,7 @@ import { describe, expect, test } from "vitest";
 import { claudeCodeAdapter } from "../../src/import/adapters/claude.js";
 import type { NormalizedEvent, TranscriptFile } from "../../src/import/normalized-event.js";
 import { OPERATION_SCHEMAS } from "../../src/schemas.js";
-import { claudeConfigDir, claudeToolExchange, installTranscript, renderFixture } from "./fixtures.js";
+import { claudeConfigDir, claudeToolExchange, installTranscript, projectDirName, renderFixture } from "./fixtures.js";
 
 /** An absolute path on this platform (`D:\work\store` on a Windows runner). */
 const CWD = resolve("/work/store");
@@ -247,19 +247,19 @@ describe("Claude Code adapter", () => {
     const a = installTranscript(config, "2.1.281/basic.jsonl", { cwd: CWD });
     const projects = join(config, "projects");
     writeFileSync(join(projects, ".DS_Store"), "junk");
-    mkdirSync(join(projects, "-work-store", a.sessionId, "subagents"), { recursive: true });
-    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "agent-1.jsonl"), "{}\n");
-    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "agent-1.meta.json"), JSON.stringify({ agentType: "Explore", toolUseId: "toolu_1" }));
-    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "agent-2.jsonl"), "{}\n");
-    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "notes.jsonl"), "{}\n");
-    mkdirSync(join(projects, "-work-store", "memory"), { recursive: true });
-    writeFileSync(join(projects, "-work-store", "memory", "notes.jsonl"), "{}\n");
-    writeFileSync(join(projects, "-work-store", "notes.txt"), "not a transcript");
+    mkdirSync(join(projects, projectDirName(CWD), a.sessionId, "subagents"), { recursive: true });
+    writeFileSync(join(projects, projectDirName(CWD), a.sessionId, "subagents", "agent-1.jsonl"), "{}\n");
+    writeFileSync(join(projects, projectDirName(CWD), a.sessionId, "subagents", "agent-1.meta.json"), JSON.stringify({ agentType: "Explore", toolUseId: "toolu_1" }));
+    writeFileSync(join(projects, projectDirName(CWD), a.sessionId, "subagents", "agent-2.jsonl"), "{}\n");
+    writeFileSync(join(projects, projectDirName(CWD), a.sessionId, "subagents", "notes.jsonl"), "{}\n");
+    mkdirSync(join(projects, projectDirName(CWD), "memory"), { recursive: true });
+    writeFileSync(join(projects, projectDirName(CWD), "memory", "notes.jsonl"), "{}\n");
+    writeFileSync(join(projects, projectDirName(CWD), "notes.txt"), "not a transcript");
 
     const adapter = claudeCodeAdapter({ configDir: config });
     expect(adapter.root).toBe(projects);
     const found = adapter.discover();
-    const subagents = join(projects, "-work-store", a.sessionId, "subagents");
+    const subagents = join(projects, projectDirName(CWD), a.sessionId, "subagents");
     expect(found.map((f) => [f.transcriptId, f.path, f.subagentOf])).toEqual([
       [a.sessionId, a.path, undefined],
       [`${a.sessionId}/agent-1`, join(subagents, "agent-1.jsonl"), { transcriptId: a.sessionId, agentType: "Explore" }],
@@ -269,7 +269,7 @@ describe("Claude Code adapter", () => {
     expect(adapter.subagentsOf?.(found[0] as TranscriptFile).map((f) => f.transcriptId)).toEqual([`${a.sessionId}/agent-1`, `${a.sessionId}/agent-2`]);
     // A hook names only a session's transcript; its sub-agents' come with it.
     expect(adapter.fileAt(join(subagents, "agent-1.jsonl"))).toBeNull();
-    expect(adapter.fileAt(join(projects, "-work-store", "memory", "notes.jsonl"))).toBeNull();
+    expect(adapter.fileAt(join(projects, projectDirName(CWD), "memory", "notes.jsonl"))).toBeNull();
     expect(adapter.inspect(found[0] as TranscriptFile)).toEqual({ cwd: CWD, hostVersion: "2.1.281", supported: true });
     expect(claudeCodeAdapter({ configDir: join(config, "missing") }).discover()).toEqual([]);
   });
