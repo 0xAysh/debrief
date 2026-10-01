@@ -62,6 +62,21 @@ function readDb<T>(path: string, read: (db: Database.Database) => T): T {
 
 const vectorsIn = (path: string): number => readDb(path, (db) => (db.prepare("SELECT count(*) AS n FROM chunk_vectors").get() as { n: number }).n);
 
+/**
+ * Writes `bodies` as notes from a process without the model (as hooks and imports write them) and
+ * returns the database. A server started afterwards fills the whole backlog in the background, so
+ * the fill cannot finish while records are still arriving one MCP call at a time (Windows is slow
+ * at those, and the fill can outrun them there).
+ */
+function writeBacklog(repo: string, home: string, bodies: readonly string[]): string {
+  const writer = openMemory({ cwd: repo, host: "claude-code", home });
+  writer.bootstrap({ importChoice: "none" });
+  for (const body of bodies) writer.record({ kind: "note", body, attribution: "agent_inference" });
+  const dbPath = writer.status().storage.dbPath ?? "";
+  writer.close();
+  return dbPath;
+}
+
 async function record(server: ServerHandle, bodies: readonly string[]): Promise<void> {
   for (const body of bodies) await server.ok("memory_record", { kind: "note", body, attribution: "agent_inference" });
 }
@@ -78,9 +93,9 @@ describe("meaning search in the MCP server", () => {
   test("M8: a new record is found by keyword at once and by meaning once filled; a recall during the fill does not wait for it", async () => {
     const repo = initRepo();
     const home = tempDir();
+    writeBacklog(repo, home, PAYMENTS_SERVICE.map((r) => r.body));
     const server = await meaningServer(repo, home);
-    await server.ok("memory_bootstrap", { importChoice: "none" });
-    await record(server, PAYMENTS_SERVICE.map((r) => r.body));
+    await server.ok("memory_bootstrap");
 
     // The backlog is filling in the background: a recall answers at once, with what is covered so far.
     const started = performance.now();
@@ -146,13 +161,7 @@ describe("meaning search in the MCP server", () => {
     const home = tempDir();
     const backlog = [...PAYMENTS_SERVICE.map((r) => r.body), ...Array.from({ length: 60 }, (_, i) => `Payout batch ${i} settled with ${i * 3} transfers and no failures in region ${i % 7}.`)];
     const copies = Array.from({ length: 10 }, () => "The same retry warning was logged again by the payouts worker.");
-    // The backlog is written before the server starts (as hooks and imports write it), so the
-    // fill cannot finish while the records are still arriving over MCP.
-    const writer = openMemory({ cwd: repo, host: "claude-code", home });
-    writer.bootstrap({ importChoice: "none" });
-    for (const body of [...backlog, ...copies]) writer.record({ kind: "note", body, attribution: "agent_inference" });
-    const dbPath = writer.status().storage.dbPath ?? "";
-    writer.close();
+    const dbPath = writeBacklog(repo, home, [...backlog, ...copies]);
     const distinct = backlog.length + 1;
     const first = await meaningServer(repo, home);
     await first.ok("memory_bootstrap");
@@ -188,11 +197,7 @@ describe("meaning search in the MCP server", () => {
     // Long texts (about 600 bytes each), so the fill takes seconds, not a moment.
     const review = (i: number): string => `Payout review ${i}: ${Array.from({ length: 6 }, (_, k) => PAYMENTS_SERVICE[(i + k * 7) % PAYMENTS_SERVICE.length]?.body).join(" ")}`;
     const backlog = [...PAYMENTS_SERVICE.map((r) => r.body), ...Array.from({ length: 300 }, (_, i) => review(i))];
-    const writer = openMemory({ cwd: repo, host: "claude-code", home });
-    writer.bootstrap({ importChoice: "none" });
-    for (const body of backlog) writer.record({ kind: "note", body, attribution: "agent_inference" });
-    const dbPath = writer.status().storage.dbPath ?? "";
-    writer.close();
+    const dbPath = writeBacklog(repo, home, backlog);
     const servers = [await meaningServer(repo, home), await meaningServer(repo, home), await meaningServer(repo, home)];
     const lease = (): { pid: number } | undefined => readDb(dbPath, (db) => db.prepare("SELECT pid FROM vector_fill WHERE id = 1").get() as { pid: number } | undefined);
     // Every server is called: each one would fill if it could.
