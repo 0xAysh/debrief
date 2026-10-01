@@ -1,0 +1,2 @@
+# LF everywhere, Windows checkouts included: transcript fixtures are byte-exact JSONL (offsets, hashes).
+* text=auto eol=lf
