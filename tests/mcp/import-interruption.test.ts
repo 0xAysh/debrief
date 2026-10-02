@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
@@ -31,7 +31,7 @@ function debrief(cwd: string, home: string, history: HostHistory, ...args: strin
 function workspaceDb(home: string): string | null {
   const root = join(home, "workspaces");
   if (!existsSync(root)) return null;
-  const [id] = (spawnSync("ls", [root], { encoding: "utf8" }).stdout.trim().split("\n"));
+  const [id] = readdirSync(root);
   return id === undefined || id === "" ? null : join(root, id, "memory.sqlite");
 }
 
@@ -71,12 +71,15 @@ describe.each(HOSTS)("interrupted $host import", ({ install, recordsPerTurn }) =
       // Timing only: peek at the committed record count to kill while batches are landing.
       const path = workspaceDb(killedHome);
       if (path === null || !existsSync(path)) continue;
+      let peek: Database.Database | undefined;
       try {
-        const peek = new Database(path, { readonly: true, fileMustExist: true });
+        peek = new Database(path, { readonly: true, fileMustExist: true });
         atKill = (peek.prepare("SELECT count(*) AS n FROM records").get() as { n: number }).n;
-        peek.close();
       } catch {
         // Not migrated yet.
+      } finally {
+        // Closed even then: Windows cannot delete the home while a handle on its database is open.
+        peek?.close();
       }
     }
     child.kill("SIGKILL");

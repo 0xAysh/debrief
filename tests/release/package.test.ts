@@ -1,14 +1,15 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { MODEL, RUNTIME_FILES } from "../../src/embedding/model.js";
 import type { ContextPack, StatusResult } from "../../src/memory.js";
-import { initRepo, tempDir } from "../helpers.js";
+import { initRepo, npmCommand, tempDir } from "../helpers.js";
 import { CLAUDE_PINNED_VERSION } from "../mcp/claude.js";
 import { CLI, spawnServer } from "../mcp/harness.js";
 import { PAYMENTS_SERVICE } from "../memory/meaning-fixture.js";
+import { childrenMatching } from "../processes.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
 /** The model's process, bundled beside the CLI. */
@@ -37,7 +38,7 @@ const sha256 = (path: string): string => createHash("sha256").update(readFileSyn
 
 describe("the published package", () => {
   test("ships the MIT license and a notice carrying the license text of every package bundled into the CLI", () => {
-    const [packed] = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: ROOT, encoding: "utf8" })) as [{ files: { path: string }[] }];
+    const [packed] = JSON.parse(execFileSync(...npmCommand(["pack", "--dry-run", "--json", "--ignore-scripts"]), { cwd: ROOT, encoding: "utf8" })) as [{ files: { path: string }[] }];
     expect(packed.files.map((file) => file.path).sort()).toEqual([
       "LICENSE",
       "README.md",
@@ -73,8 +74,9 @@ describe("the published package", () => {
 
   test("M21: the tarball carries the pinned model and the runtime's WebAssembly, runs no install script, and its debrief mcp searches by meaning with only better-sqlite3 installed", async () => {
     const dir = tempDir("debrief-tarball-");
-    const tarball = execFileSync("npm", ["pack", "--pack-destination", dir, "--silent"], { cwd: ROOT, encoding: "utf8" }).trim().split("\n").at(-1) ?? "";
-    execFileSync("tar", ["-xzf", join(dir, tarball), "-C", dir]);
+    const tarball = execFileSync(...npmCommand(["pack", "--pack-destination", dir, "--silent"]), { cwd: ROOT, encoding: "utf8" }).trim().split("\n").at(-1) ?? "";
+    // Run in `dir` with a bare name: GNU tar reads `C:\…` as a remote host.
+    execFileSync("tar", ["-xzf", tarball], { cwd: dir });
     const pkg = join(dir, "package");
     for (const file of MODEL.files) expect(sha256(join(pkg, "dist", MODEL.directory, file.name)), file.name).toBe(file.sha256);
     for (const name of RUNTIME_FILES) expect(sha256(join(pkg, "dist", name)), name).toBe(sha256(join(ROOT, "node_modules/onnxruntime-web/dist", name)));
@@ -83,7 +85,7 @@ describe("the published package", () => {
     expect(Object.keys(manifest.dependencies)).toEqual(["better-sqlite3"]);
 
     mkdirSync(join(pkg, "node_modules"));
-    symlinkSync(join(ROOT, "node_modules/better-sqlite3"), join(pkg, "node_modules/better-sqlite3"));
+    symlinkSync(join(ROOT, "node_modules/better-sqlite3"), join(pkg, "node_modules/better-sqlite3"), "junction");
     const networkLog = join(tempDir(), "network.log");
     const server = await spawnServer({ cwd: initRepo(), home: tempDir(), host: "claude-code", meaning: true, cli: join(pkg, "dist/debrief.mjs"), networkLog });
     await server.ok("memory_bootstrap", { importChoice: "none" });
@@ -97,8 +99,7 @@ describe("the published package", () => {
     const pack = await server.ok<ContextPack>("memory_recall", { query: "socket resets" });
     expect(pack.items[0]).toMatchObject({ why: "meaning", excerpt: expect.stringMatching(/^ECONNRESET/) as unknown });
     // The model ran from the unpacked package, not from this checkout.
-    const model = spawnSync("pgrep", ["-P", String(server.pid), "-f", "embedder.mjs"], { encoding: "utf8" }).stdout.trim();
-    expect(spawnSync("ps", ["-o", "command=", "-p", model], { encoding: "utf8" }).stdout).toContain(join(pkg, "dist", "embedder.mjs"));
+    expect(childrenMatching(server.pid, "embedder.mjs").map((entry) => entry.command)).toEqual([expect.stringContaining(join(pkg, "dist", "embedder.mjs"))]);
     await server.close();
     expect(existsSync(networkLog) ? readFileSync(networkLog, "utf8") : "").toBe("");
   });

@@ -1,5 +1,6 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { renameOver } from "../bootstrap/workspace-resolution.js";
 
 /**
  * When each host hook last ran, where, and how it ended, so `debrief status` can tell a hook that
@@ -32,7 +33,7 @@ export function recordHookRun(home: string, run: Omit<HookRun, "at">): void {
     // Written aside and renamed, so a reader never sees half a file.
     const temp = `${path}.${process.pid}.tmp`;
     writeFileSync(temp, JSON.stringify({ at: new Date().toISOString(), ...run }));
-    renameSync(temp, path);
+    renameOver(temp, path);
   } catch {
     // Unwritable home: the run goes unnoted, and the hook carries on.
   }

@@ -192,7 +192,8 @@ function shellFileReads(command: string | readonly string[], cwd: string, root: 
       // The head of a pipeline must name a file; later stages only filter what it printed.
       if (i === 0 && read.literal.length === 0 && read.globs.length === 0) return null;
       if (read.literal.length > 0 || read.globs.length > 0) reads = true;
-      const resolved = (path: string): string => (isAbsolute(path) ? path : resolve(base, path));
+      // Resolved even when absolute, so a Windows path written with / (D:/work/…) is normalized too.
+      const resolved = (path: string): string => resolve(base, path);
       // Output read from outside the working tree is not a file Debrief can reference (the
       // importer keeps only in-tree paths), so it stays bounded command output instead of
       // disappearing. A glob's directory is checked the same way (its pattern resolves as a name).
@@ -253,7 +254,7 @@ function shellRead(command: string | readonly string[], cwd: string, root: strin
     if (read !== null) return null;
     const printed = printedFile(head);
     if (printed === null || printed.path === "-") return null;
-    const path = isAbsolute(printed.path) ? printed.path : resolve(base, printed.path);
+    const path = resolve(base, printed.path);
     if (!within(path, root)) return null;
     let lines = printed.lines;
     if (filter !== undefined) {

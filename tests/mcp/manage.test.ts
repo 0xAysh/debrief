@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { ContextPack, ManageResult } from "../../src/memory.js";
-import { initRepo, onCleanup, tempDir } from "../helpers.js";
+import { initRepo, tempDir } from "../helpers.js";
 import { spawnServer } from "./harness.js";
 
 describe("memory_manage over MCP, across processes", () => {
@@ -8,12 +8,10 @@ describe("memory_manage over MCP, across processes", () => {
     const repo = initRepo();
     const home = tempDir();
     const claude = await spawnServer({ cwd: repo, home, host: "claude-code" });
-    onCleanup(() => void claude.close());
     await claude.ok("memory_bootstrap");
     const claim = await claude.ok<{ recordId: string }>("memory_record", { kind: "decision", body: "Redis is required for the job queue.", attribution: "user_direction" });
 
     const codex = await spawnServer({ cwd: repo, home, host: "codex" });
-    onCleanup(() => void codex.close());
     const boot = await codex.ok<{ context: ContextPack }>("memory_bootstrap");
     expect(boot.context.items.map((item) => item.recordId)).toContain(claim.recordId);
 

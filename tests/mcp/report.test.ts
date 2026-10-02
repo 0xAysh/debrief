@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { type ContextPack, type Memory, openMemory } from "../../src/memory.js";
 import type { RecordInput } from "../../src/schemas.js";
@@ -33,8 +33,9 @@ const S3 = "5e550000-0000-4000-8000-0000000000b3";
 const S4 = "5e550000-0000-4000-8000-0000000000b4";
 
 const ON_PTY = resolve(import.meta.dirname, "on-pty.py");
-const PYTHON = spawnSync("python3", ["--version"]).status === 0 ? "python3" : null;
-if (PYTHON === null) process.stderr.write("report terminal test skipped: python3 (for a pty) is not on PATH\n");
+/** Python with its pty module, which drives the CLI on a terminal; Windows has no pty (on-pty.py is POSIX only). */
+const PYTHON = spawnSync("python3", ["-c", "import pty"]).status === 0 ? "python3" : null;
+if (PYTHON === null) process.stderr.write("report terminal test skipped: python3 (for a pty) is not on PATH or has no pty module (Windows)\n");
 
 function open(e: Env, hostSessionId?: string): Memory {
   const memory = openMemory({ cwd: e.repo, home: e.home, host: "claude-code", claudeConfigDir: e.config, now: () => clock.at, ...(hostSessionId === undefined ? {} : { hostSessionId }) });
@@ -366,7 +367,7 @@ describe("debrief report", () => {
     const all = ok(first, ["--all"]);
     expect(line(all, "sessions")).toBe("3 searched 0 · never 3");
     const header = all.split("\n")[0] ?? "";
-    for (const repo of [first.repo, second.repo]) expect(header).toContain(repo.split("/").at(-1));
+    for (const repo of [first.repo, second.repo]) expect(header).toContain(basename(repo));
   });
 
   test("R9: --review offers at most 10 unrated searches from the window with what came back, stores good/partial/missed and a note; a later report shows them and a rated search is not offered again", async () => {

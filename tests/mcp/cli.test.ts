@@ -115,7 +115,8 @@ describe("debrief CLI", () => {
     expect(JSON.parse(codex.stdout)).toMatchObject({ consent: null });
   });
 
-  test("the MCP server closes and exits cleanly on SIGTERM", async () => {
+  // Windows has no SIGTERM: kill() ends the process outright. There the host closes stdin instead.
+  test.skipIf(process.platform === "win32")("the MCP server closes and exits cleanly on SIGTERM", async () => {
     const child = spawn(process.execPath, [CLI, "mcp"], {
       cwd: initRepo(),
       env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: tempDir(), CLAUDE_CONFIG_DIR: process.env["CLAUDE_CONFIG_DIR"] ?? "", CODEX_HOME: process.env["CODEX_HOME"] ?? "" },

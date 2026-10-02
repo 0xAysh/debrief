@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      # The embedding model scripts/bundle.mjs fetches into .cache/models/, at the revision and
+      # SHA-256s src/embedding/model.ts pins: a new pin is a new key.
+      - uses: actions/cache@v6
+        with:
+          path: .cache/models
+          key: model-${{ hashFiles('src/embedding/model.ts') }}
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm run lint
+      # DEBRIEF_REQUIRE_HOSTS is unset: the suites that drive real Claude Code or Codex skip, and
+      # the run ends with a banner naming each one.
+      - run: npm test

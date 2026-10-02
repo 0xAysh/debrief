@@ -1,12 +1,13 @@
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { claudeCodeAdapter } from "../../src/import/adapters/claude.js";
 import type { NormalizedEvent, TranscriptFile } from "../../src/import/normalized-event.js";
 import { OPERATION_SCHEMAS } from "../../src/schemas.js";
-import { claudeConfigDir, claudeToolExchange, installTranscript, renderFixture } from "./fixtures.js";
+import { claudeConfigDir, claudeToolExchange, installTranscript, projectDirName, renderFixture } from "./fixtures.js";
 
-const CWD = "/work/store";
+/** An absolute path on this platform (`D:\work\store` on a Windows runner). */
+const CWD = resolve("/work/store");
 
 function fileOf(path: string, transcriptId: string): TranscriptFile {
   const st = statSync(path);
@@ -45,11 +46,11 @@ describe("Claude Code adapter", () => {
       ["assistant", "I'll run the gateway tests first, then read the retry logic in the gateway client."],
       ["call", "Bash", "$ npm test -- gateway", "other", []],
       ["result", "toolu_0001", "FAIL src/gateway.test.ts\n  x retries a 5", true],
-      ["call", "Read", `Read ${CWD}/src/gateway.ts (lines 40-87)`, "artifact_access", [`${CWD}/src/gateway.ts`]],
+      ["call", "Read", `Read ${join(CWD, "src/gateway.ts")} (lines 40-87)`, "artifact_access", [join(CWD, "src/gateway.ts")]],
       ["result", "toolu_0002", "    40\texport async function charge(orde", false],
       ["call", "mcp__debrief__memory_recall", 'memory_recall {"query":"gateway retries"}', "debrief", []],
       ["result", "toolu_0003", '{"items":[{"recordId":"rec_0123456789abc', false],
-      ["call", "Read", `Read ${CWD}/docs/screenshot.png`, "artifact_access", [`${CWD}/docs/screenshot.png`]],
+      ["call", "Read", `Read ${join(CWD, "docs/screenshot.png")}`, "artifact_access", [join(CWD, "docs/screenshot.png")]],
       ["result", "toolu_0004", "", false],
       ["user", "Use a server-side idempotency key per order; do not add client retries."],
       ["assistant", "Root cause: charge() retries a 504 up to three times without an idempotency key, so the gateway settles the first attempt and the retry charges again."],
@@ -92,7 +93,7 @@ describe("Claude Code adapter", () => {
     expect(chunk.stop).toBeNull();
     expect(chunk.events.map(shape)).toEqual([
       ["user", "The nightly export job skips the last page of results."],
-      ["call", "Grep", `Grep "pageSize" in ${CWD}/src`, "other", [`${CWD}/src`]],
+      ["call", "Grep", `Grep "pageSize" in ${join(CWD, "src")}`, "other", [join(CWD, "src")]],
       ["result", "toolu_0402", "src/export.ts:88:  const pages = Math.fl", false],
       ["assistant", "The export uses Math.floor for the page count, so a partial last page is dropped; it should be Math.ceil."],
     ]);
@@ -220,9 +221,9 @@ describe("Claude Code adapter", () => {
   test("a Bash command that only reads files is artifact access with the files' absolute paths; a heredoc write or a search stays other", () => {
     const { chunk } = readAll("2.1.281/shell-reads.jsonl");
     expect(chunk.events.filter((e) => e.type === "tool_call").map((e) => [e.tool, e.toolKind, e.paths])).toEqual([
-      ["Bash", "artifact_access", [`${CWD}/src/gateway.ts`]],
-      ["Bash", "artifact_access", [`${CWD}/src/gateway.ts`, `${CWD}/src/retry.ts`]],
-      ["Bash", "artifact_access", [`${CWD}/src/gateway.ts`]],
+      ["Bash", "artifact_access", [join(CWD, "src/gateway.ts")]],
+      ["Bash", "artifact_access", [join(CWD, "src/gateway.ts"), join(CWD, "src/retry.ts")]],
+      ["Bash", "artifact_access", [join(CWD, "src/gateway.ts")]],
       ["Bash", "other", []],
       ["Bash", "other", []],
     ]);
@@ -246,19 +247,19 @@ describe("Claude Code adapter", () => {
     const a = installTranscript(config, "2.1.281/basic.jsonl", { cwd: CWD });
     const projects = join(config, "projects");
     writeFileSync(join(projects, ".DS_Store"), "junk");
-    mkdirSync(join(projects, "-work-store", a.sessionId, "subagents"), { recursive: true });
-    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "agent-1.jsonl"), "{}\n");
-    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "agent-1.meta.json"), JSON.stringify({ agentType: "Explore", toolUseId: "toolu_1" }));
-    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "agent-2.jsonl"), "{}\n");
-    writeFileSync(join(projects, "-work-store", a.sessionId, "subagents", "notes.jsonl"), "{}\n");
-    mkdirSync(join(projects, "-work-store", "memory"), { recursive: true });
-    writeFileSync(join(projects, "-work-store", "memory", "notes.jsonl"), "{}\n");
-    writeFileSync(join(projects, "-work-store", "notes.txt"), "not a transcript");
+    mkdirSync(join(projects, projectDirName(CWD), a.sessionId, "subagents"), { recursive: true });
+    writeFileSync(join(projects, projectDirName(CWD), a.sessionId, "subagents", "agent-1.jsonl"), "{}\n");
+    writeFileSync(join(projects, projectDirName(CWD), a.sessionId, "subagents", "agent-1.meta.json"), JSON.stringify({ agentType: "Explore", toolUseId: "toolu_1" }));
+    writeFileSync(join(projects, projectDirName(CWD), a.sessionId, "subagents", "agent-2.jsonl"), "{}\n");
+    writeFileSync(join(projects, projectDirName(CWD), a.sessionId, "subagents", "notes.jsonl"), "{}\n");
+    mkdirSync(join(projects, projectDirName(CWD), "memory"), { recursive: true });
+    writeFileSync(join(projects, projectDirName(CWD), "memory", "notes.jsonl"), "{}\n");
+    writeFileSync(join(projects, projectDirName(CWD), "notes.txt"), "not a transcript");
 
     const adapter = claudeCodeAdapter({ configDir: config });
     expect(adapter.root).toBe(projects);
     const found = adapter.discover();
-    const subagents = join(projects, "-work-store", a.sessionId, "subagents");
+    const subagents = join(projects, projectDirName(CWD), a.sessionId, "subagents");
     expect(found.map((f) => [f.transcriptId, f.path, f.subagentOf])).toEqual([
       [a.sessionId, a.path, undefined],
       [`${a.sessionId}/agent-1`, join(subagents, "agent-1.jsonl"), { transcriptId: a.sessionId, agentType: "Explore" }],
@@ -268,7 +269,7 @@ describe("Claude Code adapter", () => {
     expect(adapter.subagentsOf?.(found[0] as TranscriptFile).map((f) => f.transcriptId)).toEqual([`${a.sessionId}/agent-1`, `${a.sessionId}/agent-2`]);
     // A hook names only a session's transcript; its sub-agents' come with it.
     expect(adapter.fileAt(join(subagents, "agent-1.jsonl"))).toBeNull();
-    expect(adapter.fileAt(join(projects, "-work-store", "memory", "notes.jsonl"))).toBeNull();
+    expect(adapter.fileAt(join(projects, projectDirName(CWD), "memory", "notes.jsonl"))).toBeNull();
     expect(adapter.inspect(found[0] as TranscriptFile)).toEqual({ cwd: CWD, hostVersion: "2.1.281", supported: true });
     expect(claudeCodeAdapter({ configDir: join(config, "missing") }).discover()).toEqual([]);
   });

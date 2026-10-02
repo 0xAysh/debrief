@@ -1,27 +1,32 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { afterEach } from "vitest";
 import { DebriefError } from "../src/errors.js";
 
-const cleanups: (() => void)[] = [];
+const cleanups: (() => unknown)[] = [];
 
-afterEach(() => {
-  while (cleanups.length > 0) cleanups.pop()?.();
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
-/** A fresh temporary directory, removed after the current test. */
+/**
+ * A fresh temporary directory, removed after the current test. Its real path as Git and the hosts
+ * report it: on Windows `tmpdir()` can be an 8.3 short name (`C:\Users\RUNNER~1\…`), which only
+ * the native realpath expands.
+ */
 export function tempDir(prefix = "debrief-test-"): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
   cleanups.push(() => {
-    rmSync(dir, { recursive: true, force: true });
+    // Windows refuses to delete a file a process still holds open, for a moment after it exits too.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   return dir;
 }
 
-/** Registers a teardown callback (e.g. closing a Memory) for the current test. */
-export function onCleanup(fn: () => void): void {
+/** Registers a teardown callback (e.g. closing a Memory, or awaiting a server's exit) for the current test. */
+export function onCleanup(fn: () => unknown): void {
   cleanups.push(fn);
 }
 
@@ -51,7 +56,16 @@ export function initRepo(options: { branch?: string; commit?: boolean } = {}): s
   return dir;
 }
 
-/** Every path under `root` (excluding `.git`) with its size and mtime, for "nothing was written" checks. */
+/**
+ * `npm <args>` as `[file, argv]` for spawn: the npm running this test run (`npm test` and `npx` set
+ * npm_execpath) under this node, since Windows cannot spawn `npm.cmd` without a shell.
+ */
+export function npmCommand(args: string[]): [string, string[]] {
+  const cli = process.env["npm_execpath"];
+  return cli !== undefined && /\.c?js$/.test(cli) ? [process.execPath, [cli, ...args]] : ["npm", args];
+}
+
+/** Every path under `root` (excluding `.git`, `/`-separated on every platform) with its size and mtime, for "nothing was written" checks. */
 export function snapshotTree(root: string): string[] {
   const out: string[] = [];
   const walk = (dir: string): void => {
@@ -62,7 +76,7 @@ export function snapshotTree(root: string): string[] {
         walk(full);
       } else {
         const st = statSync(full);
-        out.push(`${relative(root, full)}:${st.size}:${st.mtimeMs}`);
+        out.push(`${relative(root, full).split(sep).join("/")}:${st.size}:${st.mtimeMs}`);
       }
     }
   };

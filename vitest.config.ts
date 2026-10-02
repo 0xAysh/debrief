@@ -20,6 +20,7 @@ function pathWithRealGit(): string | undefined {
 }
 
 const PATH = pathWithRealGit();
+const TIMEOUT = process.platform === "win32" ? 90_000 : 30_000;
 /** Tests never read the developer's real Claude Code or Codex history unless a test passes its own directory. */
 const CLAUDE_CONFIG_DIR = join(tmpdir(), "debrief-tests-no-claude-config");
 const CODEX_HOME = join(tmpdir(), "debrief-tests-no-codex-home");
@@ -29,8 +30,9 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
     globalSetup: ["tests/global-setup.ts"],
     env: { CLAUDE_CONFIG_DIR, CODEX_HOME, ...(PATH === undefined ? {} : { PATH }) },
-    // Storage tests open real SQLite files and spawn `git` and server processes; give them headroom.
-    testTimeout: 30_000,
-    hookTimeout: 30_000,
+    // Storage tests open real SQLite files and spawn `git` and server processes; give them headroom,
+    // and Windows more: it starts a process, and Git, several times slower.
+    testTimeout: TIMEOUT,
+    hookTimeout: TIMEOUT,
   },
 });

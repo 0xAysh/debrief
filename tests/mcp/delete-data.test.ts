@@ -12,8 +12,9 @@ import { CLI } from "./harness.js";
  */
 
 const ON_PTY = resolve(import.meta.dirname, "on-pty.py");
-const PYTHON = spawnSync("python3", ["--version"]).status === 0 ? "python3" : null;
-if (PYTHON === null) process.stderr.write("delete-data terminal tests skipped: python3 (for a pty) is not on PATH\n");
+/** Python with its pty module, which drives the CLI on a terminal; Windows has no pty (on-pty.py is POSIX only). */
+const PYTHON = spawnSync("python3", ["-c", "import pty"]).status === 0 ? "python3" : null;
+if (PYTHON === null) process.stderr.write("delete-data terminal tests skipped: python3 (for a pty) is not on PATH or has no pty module (Windows)\n");
 
 function env(home: string): NodeJS.ProcessEnv {
   return { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: home, CLAUDE_CONFIG_DIR: process.env["CLAUDE_CONFIG_DIR"] ?? "", CODEX_HOME: process.env["CODEX_HOME"] ?? "" };

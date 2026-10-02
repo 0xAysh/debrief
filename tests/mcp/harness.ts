@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { type ElicitRequest, ElicitRequestSchema, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
@@ -23,7 +24,8 @@ export interface ServerHandle {
   close(): Promise<void>;
 }
 
-export const NO_NETWORK = resolve(import.meta.dirname, "no-network.mjs");
+/** The no-network preload, for `--import`: a file URL, since Node reads `C:\…` there as a URL scheme. */
+export const NO_NETWORK = pathToFileURL(resolve(import.meta.dirname, "no-network.mjs")).href;
 
 /**
  * Spawns `node dist/debrief.mjs mcp` in `cwd` with an isolated DEBRIEF_HOME (and, if given, an
@@ -106,8 +108,7 @@ export async function spawnServer(options: {
     },
     close: () => client.close(),
   };
-  onCleanup(() => {
-    void client.close();
-  });
+  // Awaited: the server has exited before its directories are removed (Windows cannot delete open files).
+  onCleanup(() => client.close());
   return handle;
 }

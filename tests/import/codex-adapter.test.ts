@@ -1,12 +1,13 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { codexAdapter } from "../../src/import/adapters/codex.js";
 import { tempDir } from "../helpers.js";
 import type { NormalizedEvent, TranscriptFile } from "../../src/import/normalized-event.js";
 import { codexHome, codexThreadId, installCodexRollout, renderCodexFixture, type CodexVars } from "./fixtures.js";
 
-const CWD = "/work/store";
+/** An absolute path on this platform (`D:\work\store` on a Windows runner). */
+const CWD = resolve("/work/store");
 
 function fileOf(path: string, transcriptId: string): TranscriptFile {
   const st = statSync(path);
@@ -45,11 +46,11 @@ describe("Codex adapter", () => {
       ["assistant", "I'll run the gateway tests first, then read the retry logic in the gateway client."],
       ["call", "exec_command", "$ npm test -- gateway", "other", [], []],
       ["result", "call_0001", "FAIL src/gateway.test.ts\n  x retries a 5", true],
-      ["call", "exec_command", "$ sed -n 40,87p src/gateway.ts", "artifact_access", [`${CWD}/src/gateway.ts`], []],
+      ["call", "exec_command", "$ sed -n 40,87p src/gateway.ts", "artifact_access", [join(CWD, "src/gateway.ts")], []],
       ["result", "call_0002", "export async function charge(order) {\n  ", false],
-      ["call", "apply_patch", "apply_patch src/gateway.ts, docs/idempotency.md", "artifact_access", [`${CWD}/src/gateway.ts`, `${CWD}/docs/idempotency.md`], []],
+      ["call", "apply_patch", "apply_patch src/gateway.ts, docs/idempotency.md", "artifact_access", [join(CWD, "src/gateway.ts"), join(CWD, "docs/idempotency.md")], []],
       ["result", "call_0003", "Success. Updated the following files:\nM ", false],
-      ["call", "view_image", `view_image ${CWD}/docs/screenshot.png`, "artifact_access", [`${CWD}/docs/screenshot.png`], []],
+      ["call", "view_image", `view_image ${join(CWD, "docs/screenshot.png")}`, "artifact_access", [join(CWD, "docs/screenshot.png")], []],
       ["result", "call_0004", "", false],
       ["call", "web_search", 'web_search "gateway idempotency key"', "other", [], []],
       ["call", "web_search", "web_search open https://docs.example.invalid/payments/idempotency?session=abc", "other", [], ["https://docs.example.invalid/payments/idempotency?session=abc"]],
@@ -193,19 +194,19 @@ describe("Codex adapter", () => {
     const { chunk } = readAll("0.142.5/shell-reads.jsonl");
     const calls = chunk.events.filter((e) => e.type === "tool_call").map((e) => [e.tool, e.toolKind, e.paths]);
     expect(calls).toEqual([
-      ["exec_command", "artifact_access", [`${CWD}/src/gateway.ts`]],
-      ["exec_command", "artifact_access", [`${CWD}/src/retry.ts`]],
-      ["exec_command", "artifact_access", [`${CWD}/README.md`, `${CWD}/docs/idempotency.md`]],
-      ["exec_command", "artifact_access", [`${CWD}/package.json`]],
+      ["exec_command", "artifact_access", [join(CWD, "src/gateway.ts")]],
+      ["exec_command", "artifact_access", [join(CWD, "src/retry.ts")]],
+      ["exec_command", "artifact_access", [join(CWD, "README.md"), join(CWD, "docs/idempotency.md")]],
+      ["exec_command", "artifact_access", [join(CWD, "package.json")]],
       // `cd` moves the directory later reads resolve against; `echo` separators print only their own words.
-      ["exec_command", "artifact_access", [`${CWD}/src/gateway.ts`, `${CWD}/src/retry.ts`]],
+      ["exec_command", "artifact_access", [join(CWD, "src/gateway.ts"), join(CWD, "src/retry.ts")]],
       // Relative to the call's own workdir, not the turn's cwd.
-      ["exec_command", "artifact_access", [`${CWD}/docs/notes.md`]],
-      ["exec_command", "artifact_access", [`${CWD}/logs/app.log`]],
+      ["exec_command", "artifact_access", [join(CWD, "docs/notes.md")]],
+      ["exec_command", "artifact_access", [join(CWD, "logs/app.log")]],
       // `bash -lc` / `zsh -lc` wrappers are unwrapped, in argv and in string form.
-      ["shell", "artifact_access", [`${CWD}/src/gateway.ts`]],
-      ["shell_command", "artifact_access", [`${CWD}/src/retry.ts`]],
-      ["exec_command", "artifact_access", [`${CWD}/src/missing.ts`]],
+      ["shell", "artifact_access", [join(CWD, "src/gateway.ts")]],
+      ["shell_command", "artifact_access", [join(CWD, "src/retry.ts")]],
+      ["exec_command", "artifact_access", [join(CWD, "src/missing.ts")]],
       // A test run, a search, an in-place edit, a sed write command, a redirect, an expansion, a substitution,
       // an `||` alternative and positional shell arguments are not pure reads.
       ["exec_command", "other", []],
@@ -223,8 +224,8 @@ describe("Codex adapter", () => {
   test("every letter of a reader's flags is checked: a flag that writes, runs a command or is unknown makes the command not a pure read", () => {
     const { chunk } = readAll("0.142.5/shell-flags.jsonl");
     const calls = chunk.events.filter((e) => e.type === "tool_call").map((e) => [e.summary, e.toolKind, e.paths]);
-    const gateway = [`${CWD}/src/gateway.ts`];
-    const retry = [`${CWD}/src/retry.ts`];
+    const gateway = [join(CWD, "src/gateway.ts")];
+    const retry = [join(CWD, "src/retry.ts")];
     expect(calls).toEqual([
       ["$ cat -ns src/gateway.ts", "artifact_access", gateway],
       ["$ head -c 200 src/gateway.ts", "artifact_access", gateway],
@@ -264,8 +265,8 @@ describe("Codex adapter", () => {
       ["$ cat ~/.aws/credentials", "other", []],
       ["$ cat /home/placeholder/.aws/credentials", "other", []],
       ["$ head -3 /home/placeholder/other/.env", "other", []],
-      ["$ cat .env", "artifact_access", [`${CWD}/.env`]],
-      ["$ echo '--- gateway'; cat src/gateway.ts", "artifact_access", [`${CWD}/src/gateway.ts`]],
+      ["$ cat .env", "artifact_access", [join(CWD, ".env")]],
+      ["$ echo '--- gateway'; cat src/gateway.ts", "artifact_access", [join(CWD, "src/gateway.ts")]],
     ]);
   });
 
