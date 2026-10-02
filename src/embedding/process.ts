@@ -24,8 +24,11 @@ const { Tokenizer } = tokenizers as unknown as { Tokenizer: new (tokenizer: obje
  * `MODEL.dimensions` per text, concatenated, and its scale) or `{ id, error }`.
  */
 
-/** ONNX Runtime threads. More than this barely speeds up a 6-layer model and costs a worker each. */
-const THREADS = 4;
+/**
+ * ONNX Runtime threads. Each is a worker with its own V8 isolate, about 10 MB, and under Liftoff
+ * speed scales with them: 3 embed about 22 chunks/s, 4 about 30 (#51's RSS spike).
+ */
+const THREADS = 3;
 
 interface Request {
   id: number;
@@ -49,6 +52,10 @@ async function load(dir: string): Promise<Loaded> {
   ort.env.wasm.numThreads = THREADS;
   ort.env.wasm.wasmPaths = pathToFileURL(join(dir, "/")).href;
   const session = await ort.InferenceSession.create(read("model_quantized.onnx"), { executionProviders: ["wasm"], graphOptimizationLevel: "all" });
+  // The session holds its own copy of the model now: collect the 23 MB of file bytes and the
+  // tokenizer's parse garbage, whose pages macOS's malloc then returns (`MallocSpaceEfficient`,
+  // src/embedding/embedder.ts). `gc` exists under `--expose-gc`, which the embedder passes.
+  globalThis.gc?.();
   return { session, tokenizer };
 }
 

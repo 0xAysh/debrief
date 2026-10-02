@@ -41,7 +41,7 @@ sequenceDiagram
 
 - **Killed or crashed sessions are not lost.** A turn the Stop hook never saw is read from Claude Code's transcript at the next session start. The agent is told that the last session ended without a checkpoint, and `memory_bootstrap` returns its last turns.
 - **Session start stays small.** It carries what applies to every task, not the last line of work, which may not be the one you start: about 2.5 KB (some 600 tokens) plus your preferences, however much memory holds. Task context arrives with the task, when the agent searches memory.
-- **Search finds meaning, not only words.** A recall for "monetary precision rounding" finds "amounts are integer minor units; never floats". Meaning search runs a small embedding model (snowflake-arctic-embed-xs, 23 MB) that ships inside the npm package, in a process the MCP server starts when a recall or new memory needs it and stops after two idle minutes. It sends nothing anywhere: the model and its runtime come with the code. Vectors live in the same SQLite file and are filled in the background, existing and imported memory included; `debrief status` shows how much is covered. Hooks never load the model. `DEBRIEF_MEANING_SEARCH=off` turns it off. A record that shares no word with the query is weak evidence, so at most 10 of them join a recall, each marked `why: meaning only`; when no record shares a word with the query, the result says so.
+- **Search can find meaning, not only words (opt-in).** With `DEBRIEF_MEANING_SEARCH=on`, a recall for "monetary precision rounding" finds "amounts are integer minor units; never floats". It is off by default: the agent writes its own queries, and in a driven test it found the same answers without it. See [Meaning search (opt-in)](#meaning-search-opt-in).
 - **The agent keeps it current.** After several turns of work with no checkpoint, Debrief asks the agent once, at the end of a turn, to save one.
 - **Scope follows Git.** Memory belongs to the repository (and the worktree's line of work) you are in; one repository's memory never shows up in another.
 
@@ -89,6 +89,25 @@ Claude Code shows them to you; they are never sent to the model.
 | `recalling: retry budget` | The agent searched memory. |
 | `⚠ turn not saved (…)` or `⚠ 2 hook failures (…)` | Something failed. Run `debrief diag status`. The session itself carries on: a failing hook never interrupts it. |
 | `not running: the debrief command is not on PATH` | The plugin is installed but the command is not: `npm install -g debrief-cli`. |
+
+## Meaning search (opt-in)
+
+Recall ranks memory by the words it shares with the query. Meaning search adds a small embedding model (snowflake-arctic-embed-xs, 23 MB, shipped inside the npm package), so a question can find an answer that shares none of its words. It sends nothing anywhere: the model and its runtime come with the code.
+
+**It is off by default.** In a driven test with real Claude (150 sessions), the agent found the answer to every question it searched for with keyword search alone, because it rewrites the question into its own queries. Meaning search added nothing there and costs memory.
+
+**What it costs.** The MCP server starts the model in its own process when a recall or new memory needs it, and stops it after two idle minutes, which gives the memory back. While it runs, that process holds about 215 MB (RSS, macOS arm64; up to about 250 MB while the model loads, and about 135 MB of physical footprint), per Claude Code session that searched or saved memory in the last two minutes. Existing and imported memory is embedded in the background, which takes minutes of CPU for a large history. Hooks never load the model.
+
+**To turn it on**, set `DEBRIEF_MEANING_SEARCH=on` where Claude Code starts, then start a new session. Any other value leaves it off. Either:
+
+- in your shell, before starting Claude Code (it passes its environment on to the MCP server): `export DEBRIEF_MEANING_SEARCH=on`, or
+- in Claude Code's settings (`~/.claude/settings.json`), whose `env` reaches the plugin's MCP server:
+
+  ```json
+  { "env": { "DEBRIEF_MEANING_SEARCH": "on" } }
+  ```
+
+`debrief status` reads its own environment, not Claude Code's settings: with the setting only in `settings.json` it says `off`, so check the model with `DEBRIEF_MEANING_SEARCH=on debrief status`. On, it shows the model and how much of this repository's memory is searchable by meaning, and a model that fails to load is a problem. Off, it says `meaning search · off (DEBRIEF_MEANING_SEARCH=on to enable)`, and names a value it did not recognise.
 
 ## Commands
 
@@ -141,7 +160,7 @@ Tested on macOS (arm64). Other platforms and other Claude Code versions are unte
 - **Claude Code on your machine only.** Codex can be connected by hand ([docs/hosts.md](docs/hosts.md)); its hooks, and Pi, are not packaged yet. Cloud agents and sandboxes (Claude Code on the web, remote sandboxes) are not supported: memory lives on the machine that runs `debrief`.
 - **A step killed within about 0.1 s is lost.** Claude Code writes each step to its transcript a moment after taking it (measured on 2.1.283); a session killed inside that moment loses that step.
 - **Memory is not ground truth.** It is what agents observed and concluded. Freshness warnings cover code that has changed; issues, PRs and other external state are not checked.
-- **Meaning search costs memory while it runs.** The model's process holds about 300 MB while loaded (measured on macOS arm64), per Claude Code session that searched or filled in the last two minutes; idle sessions hold none of it. A large imported history takes minutes of background CPU to embed. Found only by meaning, an answer that shares no word with the question ranks below the records that share some.
+- **Meaning search, when turned on, costs memory while it runs.** The model's process holds about 215 MB while loaded (RSS, macOS arm64), per Claude Code session that searched or filled in the last two minutes; idle sessions hold none of it. A large imported history takes minutes of background CPU to embed. Found only by meaning, an answer that shares no word with the question ranks below the records that share some.
 
 ## Documentation
 

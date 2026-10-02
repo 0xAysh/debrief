@@ -284,7 +284,7 @@ describe("meaning search in the MCP server", () => {
     const status = spawnSync(process.execPath, ["--import", NO_NETWORK, CLI, "status"], {
       cwd: repo,
       encoding: "utf8",
-      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: home, CLAUDE_CONFIG_DIR: join(home, "no-claude"), DEBRIEF_NETWORK_LOG: networkLog },
+      env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: home, CLAUDE_CONFIG_DIR: join(home, "no-claude"), DEBRIEF_NETWORK_LOG: networkLog, DEBRIEF_MEANING_SEARCH: "on" },
     });
     expect(status.stdout).toMatch(/^ {2}meaning search ✔ snowflake-arctic-embed-xs@q8 loads; all of this repository's memory is searchable by meaning$/m);
     expect(existsSync(networkLog) ? readFileSync(networkLog, "utf8") : "").toBe("");
@@ -304,7 +304,7 @@ describe("meaning search in the MCP server", () => {
     await until("full coverage", () => meaningOf(server), (m) => m.coverage?.percent === 100);
     expect(await meaningOf(server)).toEqual({ model: MODEL.id, state: "loaded", problem: null, coverage: { chunks: 4, embedded: 4, percent: 100 }, filled: 4 });
     await server.close();
-    const env = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: home, CLAUDE_CONFIG_DIR: join(home, "no-claude") };
+    const env = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", DEBRIEF_HOME: home, CLAUDE_CONFIG_DIR: join(home, "no-claude"), DEBRIEF_MEANING_SEARCH: "on" };
     const status = (cli: string): { code: number | null; stdout: string } => {
       const run = spawnSync(process.execPath, [cli, "status"], { cwd: repo, encoding: "utf8", env });
       return { code: run.status, stdout: run.stdout };

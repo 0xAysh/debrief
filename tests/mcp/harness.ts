@@ -50,10 +50,10 @@ export async function spawnServer(options: {
   /** `DEBRIEF_ELICITATION_TIMEOUT_MS` for the server. */
   elicitationTimeoutMs?: number;
   /**
-   * Meaning search (the bundled model). Off unless asked for: the suites that test something else
-   * get keyword search alone, as they were written for, without racing the background fill.
+   * Meaning search (the bundled model): `true` sets `DEBRIEF_MEANING_SEARCH=on`, a string sets it to
+   * that value as a user might. Off by default, as for users.
    */
-  meaning?: boolean;
+  meaning?: boolean | string;
   /** `DEBRIEF_EMBEDDER_IDLE_MS` for the server: how long the model stays loaded without a request. */
   embedderIdleMs?: number;
   /** Another copy of the bundle to run (a package unpacked elsewhere, one missing its model). */
@@ -73,7 +73,7 @@ export async function spawnServer(options: {
       CODEX_HOME: options.codexHome ?? resolve(options.home, "no-codex-home"),
       ...(options.networkLog === undefined ? {} : { DEBRIEF_NETWORK_LOG: options.networkLog }),
       ...(options.elicitationTimeoutMs === undefined ? {} : { DEBRIEF_ELICITATION_TIMEOUT_MS: String(options.elicitationTimeoutMs) }),
-      ...(options.meaning === true ? {} : { DEBRIEF_MEANING_SEARCH: "off" }),
+      ...(options.meaning === undefined || options.meaning === false ? {} : { DEBRIEF_MEANING_SEARCH: options.meaning === true ? "on" : options.meaning }),
       ...(options.embedderIdleMs === undefined ? {} : { DEBRIEF_EMBEDDER_IDLE_MS: String(options.embedderIdleMs) }),
     },
     stderr: "pipe",

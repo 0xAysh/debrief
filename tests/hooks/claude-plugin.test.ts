@@ -30,8 +30,8 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
 
     const repo = initRepo({ branch: "fix/double-charge" });
     const debriefHome = tempDir();
-    const debriefStatus = (cwd = repo) => {
-      const run = spawnSync(join(bin, "debrief"), ["status"], { cwd, encoding: "utf8", timeout: 30_000, env: claudeEnv(sandbox, { PATH: pathWith(bin), DEBRIEF_HOME: debriefHome }) });
+    const debriefStatus = (cwd = repo, extra: Record<string, string> = {}) => {
+      const run = spawnSync(join(bin, "debrief"), ["status"], { cwd, encoding: "utf8", timeout: 30_000, env: claudeEnv(sandbox, { PATH: pathWith(bin), DEBRIEF_HOME: debriefHome, ...extra }) });
       return { code: run.status, stdout: run.stdout, stderr: run.stderr };
     };
 
@@ -46,10 +46,12 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     expect(fresh.stdout).toMatch(/^ {17}· pre-tool-use +never ran \(it runs when the agent calls a Debrief tool\)$/m);
     expect(fresh.stdout).toMatch(/^ {2}last capture {3}never$/m);
     expect(fresh.stdout).toMatch(/^ {2}import {9}not answered yet: the agent asks at the next session start$/m);
+    expect(fresh.stdout).toMatch(/^ {2}meaning search · off \(DEBRIEF_MEANING_SEARCH=on to enable\)$/m);
     expect(fresh.stdout).toMatch(/^✘ 3 problems$/m);
+    let shellEnv: Record<string, string> = {};
     const drive = async (prompt: string, calls: { tool: string; input: Record<string, unknown> }[], ...args: string[]) => {
       const stub = await startStubMessages({ calls, reply: `SYNTHETIC-REPLY to ${prompt}`, mcpPrefix: PLUGIN_TOOL });
-      const env = claudeEnv(sandbox, { PATH: pathWith(bin), DEBRIEF_HOME: debriefHome, ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: STUB_KEY });
+      const env = claudeEnv(sandbox, { PATH: pathWith(bin), DEBRIEF_HOME: debriefHome, ANTHROPIC_BASE_URL: `http://127.0.0.1:${stub.port}`, ANTHROPIC_API_KEY: STUB_KEY, ...shellEnv });
       const run = await claudeAsync(env, repo, "-p", prompt, "--output-format", "stream-json", "--verbose", ...args);
       expect(run.code, run.stderr).toBe(0);
       return { stub, events: streamEvents(run.stdout) };
@@ -63,6 +65,7 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     expect(opening).toContain(IMPORT_QUESTION);
     expect(first.stub.offeredTools[0]).toEqual(expect.arrayContaining([`${PLUGIN_TOOL}memory_bootstrap`, `${PLUGIN_TOOL}memory_recall`, `${PLUGIN_TOOL}memory_checkpoint`]));
     expect(JSON.stringify(first.stub.requests[1] ?? {}), "the status call ran and returned Debrief's report").toContain("sqliteVersion");
+    expect(JSON.stringify(first.stub.requests[1] ?? {})).toContain("meaning search: off (DEBRIEF_MEANING_SEARCH=on to enable)");
     const status = () => {
       const memory = openMemory({ cwd: repo, home: debriefHome, host: "claude-code", claudeConfigDir: sandbox.configDir });
       onCleanup(() => {
@@ -110,15 +113,39 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     expect(healthy.stdout).toMatch(/^ {2}capture gaps {3}none$/m);
     expect(healthy.stdout).toMatch(/^ {2}import {9}current_project$/m);
     expect(healthy.stdout).toMatch(/^ {2}preferences {4}no questions waiting$/m);
-    expect(healthy.stdout).toMatch(/^ {2}meaning search ✔ snowflake-arctic-embed-xs@q8 loads; .* searchable by meaning/m);
+    expect(healthy.stdout).toMatch(/^ {2}meaning search · off \(DEBRIEF_MEANING_SEARCH=on to enable\)$/m);
     expect(healthy.stdout).toMatch(/^✔ healthy$/m);
+    const healthyOn = debriefStatus(repo, { DEBRIEF_MEANING_SEARCH: "on" });
+    expect(healthyOn.code, healthyOn.stdout + healthyOn.stderr).toBe(0);
+    expect(healthyOn.stdout).toMatch(/^ {2}meaning search ✔ snowflake-arctic-embed-xs@q8 loads; .* searchable by meaning/m);
 
-    // An installed model that no longer loads is a problem, not a silent fall back to keyword search.
+    // Both ways the README gives to turn meaning search on reach the plugin's server: the
+    // environment Claude Code starts in, and the `env` of Claude Code's settings.
+    const meaningOn = (request: Record<string, unknown> | undefined): void => {
+      const text = JSON.stringify(request ?? {});
+      expect(text).toContain("sqliteVersion");
+      expect(text).not.toContain("meaning search: off");
+      expect(text).toMatch(/\\"model\\":\\"snowflake-arctic-embed-xs@q8\\",\\"state\\":\\"(?:unloaded|loading|loaded)\\"/);
+    };
+    shellEnv = { DEBRIEF_MEANING_SEARCH: "on" };
+    meaningOn((await drive("SYNTHETIC-PROMPT-4 status", [{ tool: "memory_status", input: {} }])).stub.requests[1]);
+    shellEnv = {};
+    const settingsFile = join(sandbox.configDir, "settings.json");
+    const settings = readFileSync(settingsFile, "utf8");
+    writeFileSync(settingsFile, JSON.stringify({ ...(JSON.parse(settings) as object), env: { DEBRIEF_MEANING_SEARCH: "on" } }));
+    meaningOn((await drive("SYNTHETIC-PROMPT-5 status", [{ tool: "memory_status", input: {} }])).stub.requests[1]);
+    writeFileSync(settingsFile, settings);
+
+    // An installed model that no longer loads: with meaning search off nothing loads it, so it is no
+    // problem; on, it is a problem, not a silent fall back to keyword search.
     const model = join(dirname(realpathSync(join(bin, "debrief"))), "models", "snowflake-arctic-embed-xs", "model_quantized.onnx");
     const weights = readFileSync(model);
     writeFileSync(model, weights.subarray(0, 1024));
-    const unloadable = debriefStatus();
+    const unloadableOff = debriefStatus();
+    const unloadable = debriefStatus(repo, { DEBRIEF_MEANING_SEARCH: "on" });
     writeFileSync(model, weights);
+    expect(unloadableOff.code, unloadableOff.stdout).toBe(0);
+    expect(unloadableOff.stdout).toMatch(/^✔ healthy$/m);
     expect(unloadable.code).toBe(1);
     expect(unloadable.stdout).toMatch(/^ {2}meaning search ✘ snowflake-arctic-embed-xs@q8 failed to load: model_quantized\.onnx does not match the pinned model .*; recall finds memory by its words only$/m);
     expect(unloadable.stdout).toMatch(/^✘ 1 problem$/m);

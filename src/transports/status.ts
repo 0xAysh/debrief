@@ -86,7 +86,9 @@ function renderStatus(host: HostId, facts: PluginFacts, status: StatusResult, pl
   else row("import", imported.consent?.choice ?? imported.state);
   row("preferences", status.preferenceQuestions === 0 ? "no questions waiting" : `${status.preferenceQuestions} question${status.preferenceQuestions === 1 ? "" : "s"} waiting for the user`);
   const meaning = status.meaning;
-  if (meaning?.state === "failed") {
+  if (meaning?.state === "off") {
+    row("meaning search", (meaning.notice ?? "off").replace(/^meaning search: /, ""), "·");
+  } else if (meaning?.state === "failed") {
     row("meaning search", `${meaning.model} failed to load: ${meaning.problem ?? "unknown"}; recall finds memory by its words only`, "✘");
   } else if (meaning !== null) {
     const coverage = meaning.coverage;

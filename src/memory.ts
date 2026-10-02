@@ -50,6 +50,7 @@ import {
   statesLastingPreference,
 } from "./integrity/preferences.js";
 import { type Embedder, EmbedderUnavailable, type EmbedderStatus, type Vector } from "./embedding/embedder.js";
+import { MODEL } from "./embedding/model.js";
 import { hostDescriptor } from "./hosts.js";
 import type { TranscriptAdapter } from "./import/normalized-event.js";
 import { PROTOCOL } from "./protocol.js";
@@ -198,6 +199,12 @@ export interface OpenMemoryOptions {
    * it (one per process, shared by every Memory it opens); `close` leaves it running.
    */
   embedder?: Embedder;
+  /**
+   * Meaning search is opt-in: where it was left off, there is no `embedder`, and status reports
+   * meaning search as `off` with this notice (`meaning search: off (DEBRIEF_MEANING_SEARCH=on to
+   * enable)`). Without either, status reports none, as for hooks.
+   */
+  meaningOff?: string;
 }
 
 /**
@@ -579,15 +586,18 @@ export interface StatusResult {
   lastCaptureAt: string | null;
   /** Preference proposals in this repository still waiting for the user's answer. */
   preferenceQuestions: number;
-  /** Meaning search; null where this process has no model (hooks, diagnostics). */
+  /** Meaning search; null where this process never has a model (hooks, diagnostics). */
   meaning: MeaningStatus | null;
 }
 
 export interface MeaningStatus {
   /** The model vectors are made and searched with, e.g. `snowflake-arctic-embed-xs@q8`. */
   model: string;
-  /** Whether this process has the model loaded now (see `EmbedderStatus`); `problem` says why a load failed. */
-  state: EmbedderStatus["state"];
+  /**
+   * Whether this process has the model loaded now (see `EmbedderStatus`); `problem` says why a load
+   * failed. `off`: meaning search is opt-in and was not turned on (`notice` says how).
+   */
+  state: EmbedderStatus["state"] | "off";
   problem: string | null;
   /**
    * This repository's chunks that get a vector (those of records recall could return), and how many
@@ -596,6 +606,8 @@ export interface MeaningStatus {
   coverage: { chunks: number; embedded: number; percent: number } | null;
   /** Texts this process embedded for the fill. */
   filled: number;
+  /** Only when `off`: `meaning search: off (DEBRIEF_MEANING_SEARCH=on to enable)`, naming a value it did not recognise. */
+  notice?: string;
 }
 
 /** One step of the background fill (`Memory.fillVectors`). */
@@ -842,6 +854,7 @@ class LocalMemory implements Memory {
   /** Null for hosts without a transcript adapter. */
   private readonly importer: TranscriptImporter | null;
   private readonly embedder: Embedder | undefined;
+  private readonly meaningOff: string | undefined;
   /** This instance's claim on the fill lease (src/retrieval/vectors.ts). */
   private readonly fillHolder = { token: `${process.pid}:${randomUUID()}`, pid: process.pid };
   /** The fill pass in progress (see `fillVectors`), and where the last finished one left off. */
@@ -859,6 +872,7 @@ class LocalMemory implements Memory {
     this.now = options.now ?? (() => new Date());
     this.hostSessionId = options.hostSessionId;
     this.embedder = options.embedder;
+    this.meaningOff = options.meaningOff;
     const adapter = options.transcriptAdapter ?? hostDescriptor(this.host)?.transcripts?.(options) ?? null;
     this.importer =
       adapter === null
@@ -1333,6 +1347,8 @@ class LocalMemory implements Memory {
       if (this.embedder !== undefined) {
         const embedder = this.embedder.status();
         result.meaning = { model: embedder.modelId, state: embedder.state, problem: embedder.problem, coverage: null, filled: this.filled };
+      } else if (this.meaningOff !== undefined) {
+        result.meaning = { model: MODEL.id, state: "off", problem: null, coverage: null, filled: 0, notice: this.meaningOff };
       }
       let db: Db | null = null;
       try {
@@ -1401,7 +1417,7 @@ class LocalMemory implements Memory {
         result.counts = { records: count("records"), checkpoints: count("checkpoints"), workstreams: count("workstreams"), sessions: count("sessions") };
         result.lastCaptureAt = (db.prepare("SELECT max(created_at) AS at FROM import_events WHERE host = ?").get(this.host) as { at: string | null }).at;
         result.preferenceQuestions = count("preference_candidates");
-        if (result.meaning !== null) {
+        if (result.meaning !== null && result.meaning.state !== "off") {
           const { chunks, embedded } = vectorCoverage(db, result.meaning.model);
           result.meaning.coverage = { chunks, embedded, percent: coveredPercent(chunks, embedded) };
         }

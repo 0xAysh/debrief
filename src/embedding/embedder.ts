@@ -61,10 +61,19 @@ const WAIT_MS = 30_000;
 const RETRY_AFTER_MS = 60_000;
 /**
  * V8 flags for the model's process. Liftoff-only skips V8's optimizing tier for WebAssembly, which
- * on ONNX Runtime's 14 MB module costs about 400 MB of compiled code for twice the speed
- * (measured: 300 MB resident and 28 chunks/s with it, 700 MB and 62 chunks/s without).
+ * on ONNX Runtime's 14 MB module costs about 400 MB of compile memory for twice the speed
+ * (measured: 300 MB resident and 28 chunks/s with it, 700 MB and 62 chunks/s without). A 1 MB
+ * semi-space keeps the young generation from growing to 16 MB (−20 MB, no speed cost), and
+ * `--expose-gc` lets the process collect the model's bytes once the session holds them. Neither
+ * changes a vector (#51's RSS spike, ADR 0001).
  */
-const V8_FLAGS = ["--liftoff-only"];
+const V8_FLAGS = ["--liftoff-only", "--max-semi-space-size=1", "--expose-gc"];
+/**
+ * The model's process's environment beyond this one's. macOS's malloc keeps freed pages dirty and
+ * counted; `MallocSpaceEfficient` makes it give them back, about −75 MB once the load's garbage is
+ * freed. It is read at process start, so it goes in the fork's environment.
+ */
+const ENV: Record<string, string> = process.platform === "darwin" ? { MallocSpaceEfficient: "1" } : {};
 
 export interface EmbedderOptions {
   /** The directory holding `embedder.mjs`, the runtime's `.wasm` and `models/` (the bundle's own directory). */
@@ -87,7 +96,7 @@ export function openEmbedder(options: EmbedderOptions): Embedder {
 const PROXY_SOURCE = `
 const { workerData } = require("node:worker_threads");
 const { fork } = require("node:child_process");
-const { sync, async: background, signal, entry, dir, execArgv } = workerData;
+const { sync, async: background, signal, entry, dir, execArgv, env } = workerData;
 const counter = new Int32Array(signal);
 const wake = () => { Atomics.add(counter, 0, 1); Atomics.notify(counter, 0); };
 const reply = (port, message) => { port.postMessage(message); if (port === sync) wake(); };
@@ -96,7 +105,7 @@ let failure = null;
 let inFlight = null;
 const queue = [];
 let stderr = "";
-const child = fork(entry, [dir], { execArgv, serialization: "advanced", stdio: ["ignore", "ignore", "pipe", "ipc"] });
+const child = fork(entry, [dir], { execArgv, env, serialization: "advanced", stdio: ["ignore", "ignore", "pipe", "ipc"] });
 child.stderr.on("data", (data) => { stderr = (stderr + data).slice(-4000); });
 const fail = (reason) => {
   if (state === "failed") return;
@@ -256,7 +265,7 @@ class ProcessEmbedder implements Embedder {
     const signal = new SharedArrayBuffer(4);
     const worker = new Worker(PROXY_SOURCE, {
       eval: true,
-      workerData: { sync: sync.port2, async: background.port2, signal, entry, dir: this.dir, execArgv: this.execArgv },
+      workerData: { sync: sync.port2, async: background.port2, signal, entry, dir: this.dir, execArgv: this.execArgv, env: { ...process.env, ...ENV } },
       transferList: [sync.port2, background.port2],
       // The proxy prints nothing; the model's process's stderr is kept for failure reasons.
       stdout: true,

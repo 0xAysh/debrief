@@ -59,8 +59,7 @@ async function main(argv: string[]): Promise<number> {
     if (values.host !== undefined && hostDescriptor(values.host) === null) return usage(`unknown --host ${values.host}`);
     // Fail at startup, visibly, rather than on the first tool call inside the host.
     assertEmbeddedRuntime();
-    const embedder = bundledEmbedder();
-    await runStdioServer({ cwd: process.cwd(), ...(values.host === undefined ? {} : { host: values.host }), ...(embedder === undefined ? {} : { embedder }) });
+    await runStdioServer({ cwd: process.cwd(), ...(values.host === undefined ? {} : { host: values.host }), ...meaningSearch() });
     return -1; // keep running until stdin ends or a signal arrives
   }
   if (command === "hook") {
@@ -289,12 +288,13 @@ async function deleteData(yes: boolean): Promise<number> {
 
 /**
  * Each host Debrief installs into as a plugin, checked from this directory; exit 1 when any has a
- * problem. The model is loaded once, as the MCP server would load it, so a model that cannot load
- * is a problem here rather than a silent fall back to keyword search there.
+ * problem. With meaning search on, the model is loaded once, as the MCP server would load it, so a
+ * model that cannot load is a problem here rather than a silent fall back to keyword search there.
  */
 async function status(): Promise<number> {
   let problems = 0;
-  const embedder = bundledEmbedder();
+  const meaning = meaningSearch();
+  const embedder = "embedder" in meaning ? meaning.embedder : undefined;
   try {
     try {
       embedder?.embed(["debrief status"], "query");
@@ -303,7 +303,7 @@ async function status(): Promise<number> {
       // Reported by status().meaning as a failed load.
     }
     for (const { host, facts } of installedHosts()) {
-      const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined), ...(embedder === undefined ? {} : { embedder }) });
+      const memory = openMemory({ cwd: process.cwd(), host, home: resolveHome(undefined), ...meaning });
       try {
         const report = await hostStatus(host, facts, memory.status(), { cwd: process.cwd(), env: process.env });
         process.stdout.write(report.text);
@@ -319,15 +319,20 @@ async function status(): Promise<number> {
 }
 
 /**
- * The model shipped beside this bundle (`dist/embedder.mjs`, `dist/models/`). Only `debrief mcp`
- * and `debrief status` create it; hooks never do. `DEBRIEF_MEANING_SEARCH=off` turns meaning
- * search off (the model is never loaded, and recall ranks by keywords alone);
+ * Meaning search is opt-in (ADR 0001): `DEBRIEF_MEANING_SEARCH=on` gives `debrief mcp` and `debrief
+ * status` the model shipped beside this bundle (`dist/embedder.mjs`, `dist/models/`); hooks never
+ * load it. Unset, or any other value, it stays off: the model is never loaded, recall ranks by
+ * keywords alone, and status says so, naming a value it did not recognise.
  * `DEBRIEF_EMBEDDER_IDLE_MS` shortens the idle unload for tests.
  */
-function bundledEmbedder(): Embedder | undefined {
-  if (process.env["DEBRIEF_MEANING_SEARCH"] === "off") return undefined;
-  const idleMs = Number(process.env["DEBRIEF_EMBEDDER_IDLE_MS"]);
-  return openEmbedder({ dir: dirname(fileURLToPath(import.meta.url)), ...(idleMs > 0 ? { idleMs } : {}) });
+function meaningSearch(): { embedder: Embedder } | { meaningOff: string } {
+  const setting = process.env["DEBRIEF_MEANING_SEARCH"];
+  if (setting === "on") {
+    const idleMs = Number(process.env["DEBRIEF_EMBEDDER_IDLE_MS"]);
+    return { embedder: openEmbedder({ dir: dirname(fileURLToPath(import.meta.url)), ...(idleMs > 0 ? { idleMs } : {}) }) };
+  }
+  const unrecognised = setting === undefined || setting === "" || setting === "off" ? "" : `DEBRIEF_MEANING_SEARCH=${JSON.stringify(setting)} is not recognised; `;
+  return { meaningOff: `meaning search: off (${unrecognised}DEBRIEF_MEANING_SEARCH=on to enable)` };
 }
 
 /** The tracer-bullet flow through the public interface; returns the recalled pack. */
