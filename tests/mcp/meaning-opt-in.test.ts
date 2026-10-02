@@ -105,7 +105,7 @@ describe("meaning search is opt-in", () => {
     }
     expect(modelProcess(server.pid)).toHaveLength(1);
     const pack = await server.ok<ContextPack>("memory_recall", { query: "socket resets" });
-    expect(pack.items[0]).toMatchObject({ why: "meaning", excerpt: expect.stringMatching(/^ECONNRESET/) as unknown });
+    expect(pack.items[0]).toMatchObject({ why: "meaning only", excerpt: expect.stringMatching(/^ECONNRESET/) as unknown });
     await server.close();
   }, 60_000);
 
