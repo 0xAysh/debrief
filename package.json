@@ -1,6 +1,6 @@
 {
   "name": "debrief-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local, agent-facing working memory for coding agents.",
   "keywords": [
     "claude-code",

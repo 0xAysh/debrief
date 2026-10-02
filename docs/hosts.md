@@ -1,6 +1,6 @@
 # Hosts: manual connection and caveats
 
-The one-command path is the Claude Code plugin (see the [README](../README.md#install)). This page keeps the verified manual steps, for a host without a Debrief plugin (Codex) or a setup that registers Debrief by hand, and the host behaviour behind them.
+The one-command path is the Claude Code plugin (see the [README](../README.md#try-it)). This page keeps the verified manual steps, for a host without a Debrief plugin (Codex) or a setup that registers Debrief by hand, and the host behaviour behind them.
 
 | Host | Connect with | Session-start context, turn capture, sub-agents | Transcript import | Tested with |
 |---|---|---|---|---|

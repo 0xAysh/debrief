@@ -36,7 +36,7 @@ function notes(memory: Memory, count: number): void {
   for (let i = 0; i < count; i++) memory.record({ kind: "note", body: `Observation ${i}: ${"the retry queue drains in order; ".repeat(12)}`, attribution: "direct_observation" });
 }
 
-const README = readFileSync(resolve(import.meta.dirname, "../../README.md"), "utf8");
+const USAGE = readFileSync(resolve(import.meta.dirname, "../../docs/usage.md"), "utf8");
 
 describe("sessionStart: what a session-start hook injects", () => {
   test("S1: the header, the protocol, questions for the user, the pointer and preferences; no checkpoint body, digest or memory items", () => {
@@ -222,7 +222,7 @@ describe("sessionStart: the pointer to work memory", () => {
     expect(start.notice).toBe("◪ debrief · checkpoint r1 · turns after r1 not checkpointed");
   });
 
-  test("S5: every phrase of the notice is in the README's table", () => {
+  test("S5: every phrase of the notice is in docs/usage.md's table", () => {
     const { repo, home, config } = workspace();
     installTranscript(config, "2.1.281/basic.jsonl", { cwd: repo });
     const setup = open(repo, home, config);
@@ -234,7 +234,7 @@ describe("sessionStart: the pointer to work memory", () => {
     setup.close();
     const loaded = started(open(repo, home, config)).notice;
 
-    const table = README.slice(README.indexOf("## What the `◪ debrief` notices mean"));
+    const table = USAGE.slice(USAGE.indexOf("## What the `◪ debrief` notices mean"));
     const phrases = [...table.matchAll(/^\| `([^`]+)`/gm)].flatMap((match) => (match[1] ?? "").split(" · "));
     for (const notice of [crashed, loaded, "◪ debrief · checkpoint r3 · turns after r3 not checkpointed"]) {
       for (const part of notice.split(" · ").slice(1)) {

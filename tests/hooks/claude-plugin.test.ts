@@ -38,7 +38,8 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     // Installed, but no session yet: the hooks that run every session have never run.
     const fresh = debriefStatus();
     expect(fresh.code, fresh.stderr).toBe(1);
-    expect(fresh.stdout).toMatch(/^ {2}plugin {9}✔ debrief@debrief 0\.1\.0, enabled$/m);
+    const { version } = JSON.parse(readFileSync(join(ROOT, "plugin/.claude-plugin/plugin.json"), "utf8")) as { version: string };
+    expect(fresh.stdout).toMatch(new RegExp(`^ {2}plugin {9}✔ debrief@debrief ${version.replaceAll(".", "\\.")}, enabled$`, "m"));
     expect(fresh.stdout).toMatch(/^ {2}MCP server {5}✔ answering with \d+ tools \(debrief mcp --host claude-code\)$/m);
     for (const event of ["session-start", "user-prompt-submit", "stop"]) expect(fresh.stdout).toMatch(new RegExp(`^ {2}(?:hooks {10}| {15})✘ ${event} +never ran: start a new Claude Code session; if it still has not run, the hook is not firing$`, "m"));
     expect(fresh.stdout).toMatch(/^ {2}hooks {10}✘ session-start/m);
@@ -119,7 +120,7 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     expect(healthyOn.code, healthyOn.stdout + healthyOn.stderr).toBe(0);
     expect(healthyOn.stdout).toMatch(/^ {2}meaning search ✔ snowflake-arctic-embed-xs@q8 loads; .* searchable by meaning/m);
 
-    // Both ways the README gives to turn meaning search on reach the plugin's server: the
+    // Both ways docs/usage.md gives to turn meaning search on reach the plugin's server: the
     // environment Claude Code starts in, and the `env` of Claude Code's settings.
     const meaningOn = (request: Record<string, unknown> | undefined): void => {
       const text = JSON.stringify(request ?? {});

@@ -1,6 +1,6 @@
 # Architecture
 
-How Debrief works inside. For using it, see the [README](../README.md); for connecting hosts by hand, [hosts.md](hosts.md); for building and testing, [development.md](development.md).
+How Debrief works inside. For using it, see [usage.md](usage.md); for connecting hosts by hand, [hosts.md](hosts.md); for building and testing, [development.md](development.md).
 
 ## At a glance
 
@@ -566,7 +566,7 @@ Stop              debrief hook stop               → endTurn(transcript_path,  
 - **The digest** (`lastSession` in `memory_bootstrap`) is built without a model from imported events: the newest session after the head checkpoint (from its first later prompt), or the last session when there is none, with its last three prompts (≤ 240 characters each), last reply (≤ 400), last commands (≤ 120, ✓/✗ from the tool-error flag, not an exit code), files its tool calls named, and end time. The calling host session's own transcript is never its last session: a resumed or live session already has those turns, and the MCP server's bootstrap imports the live transcript too.
 - **Items are labelled** `kind · age · host · freshness` (the checkpoint `checkpoint rN · …`) by `src/retrieval/label.ts`, from fields the JSON pack also carries. The same module renders a compact recall's index lines, which a read's timeline reuses.
 - **One Claude Code session, one host session id.** Each process (a hook, the MCP server, the importer) opens its own `sessions` row, and the rows of one Claude Code session share `host_session_id` = Claude's `session_id`, which is also its transcript's file name. Workstream resolution (step 1), private sessions and the importer join on that id, and the digest reads only imported events (one Debrief session per transcript), so the extra rows are not a second session anywhere it matters. The MCP server learns the id from `CLAUDE_CODE_SESSION_ID`, which Claude Code sets when it starts the server. Claude Code does not restart the server on `/clear`, which starts a new `session_id`, so the environment goes stale; the PreToolUse hook (registered for Debrief's tools) notes each call's `tool_use_id` with the current `session_id` in `$DEBRIEF_HOME/tool-sessions.jsonl` (`src/bootstrap/host-sessions.ts`; both logs share `src/storage/home-log.ts`), and the server looks up the `_meta["claudecode/toolUseId"]` of each call there. A call from a new session closes the server's Memory and opens one for that session. The environment names only the server's first session: a call whose note is missing keeps the current session rather than falling back to the stale id.
-**Pinned Claude Code 2.1.284 behaviour** that the hooks rely on. Each row is driven by the test named (`tests/hooks/<name>.test.ts`, `tests/release/acceptance-claude.test.ts`); research notes are in `docs/research/hooks-2026-09-26.md`.
+**Pinned Claude Code 2.1.284 behaviour** that the hooks rely on. Each row is driven by the test named (`tests/hooks/<name>.test.ts`, `tests/release/acceptance-claude.test.ts`).
 
 | Behaviour | Consequence for Debrief | Test |
 |---|---|---|
