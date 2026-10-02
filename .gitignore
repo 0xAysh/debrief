@@ -11,7 +11,7 @@ node_modules/
 
 # Build and test output
 /dist/
-# The embedding model, fetched at build time at its pinned revision (scripts/bundle.mjs); shipped in the package, never committed
+# The embedding model and ONNX Runtime's third-party notices, fetched at build time and pinned (scripts/bundle.mjs); shipped in the package, never committed
 /.cache/
 /coverage/
 *.tsbuildinfo

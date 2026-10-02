@@ -1,9 +1,11 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
-import { MODEL, RUNTIME_FILES } from "../../src/embedding/model.js";
+import { MODEL, RUNTIME_FILES, RUNTIME_NOTICES } from "../../src/embedding/model.js";
 import type { ContextPack, StatusResult } from "../../src/memory.js";
 import { initRepo, npmCommand, tempDir } from "../helpers.js";
 import { CLAUDE_PINNED_VERSION } from "../mcp/claude.js";
@@ -36,12 +38,22 @@ function licenseText(name: string): string {
 
 const sha256 = (path: string): string => createHash("sha256").update(readFileSync(path)).digest("hex");
 
+/** Runs `scripts/bundle.mjs` in `dir` (a copy of this checkout's compiled `dist/`), fetching ONNX Runtime's notices from `noticesUrl`. */
+function bundleIn(dir: string, noticesUrl: string): Promise<{ status: number; stderr: string }> {
+  return new Promise((done) => {
+    execFile(process.execPath, [join(ROOT, "scripts/bundle.mjs")], { cwd: dir, env: { ...process.env, DEBRIEF_TEST_RUNTIME_NOTICES_URL: noticesUrl } }, (error, _stdout, stderr) => {
+      done({ status: typeof error?.code === "number" ? error.code : error === null ? 0 : 1, stderr });
+    });
+  });
+}
+
 describe("the published package", () => {
   test("ships the MIT license and a notice carrying the license text of every package bundled into the CLI", () => {
     const [packed] = JSON.parse(execFileSync(...npmCommand(["pack", "--dry-run", "--json", "--ignore-scripts"]), { cwd: ROOT, encoding: "utf8" })) as [{ files: { path: string }[] }];
     expect(packed.files.map((file) => file.path).sort()).toEqual([
       "LICENSE",
       "README.md",
+      `dist/${RUNTIME_NOTICES.name}`,
       "dist/THIRD_PARTY_NOTICES.md",
       "dist/debrief.mjs",
       "dist/embedder.mjs",
@@ -102,6 +114,71 @@ describe("the published package", () => {
     expect(childrenMatching(server.pid, "embedder.mjs").map((entry) => entry.command)).toEqual([expect.stringContaining(join(pkg, "dist", "embedder.mjs"))]);
     await server.close();
     expect(existsSync(networkLog) ? readFileSync(networkLog, "utf8") : "").toBe("");
+  });
+
+  test("L1: the tarball carries ONNX Runtime's third-party notices, matching their pin", () => {
+    const dir = tempDir("debrief-tarball-");
+    const tarball = execFileSync(...npmCommand(["pack", "--pack-destination", dir, "--silent"]), { cwd: ROOT, encoding: "utf8" }).trim().split("\n").at(-1) ?? "";
+    execFileSync("tar", ["-xzf", tarball], { cwd: dir });
+    const shipped = join(dir, "package/dist", RUNTIME_NOTICES.name);
+    expect(sha256(shipped)).toBe(RUNTIME_NOTICES.sha256);
+    expect(readFileSync(shipped, "utf8")).toMatch(/^THIRD PARTY SOFTWARE NOTICES AND INFORMATION\n/);
+  });
+
+  test("L2: THIRD_PARTY_NOTICES.md's onnxruntime-web section names the notices file shipped beside it, not a link to GitHub", () => {
+    const notices = readFileSync(join(ROOT, "dist/THIRD_PARTY_NOTICES.md"), "utf8");
+    const section = notices.split(/^(?=## )/m).find((s) => s.startsWith("## onnxruntime-web@")) ?? "";
+    expect(section).toContain(`\`dist/${RUNTIME_NOTICES.name}\``);
+    expect(section).not.toMatch(/https?:\/\/\S*ThirdPartyNotices/);
+    expect(notices).not.toContain("github.com/microsoft/onnxruntime/blob/");
+  });
+
+  test("L3: a corrupted cached copy of ONNX Runtime's notices is fetched again, and a fetched copy that does not match its pin fails the build", async () => {
+    const real = readFileSync(join(ROOT, "dist", RUNTIME_NOTICES.name));
+    let body: Buffer = Buffer.concat([real, Buffer.from("\ntampered\n")]);
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests += 1;
+      response.end(body);
+    });
+    await new Promise<void>((listening) => server.listen(0, "127.0.0.1", listening));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/ThirdPartyNotices.txt`;
+    try {
+      // A build directory: this checkout's compiled dist/ (without the notices), its packages and its cached model.
+      const dir = tempDir("debrief-build-");
+      cpSync(join(ROOT, "dist"), join(dir, "dist"), { recursive: true });
+      rmSync(join(dir, "dist", RUNTIME_NOTICES.name));
+      symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"));
+      symlinkSync(join(ROOT, "scripts"), join(dir, "scripts"));
+      mkdirSync(join(dir, ".cache"));
+      symlinkSync(join(ROOT, ".cache/models"), join(dir, ".cache/models"));
+      const cached = join(dir, ".cache/onnxruntime", RUNTIME_NOTICES.tag, RUNTIME_NOTICES.source);
+      mkdirSync(dirname(cached), { recursive: true });
+      writeFileSync(cached, real.subarray(0, 1000));
+
+      // The corrupted cache is fetched again; what arrives does not match the pin, so the build fails and ships nothing.
+      const tampered = await bundleIn(dir, url);
+      expect(tampered.status).not.toBe(0);
+      expect(tampered.stderr).toContain(`not the pinned ${RUNTIME_NOTICES.sha256}`);
+      expect(requests).toBe(1);
+      expect(existsSync(join(dir, "dist", RUNTIME_NOTICES.name))).toBe(false);
+      expect(readFileSync(cached)).toEqual(real.subarray(0, 1000));
+
+      // The pinned file arrives: the cache is repaired and the file shipped.
+      body = real;
+      const fixed = await bundleIn(dir, url);
+      expect(fixed.stderr).toBe(`bundle: fetching ${url}\n`);
+      expect(fixed.status).toBe(0);
+      expect(requests).toBe(2);
+      expect(sha256(cached)).toBe(RUNTIME_NOTICES.sha256);
+      expect(sha256(join(dir, "dist", RUNTIME_NOTICES.name))).toBe(RUNTIME_NOTICES.sha256);
+
+      // A good cached copy is used as it is: no network.
+      expect(await bundleIn(dir, url)).toEqual({ status: 0, stderr: "" });
+      expect(requests).toBe(2);
+    } finally {
+      server.close();
+    }
   });
 
   test("is ready to publish: public, one version in the package, the plugin and the MCP server, and a support matrix that matches what the tests pin", async () => {

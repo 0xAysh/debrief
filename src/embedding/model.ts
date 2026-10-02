@@ -32,5 +32,20 @@ export const MODEL = {
 /** ONNX Runtime's WebAssembly build, copied beside the bundle from `onnxruntime-web/dist`. */
 export const RUNTIME_FILES = ["ort-wasm-simd-threaded.wasm", "ort-wasm-simd-threaded.mjs"] as const;
 
+/**
+ * ONNX Runtime's notices for the third-party components its WebAssembly build compiles in, which
+ * its npm package does not carry. Fetched at build time from the onnxruntime repository at the tag
+ * of the installed onnxruntime-web (the build fails on any other version), checked against this
+ * SHA-256 like the model's files, and shipped unmodified beside the runtime as `name`.
+ */
+export const RUNTIME_NOTICES = {
+  repository: "microsoft/onnxruntime",
+  tag: "v1.30.0",
+  source: "ThirdPartyNotices.txt",
+  name: "ONNXRUNTIME_THIRD_PARTY_NOTICES.txt",
+  bytes: 338_088,
+  sha256: "143764b952fdb1a7c69ce653bfba74a7744d6a8a573bfb73e235fba356c83de3",
+} as const;
+
 /** The embedder process's entry, bundled beside `dist/debrief.mjs` (see scripts/bundle.mjs). */
 export const EMBEDDER_ENTRY = "embedder.mjs";
