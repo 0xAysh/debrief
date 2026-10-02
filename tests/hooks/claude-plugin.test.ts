@@ -119,7 +119,7 @@ describe.skipIf(SKIP !== null)(`the Debrief plugin in the real Claude Code ${CLA
     expect(healthyOn.code, healthyOn.stdout + healthyOn.stderr).toBe(0);
     expect(healthyOn.stdout).toMatch(/^ {2}meaning search ✔ snowflake-arctic-embed-xs@q8 loads; .* searchable by meaning/m);
 
-    // Both ways the README gives to turn meaning search on reach the plugin's server: the
+    // Both ways docs/usage.md gives to turn meaning search on reach the plugin's server: the
     // environment Claude Code starts in, and the `env` of Claude Code's settings.
     const meaningOn = (request: Record<string, unknown> | undefined): void => {
       const text = JSON.stringify(request ?? {});

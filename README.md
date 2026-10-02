@@ -2,17 +2,43 @@
 
 [![npm](https://img.shields.io/npm/v/debrief-cli)](https://www.npmjs.com/package/debrief-cli) [![license](https://img.shields.io/npm/l/debrief-cli)](LICENSE)
 
-**Working memory for Claude Code that stays on your machine.** When a session ends, even when it is killed mid-turn, the next one is told where things stand and fetches it when it continues that work: the goal, what was tried, what was decided, what comes next. At the start of each task the agent searches memory for what that task needs. Sub-agents start with the checkpoint and recent memory, and what they find is remembered.
+Working memory for Claude Code that stays on your machine.
 
-How it differs from hosted memory plugins:
+When a session ends, even if it was killed mid-turn, the next one knows where things stand: the goal, what was tried, what was decided and what comes next. The agent searches memory at the start of each task. Memory that points at code is checked against the file, so the agent is told when it is stale.
 
-| | What it means | How it is checked |
-|---|---|---|
-| **Local, no network** | memory is SQLite files in `~/.debrief`; Debrief never opens a connection | its driven tests run every Debrief process under a guard that refuses and logs any connection; the logs stay empty |
-| **Cited** | every memory records where it came from: a transcript passage, a command's output, the agent's inference, your direction | every recalled item carries its attribution and source (host, session, transcript); copies of one observation never count as corroboration |
-| **Flags stale memory** | memory pointing at code that has changed since is marked stale, and the agent is told to read the file again | freshness is checked against the file itself (its hash) at every recall and read |
+> **Status:** paused. This is a portfolio project and it is not actively developed.
 
-Debrief stores knowledge *about* the work, never the code or documents themselves. The repository stays the source of truth.
+## Try it
+
+You need Node.js 24 or newer and Claude Code.
+
+```sh
+npm install -g debrief-cli
+```
+
+Then, in Claude Code:
+
+```text
+/plugin marketplace add 0xAysh/debrief
+/plugin install debrief@debrief
+```
+
+Start a new session and check that everything is wired up:
+
+```sh
+debrief status
+```
+
+The first session asks once whether Debrief may import your past Claude Code sessions. Answer `all`, `current_project` or `none` in the chat, or run `debrief import --set none` in a terminal.
+
+A two-minute test:
+
+1. Start a session in a Git repository and give it a small task.
+2. Kill Claude Code in the middle of a turn.
+3. Start a new session and ask it to continue. It gets the last session's turns from memory, with no handoff from you.
+4. Run `debrief report` to see what the agent searched and what it used.
+
+The notices, commands, privacy controls and the opt-in meaning search are in [docs/usage.md](docs/usage.md).
 
 ## How it works
 
@@ -27,125 +53,54 @@ sequenceDiagram
     CC->>D: SessionStart hook
     D->>DB: import what the last session left in its transcript
     D-->>CC: how to use Debrief · preferences · questions for you · one line pointing at the checkpoint
-    Note over CC: the model starts with it, no tool call needed
     You->>CC: prompts
     CC->>D: memory_bootstrap (continuing the work) · memory_recall (each new task)
     D-->>CC: the checkpoint, the last session's turns · what the task needs
-    CC->>D: memory_record · memory_checkpoint (MCP)
-    CC->>D: SubagentStart hook (when it delegates)
-    D-->>CC: the sub-agent's starting memory
+    CC->>D: memory_record · memory_checkpoint
     CC->>D: Stop hook, at the end of every turn
     D->>DB: save the turn
-    D-->>You: ◪ debrief · saved turn (12 events), shown by Claude Code
 ```
 
-- **Killed or crashed sessions are not lost.** A turn the Stop hook never saw is read from Claude Code's transcript at the next session start. The agent is told that the last session ended without a checkpoint, and `memory_bootstrap` returns its last turns.
-- **Session start stays small.** It carries what applies to every task, not the last line of work, which may not be the one you start: about 2.5 KB (some 600 tokens) plus your preferences, however much memory holds. Task context arrives with the task, when the agent searches memory.
-- **Search can find meaning, not only words (opt-in).** With `DEBRIEF_MEANING_SEARCH=on`, a recall for "monetary precision rounding" finds "amounts are integer minor units; never floats". It is off by default: the agent writes its own queries, and in a driven test it found the same answers without it. See [Meaning search (opt-in)](#meaning-search-opt-in).
-- **The agent keeps it current.** After several turns of work with no checkpoint, Debrief asks the agent once, at the end of a turn, to save one.
-- **Scope follows Git.** Memory belongs to the repository (and the worktree's line of work) you are in; one repository's memory never shows up in another.
+- The Stop hook saves every turn. If a session was killed before its last turn was saved, the next start reads that turn back from Claude Code's transcript.
+- Session start is about 600 tokens plus your preferences, and it does not grow with memory. Task context comes later, when the agent searches.
+- Every memory says where it came from: a transcript passage, a command's output, the agent's inference or your direction.
+- Memory that cites code keeps a fingerprint of what it cites. Each recall checks that against the file, and an edit there marks the memory `stale`.
+- Memory is SQLite files in `~/.debrief`. Debrief never opens a network connection.
 
-## Install
+## Benchmarks
 
-```sh
-npm install -g debrief-cli
-```
+Everything ran on an Apple M4 Pro (macOS, Node 25.9). The benchmark harnesses and data are not in this repository. The method, the full tables and the negative results are in [docs/benchmarks.md](docs/benchmarks.md).
 
-Then, in Claude Code:
-
-```text
-/plugin marketplace add 0xAysh/debrief
-/plugin install debrief@debrief
-```
-
-This registers Debrief's MCP server and its five hooks, with nothing else to edit. Start a new session.
-
-## The first session: importing past sessions
-
-The first session asks, once, whether Debrief may seed memory from Claude Code's local transcripts of past sessions:
-
-| Answer | Imports |
+| What | Result |
 |---|---|
-| `all` | every project's transcripts, each into its own repository's memory |
-| `current_project` | only this repository's |
-| `none` | nothing: Debrief remembers from now on |
+| [LongMemEval_S](https://github.com/xiaowu0162/LongMemEval) retrieval, 419 scored questions, session recall@5 | 94.3 with keyword search. A correctly tokenized BM25 gets 94.7, so this is BM25 level |
+| Same, with meaning search on | 97.6 |
+| 30 hand-written questions over code memory, right answer ranked first | 15 of 30 with keyword search, 21 with meaning search |
+| Real Claude (Opus), code questions that share no words with their answer, prompt ending "Check memory.", 30 runs | 30/30 with keyword search only, 30/30 with meaning search |
+| Real Claude, bare questions with no "check memory" hint, 24 runs | 12/24. Every miss was a run that never searched memory |
+| Real Claude, compact index then read vs full memory packs, 3 runs each | correct 3/3 with 2,905 recall tokens vs partial 3/3 with 6,343 |
+| Session start with a full checkpoint and 60 notes | 1,406 → 651 tokens |
+| Meaning-search model process, resident memory while loaded | about 660 MB in the first spike → 213 MB shipped |
 
-Answer in the chat, or from a terminal with `debrief import --set all|current_project|none`. Imported passages are bounded, attributed and cited back to their transcript. Hidden reasoning, binaries, recognised secrets, the contents of sensitive files (`.env`, keys, credentials) and Debrief's own output are left out.
+Two of these results changed the product.
 
-## What the `◪ debrief` notices mean
+The agent writes its own search queries, and its first query already contained the answer's words. So meaning search added nothing on code memory, and I made it opt-in. The real failure is the agent not searching at all when a question sounds general.
 
-Claude Code shows them to you; they are never sent to the model.
+## What I built
 
-| Notice | Meaning |
-|---|---|
-| `checkpoint r3 · 2 preferences` | Session start: the agent was given your preferences and told that checkpoint r3 exists. It fetches the checkpoint with `memory_bootstrap` when it continues that work. |
-| `12 records` | Session start with no checkpoint yet: the agent was told how many records it can recall. |
-| `no memory yet` | Nothing stored for this repository yet. |
-| `last session ended without a checkpoint (claude-code)` | The last session stopped, or crashed, before saving where it stood. Its last turns were read from its transcript; the agent was told, and `memory_bootstrap` returns them. |
-| `turns after r3 not checkpointed` | Work happened after the last checkpoint. The agent was told, and `memory_bootstrap` returns those turns. |
-| `transcript import needs your answer` | The import question above is still open. |
-| `workstream to confirm` | Debrief cannot tell which line of work this session continues, so the agent will ask you. |
-| `saved turn (12 events)` | The turn that just ended was saved. |
-| `recalling: retry budget` | The agent searched memory. |
-| `⚠ turn not saved (…)` or `⚠ 2 hook failures (…)` | Something failed. Run `debrief diag status`. The session itself carries on: a failing hook never interrupts it. |
-| `not running: the debrief command is not on PATH` | The plugin is installed but the command is not: `npm install -g debrief-cli`. |
+- A memory store on SQLite with versioned migrations. Memory is scoped by Git repository and worktree, and records have a lifecycle: superseded, retracted, forgotten, private sessions.
+- Capture from Claude Code's own transcripts. A killed session loses only a step taken in its last 0.1 s or so, before Claude Code wrote it to the transcript.
+- Freshness checks on code references. A memory stays `current` when lines above the cited code move, and turns `stale` when the cited lines change. File reads imported from old transcripts are fingerprinted too.
+- Hybrid recall: BM25 with tiers for exact phrases, code identifiers, time words and trust, plus optional int8 embeddings fused by reciprocal rank fusion. The model ships inside the npm package and runs in a separate process that exits after two idle minutes.
+- `debrief report`: a local call log that shows what the agent searched, what came back and what it used.
+- Tests that drive the real Claude Code binary against a local stub model, with a guard that refuses and logs any connection a Debrief process opens. The logs must stay empty. CI runs on Linux, macOS and Windows.
 
-## Meaning search (opt-in)
+## Limits
 
-Recall ranks memory by the words it shares with the query. Meaning search adds a small embedding model (snowflake-arctic-embed-xs, 23 MB, shipped inside the npm package), so a question can find an answer that shares none of its words. It sends nothing anywhere: the model and its runtime come with the code.
-
-**It is off by default.** In a driven test with real Claude (150 sessions), the agent found the answer to every question it searched for with keyword search alone, because it rewrites the question into its own queries. Meaning search added nothing there and costs memory.
-
-**What it costs.** The MCP server starts the model in its own process when a recall or new memory needs it, and stops it after two idle minutes, which gives the memory back. While it runs, that process holds about 215 MB (RSS, macOS arm64; up to about 250 MB while the model loads, and about 135 MB of physical footprint), per Claude Code session that searched or saved memory in the last two minutes. Existing and imported memory is embedded in the background, which takes minutes of CPU for a large history. Hooks never load the model.
-
-**To turn it on**, set `DEBRIEF_MEANING_SEARCH=on` where Claude Code starts, then start a new session. Any other value leaves it off. Either:
-
-- in your shell, before starting Claude Code (it passes its environment on to the MCP server): `export DEBRIEF_MEANING_SEARCH=on`, or
-- in Claude Code's settings (`~/.claude/settings.json`), whose `env` reaches the plugin's MCP server:
-
-  ```json
-  { "env": { "DEBRIEF_MEANING_SEARCH": "on" } }
-  ```
-
-`debrief status` reads its own environment, not Claude Code's settings: with the setting only in `settings.json` it says `off`, so check the model with `DEBRIEF_MEANING_SEARCH=on debrief status`. On, it shows the model and how much of this repository's memory is searchable by meaning, and a model that fails to load is a problem. Off, it says `meaning search · off (DEBRIEF_MEANING_SEARCH=on to enable)`, and names a value it did not recognise.
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `debrief status` | Is it working here? Checks the plugin, the MCP handshake, each hook's last run, the last capture and the import choice; exit 1 on a problem. **The first thing to run when something seems off.** |
-| `debrief import [--set all\|current_project\|none]` | Shows the import question, or records your answer and imports to completion. |
-| `debrief report [--since 7d] [--all]` | Did Debrief help? Searches per session, which returned records the agent went on to use, which turned out wrong, how fresh they were, what it cost. This repository by default; `--all` for every one. Offline, from this machine's data only. It never estimates tokens "saved". |
-| `debrief report --review` | Rate up to 10 random searches from the window: good, partial or missed something, with an optional note. The next report shows your ratings. |
-| `debrief delete-data [--yes]` | Deletes all stored memory after you type `delete` (see below). |
-
-The `debrief diag …` commands and `debrief mcp` are for diagnostics and for the host: see [docs/development.md](docs/development.md#commands).
-
-## Keeping things out of memory
-
-| You want | Do |
-|---|---|
-| a passage never stored | wrap it in `<private>…</private>` in your prompt |
-| a whole session forgotten | tell the agent **"don't remember this session"**: Debrief forgets what the session stored (in a resumed conversation, what its earlier sessions stored too), never imports its transcript, and refuses its later writes |
-| a wrong memory fixed | say so ("that's wrong", "that changed"); the agent is instructed to correct or retract it with `memory_manage` |
-
-Claude Code's own transcript files still hold the conversation: that is Claude Code's data, not Debrief's.
-
-## Uninstall, and deleting your data
-
-Uninstalling and deleting data are separate steps, so removing Debrief never deletes memory by accident.
-
-```text
-1. debrief delete-data                  optional, and first: it needs the debrief command
-2. /plugin uninstall debrief@debrief    in Claude Code
-3. npm uninstall -g debrief-cli
-```
-
-`debrief delete-data` shows the path, size and number of repositories, and deletes only after you type `delete` (`--yes` skips the question, and is required when there is no terminal). Close Claude Code sessions first, since a running session keeps writing. It removes only the files Debrief created: anything else in `$DEBRIEF_HOME` is left alone.
-
-Without `delete-data`, your memory stays in `~/.debrief`.
-
-## Supported versions
+- Claude Code on your machine only. Cloud agents and remote sandboxes are not supported. Codex can be connected by hand ([docs/hosts.md](docs/hosts.md)).
+- The tests that drive real Claude Code have only run on macOS arm64. CI runs the rest of the suite on Linux and Windows too.
+- Memory is not ground truth. Freshness checks cover code; issues, PRs and other outside state are not checked.
+- Meaning search is off by default. When on, its model process holds about 215 MB while loaded.
 
 | | Supported | Tested with |
 |---|---|---|
@@ -153,22 +108,24 @@ Without `delete-data`, your memory stays in `~/.debrief`.
 | better-sqlite3 | `13.0.3` (installed with the package) | 13.0.3 |
 | Claude Code | `2.1.284` | 2.1.284 |
 
-Tested on macOS (arm64). Other platforms and other Claude Code versions are untested: `debrief status` is the first check there.
+## Uninstall
 
-## Known limits
+```text
+debrief delete-data                  optional, and first: deletes ~/.debrief after you type "delete"
+/plugin uninstall debrief@debrief    in Claude Code
+npm uninstall -g debrief-cli
+```
 
-- **Claude Code on your machine only.** Codex can be connected by hand ([docs/hosts.md](docs/hosts.md)); its hooks, and Pi, are not packaged yet. Cloud agents and sandboxes (Claude Code on the web, remote sandboxes) are not supported: memory lives on the machine that runs `debrief`.
-- **A step killed within about 0.1 s is lost.** Claude Code writes each step to its transcript a moment after taking it (measured on 2.1.283); a session killed inside that moment loses that step.
-- **Memory is not ground truth.** It is what agents observed and concluded. Freshness warnings cover code that has changed; issues, PRs and other external state are not checked.
-- **Meaning search, when turned on, costs memory while it runs.** The model's process holds about 215 MB while loaded (RSS, macOS arm64), per Claude Code session that searched or filled in the last two minutes; idle sessions hold none of it. A large imported history takes minutes of background CPU to embed. Found only by meaning, an answer that shares no word with the question ranks below the records that share some.
-
-## Documentation
+## Docs
 
 | Doc | For |
 |---|---|
+| [docs/usage.md](docs/usage.md) | notices, commands, privacy controls, meaning search |
+| [docs/benchmarks.md](docs/benchmarks.md) | how each number above was measured |
 | [docs/architecture.md](docs/architecture.md) | how it works inside: the memory module, scope, storage, import, lifecycle, hooks |
-| [docs/hosts.md](docs/hosts.md) | connecting hosts by hand (Codex, Claude Code without the plugin) and each host's caveats |
-| [docs/development.md](docs/development.md) | building, testing, the test seams, benchmarks, every command |
+| [docs/hosts.md](docs/hosts.md) | connecting hosts by hand (Codex, Claude Code without the plugin) |
+| [docs/development.md](docs/development.md) | building, testing, the test seams, every command |
+| [docs/adr/0001-meaning-search.md](docs/adr/0001-meaning-search.md) | the meaning-search decision record, with every measurement |
 | [CHANGELOG.md](CHANGELOG.md) | releases |
 
 MIT licensed.

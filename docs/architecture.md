@@ -1,6 +1,6 @@
 # Architecture
 
-How Debrief works inside. For using it, see the [README](../README.md); for connecting hosts by hand, [hosts.md](hosts.md); for building and testing, [development.md](development.md).
+How Debrief works inside. For using it, see [usage.md](usage.md); for connecting hosts by hand, [hosts.md](hosts.md); for building and testing, [development.md](development.md).
 
 ## At a glance
 
