@@ -13,15 +13,15 @@ Every figure below was measured by a throwaway spike on 2026-09-29 (Apple M4 Pro
 
 Debrief's recall is a well-tokenized BM25 with tiers (phrases, time windows, "now") and trust bands. On LongMemEval_S it misses questions that share no words with their answer: "doctors" against "Dr. Patel", "photography setup" against "Sony A7R IV". Every competitor searches by meaning. #51 asks for meaning search across all memory without giving up what recall guarantees today: eligibility before ranking, budgets, the frozen continuation order, citations, freshness, and no network.
 
-The spike had to settle six choices: runtime, model, vector storage, delivery, retrieval unit and fusion. The user signed off on delivery (bundled) on 2026-09-30.
+The spike had to settle six choices: runtime, model, vector storage, delivery, retrieval unit and fusion. I signed off on delivery (bundled) on 2026-09-30.
 
 ## Decided on 2026-09-30
 
-The user accepted this record with four decisions that change how it is delivered:
+I accepted this record with four decisions that change how it is delivered:
 
 | Decision | Consequence |
 |---|---|
-| **Build before dogfooding.** Every competitor searches by meaning; Debrief ships it before the user starts using it daily | "What would make this not worth it" (below) is no longer a gate. The agent-rephrasing measurement goes in PR 2's body as evidence |
+| **Build before dogfooding.** Every competitor searches by meaning; Debrief ships it before I start using it daily | "What would make this not worth it" (below) is no longer a gate. The agent-rephrasing measurement goes in PR 2's body as evidence |
 | **RAM: +150 MB at peak and about 0 when idle is a target, not a gate** | PR 2 ships at whatever it measures and reports it. #51 stays open until the target is met. The lean design to try then: one thread in the server, bulk embedding in a short-lived separate process, the model unloaded when idle |
 | **One PR, not two.** The background fill embeds any chunk without a current-model vector, so it is the backfill of existing and imported memory too | #51's PR 2 and PR 3 are one PR. Rebuilding vectors (`diag reindex`) and the integrity checks for vectors move to #22, beside the keyword index's |
 | **Session start carries no work context** (#33). The agent recalls at the start of each task through `memory_recall`, which is where meaning search runs | Hooks still never load the model. Automatic per-prompt recall stays keyword-only and is held (#33) |
@@ -33,7 +33,7 @@ The user accepted this record with four decisions that change how it is delivere
 | Runtime | `onnxruntime-web` 1.30 (WASM) + `@huggingface/tokenizers`, bundled by esbuild; the 14.2 MB `.wasm` ships beside `dist/debrief.mjs` and is loaded only by `debrief mcp` | moderate |
 | Model | `Snowflake/snowflake-arctic-embed-xs`, int8 (`onnx/model_quantized.onnx`, 23.0 MB, Apache-2.0), 384 dimensions, CLS pooling, query prefix, 512 tokens | low–moderate (the small models are within noise of each other on quality; speed decides) |
 | Storage | a `chunk_vectors` table in `memory.sqlite`: (model id, chunk text hash) → int8 vector + scale; brute-force scan in the server; no `sqlite-vec` | high |
-| Delivery | model files inside the npm package; no download, no new host; privacy row unchanged | moderate–high (signed off by the user) |
+| Delivery | model files inside the npm package; no download, no new host; privacy row unchanged | moderate–high (signed off) |
 | Unit | the search chunk (≤ 1,000 bytes); a record scores its best chunk; no round vectors | moderate |
 | Fusion | reciprocal rank fusion, k = 60, equal weights, of page 1's keyword order (after tiers and trust) and the vector order over eligible records; tier-lifted records stay ahead; frozen as today | moderate |
 
@@ -188,7 +188,7 @@ Bundling costs about 38 MB of disk per install and needs no new trust boundary. 
 
 - **Native runtime (onnxruntime-node).** It has 4.4 times the throughput and a quarter of the resident memory (arctic-xs), and it is the better engine. It is rejected for distribution reasons that the numbers above make concrete: 287 MB installed on every platform (ten times today's footprint), no Intel Macs since February 2026, a 236 MB CUDA download from nuget.org in a linux-x64 `postinstall`, and a second native addon beside better-sqlite3. The embedder seam keeps it one swap away. Vectors are interchangeable, so a swap needs no re-embedding.
 - **transformers.js.** It pulls both runtimes and `sharp` with an LGPL libvips, 476 MB in all, to do what 175 KB of tokenizer plus runtime glue does.
-- **bge-small-en-v1.5.** It is best on LongMemEval (R@5 98.8, fixes 20 of 24) but mid-pack on code memory (R@1 20 fused vs arctic-xs 21 and MiniLM 22). Under WASM it is half the speed of arctic-xs, with twice the query latency, and it is 11 MB larger. The quality gap either way is 1–3 questions. It is the recommended alternative if the user weights LongMemEval over speed.
+- **bge-small-en-v1.5.** It is best on LongMemEval (R@5 98.8, fixes 20 of 24) but mid-pack on code memory (R@1 20 fused vs arctic-xs 21 and MiniLM 22). Under WASM it is half the speed of arctic-xs, with twice the query latency, and it is 11 MB larger. The quality gap either way is 1–3 questions. It is the recommended alternative if LongMemEval matters more than speed.
 - **all-MiniLM-L6-v2.** It is as fast as arctic-xs, but has three new misses on LongMemEval against one, and it was trained on 128-token inputs.
 - **Mid-size models** (bge-base-en-v1.5, nomic-embed-text-v1.5 at 256 dimensions) are the best on LongMemEval R@1 (90.7 fused), and fused R@5 is 98.6 for both. Nomic has no new misses. On code memory they match the small models. They cost int8 files of 110 and 137 MB and 4.4 and 6 times arctic-xs's native fill time, with 2–3 times the RAM. WASM would slow them further (not measured). They buy 0–2 questions of 419.
 - **The code-trained model** (jina-embeddings-v2-base-code): it is worse than keyword search alone on LongMemEval (fused R@5 93.1), no better on code memory, and 162 MB.
@@ -222,7 +222,7 @@ Bundling costs about 38 MB of disk per install and needs no new trust boundary. 
 
 The strongest case against: LongMemEval_S is chat, most of its gain is in preference questions ("suggest something for my evening"), and those barely exist in coding memory. The code-memory set is only 30 questions, and they were written by the same person who chose the options, with paraphrases deliberately stripped of shared words. The price is real and permanent: about 38 MB per install, about 0.6 GB of resident memory per active session while the model is loaded, tens of minutes of background CPU to backfill a large history, and a model to maintain. The caller is itself a language model. It could expand its own query ("doctor OR physician OR Dr") at no install cost, and that alternative was **not measured**. If a driven run shows agents recovering these misses by rephrasing, meaning search buys little for coding work.
 
-The user decided on 2026-09-30 to build it anyway. The rephrasing run is reported in PR 2's body; it no longer decides whether PR 2 ships.
+I decided on 2026-09-30 to build it anyway. The rephrasing run is reported in PR 2's body; it no longer decides whether PR 2 ships.
 
 ## Built in PR 2 (2026-10-01)
 
@@ -238,7 +238,7 @@ Also added: `DEBRIEF_MEANING_SEARCH=off` turns meaning search off (the model is 
 
 ## Decided on 2026-10-01: records found only by meaning
 
-A calibration on LongMemEval_S and the code-memory set looked for a cosine floor that keeps the answers only meaning finds and drops the noise. There is none. On code memory, the cosine of a true answer found only by meaning and the best such cosine on questions nothing answers overlap completely (AUC 0.455). Of the floors tried (absolute, relative to the best record, per-query z-scores), those that kept all 11 code answers left at most 19 of LongMemEval's 30 abstention questions without such a record on page 1; a cap of 10 left 24. The user accepted three changes instead:
+A calibration on LongMemEval_S and the code-memory set looked for a cosine floor that keeps the answers only meaning finds and drops the noise. There is none. On code memory, the cosine of a true answer found only by meaning and the best such cosine on questions nothing answers overlap completely (AUC 0.455). Of the floors tried (absolute, relative to the best record, per-query z-scores), those that kept all 11 code answers left at most 19 of LongMemEval's 30 abstention questions without such a record on page 1; a cap of 10 left 24. I accepted three changes instead:
 
 | Decision | Consequence |
 |---|---|
@@ -250,7 +250,7 @@ A calibration on LongMemEval_S and the code-memory set looked for a cosine floor
 
 ## Decided on 2026-10-01
 
-Two measurements came in after PR 2, and the user decided on them: **meaning search is opt-in**, and **#51 closes** with the RAM target unmet.
+Two measurements came in after PR 2, and I decided on them: **meaning search is opt-in**, and **#51 closes** with the RAM target unmet.
 
 **Agents rephrase.** The driven run that "What would make this not worth it" asked for: `claude -p` with Opus (high effort) and Debrief's MCP server on seeded workspaces, keyword-only against meaning on, 3 runs per question, 150 runs in all. Set A and B2 prompts end with "Check memory."; set B prompts are the bare question.
 
@@ -281,4 +281,4 @@ The changes: `MallocSpaceEfficient=1` in the fork's environment on macOS, so lib
 | **Meaning search is opt-in.** `DEBRIEF_MEANING_SEARCH=on` turns it on; unset, or any other value, it is off | Off, `debrief mcp` never starts the model or writes a vector, and recall is keyword search's byte for byte. `debrief status` and `memory_status` say `meaning search: off (DEBRIEF_MEANING_SEARCH=on to enable)` and name a value they did not recognise; missing model files are then no problem. The model still ships in the package, so turning it on downloads nothing. This replaces PR 2's `DEBRIEF_MEANING_SEARCH=off` |
 | **#51 closes.** +150 MB is out of reach with WebAssembly, and with meaning search off by default nobody pays the +215 MB who did not ask for it | The tuned process above is what an opted-in session pays. Further cuts (an ORT-format model, a reduced runtime build, a native runtime) are new issues if anyone needs them |
 
-**What would make it the default again:** `debrief report --review` showing missed searches caused by mismatched vocabulary, where the answer was in memory and no query the agent wrote shared its words. That is the miss meaning search fixes and rephrasing did not in this run. Measure it on the user's own ratings, then weigh it against the RAM above.
+**What would make it the default again:** `debrief report --review` showing missed searches caused by mismatched vocabulary, where the answer was in memory and no query the agent wrote shared its words. That is the miss meaning search fixes and rephrasing did not in this run. Measure it on `--review` ratings, then weigh it against the RAM above.
