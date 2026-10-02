@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## [0.2.0](https://github.com/0xAysh/debrief/releases/tag/v0.2.0) - 2026-10-01
+
+Debrief is paused after this release and kept as a portfolio project.
+
+### Docs
+
+- **The README is short**: what it does, how to try it, the benchmarks, what was built and its limits. The notices, commands, privacy controls and meaning search moved to [docs/usage.md](docs/usage.md). Every benchmark, with its method and the negative results, is in [docs/benchmarks.md](docs/benchmarks.md).
 
 ### Meaning search
 

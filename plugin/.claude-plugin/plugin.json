@@ -1,6 +1,6 @@
 {
   "name": "debrief",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local working memory for Claude Code: the session's checkpoint at start, every turn saved at stop, sub-agents included. Needs the debrief command on PATH (npm install -g debrief-cli).",
   "author": { "name": "0xAysh" },
   "homepage": "https://github.com/0xAysh/debrief",
