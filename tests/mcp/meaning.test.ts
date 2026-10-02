@@ -115,7 +115,7 @@ describe("meaning search in the MCP server", () => {
     await until("the new record's vector", () => meaningOf(server), (m) => m.coverage?.embedded === PAYMENTS_SERVICE.length + 1);
     const found = await server.ok<ContextPack>("memory_recall", { query: "subscription invoicing vendor" });
     expect(found.items.slice(0, 3).map((i) => i.recordId)).toContain(recordId);
-    expect(found.items.find((i) => i.recordId === recordId)?.why).toBe("meaning");
+    expect(found.items.find((i) => i.recordId === recordId)?.why).toBe("meaning only");
     await server.close();
   });
 
@@ -152,7 +152,7 @@ describe("meaning search in the MCP server", () => {
     expect(filled.coverage?.chunks).toBeGreaterThanOrEqual(60);
     const pack = await server.ok<ContextPack>("memory_recall", { query: "monetary precision rounding" });
     const answer = pack.items.slice(0, 5).find((item) => item.excerpt.includes("integer minor units"));
-    expect(answer).toMatchObject({ why: "meaning", source: { transcriptId: sessionId } });
+    expect(answer).toMatchObject({ why: "meaning only", source: { transcriptId: sessionId } });
     await server.close();
   });
 
@@ -348,7 +348,8 @@ describe("meaning search in the MCP server", () => {
     expect(unloaded - idle).toBeLessThan(50);
 
     const again = await server.ok<ContextPack>("memory_recall", { query: "socket resets" });
-    expect(again.items[0]?.why).toBe("meaning");
+    expect(again.items[0]?.why).toBe("meaning only");
+    expect(again.notice).toMatch(/(^|\. )No record shares words with the query; the \d+ below are only nearest by meaning and may be unrelated\.$/);
     expect(again.items[0]?.excerpt).toMatch(/ECONNRESET/);
     expect(modelProcess(server.pid)).toHaveLength(1);
     await server.close();

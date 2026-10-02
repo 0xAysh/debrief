@@ -65,6 +65,13 @@ function seed(memory: Memory, records = PAYMENTS_SERVICE): Map<string, string> {
 }
 
 const idsOf = (pack: ContextPack): string[] => pack.items.map((item) => item.recordId);
+
+/** Every page of a recall, following its continuations. */
+function paged(memory: Memory, query: string, maxBytes: number): ContextPack[] {
+  const pages = [memory.recall({ query, maxBytes })];
+  for (let last = pages[0]?.continuation ?? null; last !== null; last = pages.at(-1)?.continuation ?? null) pages.push(memory.recall({ continuation: last, maxBytes }));
+  return pages;
+}
 const need = (ids: Map<string, string>, key: string): string => {
   const id = ids.get(key);
   if (id === undefined) throw new Error(`no record ${key}`);
@@ -153,7 +160,7 @@ describe("meaning search", () => {
       expect(idsOf(keywords.recall({ query, maxTokens: 8_000 })).slice(0, 5), query).not.toContain(answer);
       const pack = meaning.recall({ query, maxTokens: 8_000 });
       expect(idsOf(pack).slice(0, 5), query).toContain(answer);
-      expect(pack.items.find((item) => item.recordId === answer)?.why, query).toBe("meaning");
+      expect(pack.items.find((item) => item.recordId === answer)?.why, query).toBe("meaning only");
       expect(pack.notice ?? "", query).not.toMatch(/meaning search/);
     }
   });
@@ -202,7 +209,7 @@ describe("meaning search", () => {
     }
   });
 
-  test("M3: why says meaning for what meaning placed, a continuation carries it to later pages, and later pages ask the model nothing", async () => {
+  test("M3: why says what meaning placed, a continuation carries it to later pages, and later pages ask the model nothing", async () => {
     const { meaning, ids } = await workspace();
     const query = "socket resets";
     const first = meaning.recall({ query, maxBytes: 2_500 });
@@ -212,8 +219,8 @@ describe("meaning search", () => {
     const second = meaning.recall({ continuation: first.continuation ?? "", maxBytes: 2_500 });
     meaning.noteCall({ source: "tool", name: "memory_recall", args: { continuation: "…", maxBytes: 2_500 }, result: second, ms: 1, bytes: 1 });
     expect(second.items.length).toBeGreaterThan(0);
-    // Nothing matches "socket resets" by its words: meaning placed every record on every page.
-    for (const item of [...first.items, ...second.items]) expect(item.why).toBe("meaning");
+    // Nothing matches "socket resets" by its words: meaning alone placed every record on every page.
+    for (const item of [...first.items, ...second.items]) expect(item.why).toBe("meaning only");
     expect(new Set([...idsOf(first), ...idsOf(second)]).size).toBe(first.items.length + second.items.length);
 
     const db = new Database(dbPathOf(meaning), { readonly: true });
@@ -236,8 +243,90 @@ describe("meaning search", () => {
     const placed = after.items.map((item, position) => ({ item, position, keywordAt: before.indexOf(item.recordId) }));
     const raised = placed.filter(({ position, keywordAt }) => keywordAt === -1 || position < keywordAt);
     expect(raised.length).toBeGreaterThan(0);
-    for (const { item } of raised) expect(item.why ?? "").toMatch(/\bmeaning$/);
+    for (const { item } of raised) expect(item.why ?? "").toMatch(/\bmeaning( only)?$/);
     for (const { item } of placed.filter(({ position, keywordAt }) => keywordAt !== -1 && position >= keywordAt)) expect(item.why ?? "").not.toMatch(/meaning/);
+  });
+
+  test("H1: a query that shares no words with any record returns at most 10 records, each why: meaning only, under a notice that says so", async () => {
+    const { meaning, keywords } = await workspace();
+    for (const query of ["socket resets", "throughput ceiling"]) {
+      expect(keywords.recall({ query, maxTokens: 8_000 }).empty, query).toBe(true);
+      const pack = meaning.recall({ query, maxTokens: 8_000 });
+      expect(pack.items, query).toHaveLength(10);
+      expect(pack.continuation, query).toBeNull();
+      for (const item of pack.items) expect(item.why, query).toBe("meaning only");
+      expect(pack.notice, query).toBe("No record shares words with the query; the 10 below are only nearest by meaning and may be unrelated.");
+    }
+
+    // Paged by a small budget: the line follows the pack's own notice and counts the items on its page.
+    let page = meaning.recall({ query: "socket resets", maxBytes: 2_500 });
+    const [, count] = /^Budget reached before all eligible memory was returned\. .* No record shares words with the query; the (\d+) below are only nearest by meaning and may be unrelated\.$/.exec(page.notice ?? "") ?? [];
+    expect(Number(count)).toBe(page.items.length);
+    expect(page.items.length).toBeLessThan(10);
+    const seen = idsOf(page);
+    while (page.continuation !== null) {
+      page = meaning.recall({ continuation: page.continuation, maxBytes: 2_500 });
+      for (const item of page.items) expect(item.why).toBe("meaning only");
+      seen.push(...idsOf(page));
+    }
+    expect(new Set(seen).size).toBe(10);
+
+    // While vectors are missing, the line comes before the coverage line, over the records that have one.
+    const repo = initRepo();
+    const home = tempDir();
+    const partial = open(repo, home);
+    seed(partial);
+    expect(await partial.fillVectors({ maxChunks: 4 })).toMatchObject({ state: "filled", embedded: 4 });
+    const few = partial.recall({ query: "socket resets", maxTokens: 8_000 });
+    expect(few.items).toHaveLength(4);
+    expect(few.notice).toBe("No record shares words with the query; the 4 below are only nearest by meaning and may be unrelated. meaning search covers 8% of memory");
+  });
+
+  test("H2: with keyword matches, at most 10 records only meaning found join; a match meaning raised says meaning, the others meaning only, on every page", async () => {
+    const { meaning, keywords } = await workspace();
+    const query = "gateway timeout retries";
+    const before = idsOf(keywords.recall({ query, maxTokens: 8_000 }));
+    expect(before.length).toBeGreaterThan(3);
+    const pages = paged(meaning, query, 3_000);
+    const items = pages.flatMap((pack, page) => pack.items.map((item) => ({ item, page })));
+    const placed = items.map(({ item, page }, position) => ({ item, page, position, keywordAt: before.indexOf(item.recordId) }));
+
+    expect(placed.filter(({ keywordAt }) => keywordAt !== -1).map(({ item }) => item.recordId).sort()).toEqual([...before].sort());
+    const only = placed.filter(({ keywordAt }) => keywordAt === -1);
+    // Only from the vector order's best 10, where keyword matches take places too.
+    expect(only.length).toBeGreaterThan(0);
+    expect(only.length).toBeLessThanOrEqual(10);
+    for (const { item } of only) expect(item.why).toBe("meaning only");
+    const raised = placed.filter(({ position, keywordAt }) => keywordAt !== -1 && position < keywordAt);
+    expect(raised.length).toBeGreaterThan(0);
+    for (const { item } of raised) expect(item.why ?? "").toMatch(/(^|; )meaning$/);
+    for (const { item } of placed.filter(({ position, keywordAt }) => keywordAt !== -1 && position >= keywordAt)) expect(item.why ?? "").not.toMatch(/meaning/);
+
+    // Both labels reach later pages through the continuation, as one large page gives them.
+    expect(raised.some(({ page }) => page > 0)).toBe(true);
+    expect(only.some(({ page }) => page > 0)).toBe(true);
+    const whole = paged(meaning, query, 32_000);
+    expect(whole).toHaveLength(1);
+    const labels = (packs: ContextPack[]): [string, string | undefined][] => packs.flatMap((pack) => pack.items.map((item): [string, string | undefined] => [item.recordId, item.why]));
+    expect(labels(pages)).toEqual(labels(whole));
+    for (const pack of pages) expect(pack.notice ?? "").not.toMatch(/shares words/);
+  });
+
+  test("H4: with meaning search off or unavailable, no item says meaning and no notice says that no record shares words", async () => {
+    const { repo, home, keywords } = await workspace();
+    const broken = openEmbedder({ dir: tempDir("debrief-no-model-"), execArgv: [] });
+    onCleanup(() => {
+      broken.close();
+    });
+    const unavailable = open(repo, home, { model: broken });
+    for (const memory of [keywords, unavailable]) {
+      for (const query of ["socket resets", "ledger reconciliation payouts"]) {
+        const pack = memory.recall({ query, maxTokens: 8_000 });
+        for (const item of pack.items) expect(item.why ?? "", query).not.toMatch(/meaning/);
+        expect(pack.notice ?? "", query).not.toMatch(/shares words|nearest by meaning/);
+      }
+    }
+    expect(keywords.recall({ query: "socket resets" })).toMatchObject({ items: [], notice: "No eligible memory matches this request. Nothing is known about it; do not assume prior context." });
   });
 
   test("M4: retracted, forgotten, superseded, private-session and other-workstream copies are never returned and never push the answer off page 1", async () => {
@@ -276,7 +365,8 @@ describe("meaning search", () => {
       page = memory.recall({ continuation: page.continuation, maxBytes: 3_000 });
       seen.push(...idsOf(page));
     }
-    expect(seen.length).toBeGreaterThan(10);
+    // No record shares a word with the query: the sequence is the 10 records meaning admits on its own.
+    expect(seen.length).toBe(10);
     for (const id of ineligible) expect(seen).not.toContain(id);
   });
 

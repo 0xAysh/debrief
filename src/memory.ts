@@ -240,7 +240,8 @@ export interface PackItem {
    * quoted phrase or identifier from the query (`exact "rankSequence"`), falls in the time the
    * query names (`created last week`), is the newest relevant record for a question about now,
    * trust placed it above an equally relevant record, saying what decided (`trusted: current, captured`),
-   * or meaning search found it or ranked it above its keyword place (`meaning`).
+   * meaning search ranked it above its keyword place (`meaning`), or meaning search alone found
+   * it: it shares no word with the query, which is weak evidence that it is related (`meaning only`).
    */
   why?: string;
   attribution: Attribution;
@@ -1763,6 +1764,8 @@ class LocalMemory implements Memory {
       let trustChecked: ReadonlyMap<string, RecordFreshness> = new Map();
       // Page 1 only: why meaning search could not take part, or how much of memory it covers.
       let meaningNotice: string | null = null;
+      // Page 1 only: no record matches the query's words, and every record sequenced is only near it by meaning.
+      let unmatched = false;
       if (continued === null) {
         const ranked = rankSequence(db, {
           workstreamId: scope.workstreamId,
@@ -1787,11 +1790,13 @@ class LocalMemory implements Memory {
           const scan = scanByMeaning(db, { workstreamId: scope.workstreamId, kinds: sequenceKinds, model: meaning.model, query: meaning.vector });
           const fused = fuseByMeaning(sequence, lifted, scan.order);
           const keyword = new Set(sequence);
-          // A record meaning admitted that keywords matched beyond the cap is carried now.
-          const carried = ranked.total > ranked.seqs.length ? matchingSeqs(db, match, fused.seqs.filter((seq) => !keyword.has(seq))).size : 0;
-          beyondCap += Math.max(0, fused.seqs.length - SEQUENCE_CAP) - carried;
+          const admitted = fused.seqs.filter((seq) => !keyword.has(seq));
+          // A record meaning admitted that keywords matched beyond the cap is carried now; the others share no word with the query.
+          const carried = ranked.total > ranked.seqs.length ? matchingSeqs(db, match, admitted) : new Set<number>();
+          beyondCap += Math.max(0, fused.seqs.length - SEQUENCE_CAP) - carried.size;
           sequence = fused.seqs.slice(0, SEQUENCE_CAP);
-          rankedBy = withMeaningBits(rankedBy, fused.meaning);
+          rankedBy = withMeaningBits(rankedBy, fused.meaning, new Set(admitted.filter((seq) => !carried.has(seq))));
+          unmatched = ranked.total === 0 && sequence.length > 0;
           if (scan.embedded < scan.chunks) meaningNotice = `meaning search covers ${coveredPercent(scan.chunks, scan.embedded)}% of memory`;
           lap("meaning");
         }
@@ -1905,7 +1910,14 @@ class LocalMemory implements Memory {
               : null,
           budget: { ...budget, usedBytes: 0, usedTokens: 0 },
           empty,
-          notice: withScopeNotice(scope, withMeaningNotice(withheld !== null && notice !== withheld && !starved ? (notice === null ? withheld : `${withheld} ${notice}`) : notice, starved ? null : meaningNotice), empty),
+          notice: withScopeNotice(
+            scope,
+            withMeaningNotice(
+              withheld !== null && notice !== withheld && !starved ? (notice === null ? withheld : `${withheld} ${notice}`) : notice,
+              starved ? [] : [unmatched && page.items.length > 0 ? onlyNearestByMeaning(page.items.length) : null, meaningNotice],
+            ),
+            empty,
+          ),
           corrections,
         };
       };
@@ -2135,17 +2147,25 @@ function withTrustBits(rankedBy: ReadonlyMap<number, number>, lifted: ReadonlyMa
   return bits;
 }
 
-/** `rankedBy` plus the meaning bit of every record meaning search placed. */
-function withMeaningBits(rankedBy: ReadonlyMap<number, number>, placed: ReadonlySet<number>): Map<number, number> {
+/**
+ * `rankedBy` plus a meaning bit for every record meaning search placed: `meaningOnly` alone for one
+ * that shares no word with the query (`only`; no other bit was set on it), `meaning` for the rest.
+ */
+function withMeaningBits(rankedBy: ReadonlyMap<number, number>, placed: ReadonlySet<number>, only: ReadonlySet<number>): Map<number, number> {
   const bits = new Map(rankedBy);
-  for (const seq of placed) bits.set(seq, (bits.get(seq) ?? 0) | RANKED_BY.meaning);
+  for (const seq of placed) bits.set(seq, only.has(seq) ? RANKED_BY.meaningOnly : (bits.get(seq) ?? 0) | RANKED_BY.meaning);
   return bits;
 }
 
-/** A pack's notice with meaning search's own line after it. */
-function withMeaningNotice(notice: string | null, meaning: string | null): string | null {
-  if (meaning === null) return notice;
-  return notice === null ? meaning : `${notice} ${meaning}`;
+/** A pack's notice with meaning search's own lines after it. */
+function withMeaningNotice(notice: string | null, meaning: readonly (string | null)[]): string | null {
+  const lines = [notice, ...meaning].filter((line) => line !== null);
+  return lines.length === 0 ? null : lines.join(" ");
+}
+
+/** Page 1's line when no record matches the query's words: the page's `items` are there by meaning alone. */
+function onlyNearestByMeaning(items: number): string {
+  return `No record shares words with the query; the ${items} below ${items === 1 ? "is" : "are"} only nearest by meaning and may be unrelated.`;
 }
 
 /** What freshness checks need of a stored record: its references and any test run it reports. */
