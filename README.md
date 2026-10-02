@@ -88,12 +88,12 @@ The agent writes its own search queries, and its first query already contained t
 
 ## What I built
 
-- A memory store on SQLite with versioned migrations. Memory is scoped by Git repository and worktree, and records have a lifecycle: superseded, retracted, forgotten, private sessions.
-- Capture from Claude Code's own transcripts. A killed session loses only a step taken in its last 0.1 s or so, before Claude Code wrote it to the transcript.
-- Freshness checks on code references. A memory stays `current` when lines above the cited code move, and turns `stale` when the cited lines change. File reads imported from old transcripts are fingerprinted too.
-- Hybrid recall: BM25 with tiers for exact phrases, code identifiers, time words and trust, plus optional int8 embeddings fused by reciprocal rank fusion. The model ships inside the npm package and runs in a separate process that exits after two idle minutes.
-- `debrief report`: a local call log that shows what the agent searched, what came back and what it used.
-- Tests that drive the real Claude Code binary against a local stub model, with a guard that refuses and logs any connection a Debrief process opens. The logs must stay empty. CI runs on Linux, macOS and Windows.
+- **Crash-safe capture from Claude Code's own transcripts.** A killed session loses only a step taken in its last 0.1 s or so, before Claude Code wrote it to the transcript.
+- **Staleness checks on memory that cites code.** A memory stays `current` when lines above the cited code move, and turns `stale` when the cited lines change. File reads imported from old transcripts are fingerprinted too.
+- **Hybrid search: BM25 plus optional local embeddings.** BM25 has tiers for exact phrases, code identifiers, time words and trust. The int8 embeddings are fused in by reciprocal rank fusion. The model ships inside the npm package and runs in a separate process that exits after two idle minutes.
+- **650+ tests, including ones that drive the real Claude Code binary.** A local stub model stands in for the API, and a guard refuses and logs any connection a Debrief process opens; the logs must stay empty. CI runs on Linux, macOS and Windows.
+- **Measurement built in with `debrief report`.** A local call log shows what the agent searched, what came back and what it used.
+- **A SQLite memory store scoped by Git repository and worktree.** It has versioned migrations, and records have a lifecycle: superseded, retracted, forgotten, private sessions.
 
 ## Limits
 
