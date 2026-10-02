@@ -7,6 +7,7 @@ import { MODEL } from "../../src/embedding/model.js";
 import { type ContextPack, openMemory, type StatusResult } from "../../src/memory.js";
 import { initRepo, onCleanup, tempDir } from "../helpers.js";
 import { PAYMENTS_SERVICE } from "../memory/meaning-fixture.js";
+import { childrenMatching } from "../processes.js";
 import { CLI, type ServerHandle, spawnServer } from "./harness.js";
 
 /**
@@ -20,7 +21,7 @@ const OFF = "meaning search: off (DEBRIEF_MEANING_SEARCH=on to enable)";
 const QUERIES = ["socket resets", "monetary precision rounding", "throughput ceiling", "gateway timeout retries"];
 
 function modelProcess(pid: number): number[] {
-  return spawnSync("pgrep", ["-P", String(pid), "-f", "embedder.mjs"], { encoding: "utf8" }).stdout.split("\n").filter(Boolean).map(Number);
+  return childrenMatching(pid, "embedder.mjs").map((child) => child.pid);
 }
 
 function vectorsIn(path: string): number {
