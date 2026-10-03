@@ -6,7 +6,7 @@ Working memory for Claude Code that stays on your machine.
 
 When a session ends, even if it was killed mid-turn, the next one knows where things stand: the goal, what was tried, what was decided and what comes next. The agent searches memory at the start of each task. Memory that points at code is checked against the file, so the agent is told when it is stale.
 
-> **Status:** paused. This is a portfolio project and it is not actively developed.
+> **Status:** paused. This is not actively developed.
 
 ## Try it
 
